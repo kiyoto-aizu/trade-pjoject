@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+venv/
+.venv/
+instance/
+.pytest_cache/
+
+# dotenv
+.env
+
+# VS Code
+.vscode/
+
+# Logs
+*.log
+
+# Others
+.DS_Store

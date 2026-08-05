@@ -28,7 +28,7 @@ def get_yahoo_5d_closes(symbol):
         return []
 
 
-def test_yfinance_analysis(symbol):
+def sample_yfinance_analysis(symbol):
     print(f"📡 Yahoo Financeから {symbol} の本物の過去データを取得中...")
 
     closes = get_yahoo_5d_closes(symbol)

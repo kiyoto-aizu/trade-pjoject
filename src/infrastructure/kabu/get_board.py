@@ -1,6 +1,9 @@
-# component/get_board.py
+# infrastructure/kabu/get_board.py
 import config
+import logging
 from api import request_handler
+
+logger = logging.getLogger(__name__)
 
 def get_current_board(token, symbol):
     """
@@ -18,7 +21,7 @@ def get_current_board(token, symbol):
     if not res_json:
         return None
     
-    print(f"📊 [板情報取得] 銘柄: {symbol} | 現在値: {res_json.get('CurrentPrice')}" )
+    logger.info("📊 [板情報取得] 銘柄: %s | 現在値: %s", symbol, res_json.get('CurrentPrice'))
     # メイン側で使いやすいように、必要なデータだけを辞書で返す
     return {
         "symbol_name": res_json.get('SymbolName', f"銘柄:{symbol}"),

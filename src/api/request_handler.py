@@ -1,5 +1,8 @@
 # api/request_handler.py
+import logging
 import requests
+
+logger = logging.getLogger(__name__)
 
 def send_post(url, data=None, headers=None, timeout=10):
     """共通POSTリクエスト関数"""
@@ -9,12 +12,12 @@ def send_post(url, data=None, headers=None, timeout=10):
         return response.json()
     except Exception as e:
         response_text = None
-        if hasattr(e, 'response') and getattr(e, 'response') is not None:
+        if hasattr(e, 'response') and getattr(e.response) is not None:
             response_text = getattr(e.response, 'text', None)
         if response_text:
-            print(f"❌ [POST通信エラー] URL: {url} | 理由: {e} | レスポンス: {response_text}")
+            logger.error("❌ [POST通信エラー] URL: %s | 理由: %s | レスポンス: %s", url, e, response_text)
         else:
-            print(f"❌ [POST通信エラー] URL: {url} | 理由: {e}")
+            logger.error("❌ [POST通信エラー] URL: %s | 理由: %s", url, e)
         return None
 
 def send_get(url, params=None, headers=None, timeout=10):
@@ -28,7 +31,7 @@ def send_get(url, params=None, headers=None, timeout=10):
         if hasattr(e, 'response') and getattr(e, 'response') is not None:
             response_text = getattr(e.response, 'text', None)
         if response_text:
-            print(f"❌ [GET通信エラー] URL: {url} | 理由: {e} | レスポンス: {response_text}")
+            logger.error("❌ [GET通信エラー] URL: %s | 理由: %s | レスポンス: %s", url, e, response_text)
         else:
-            print(f"❌ [GET通信エラー] URL: {url} | 理由: {e}")
+            logger.error("❌ [GET通信エラー] URL: %s | 理由: %s", url, e)
         return None

@@ -3,12 +3,15 @@
 `filter_dynamic` が生成する `data/top5.json` を読み込み、
 既存の `TradingBot` に注文判定を委譲する簡易ランナーです。
 """
+import logging
 import time
 from pathlib import Path
 
-from common.storage import read_json
+from infrastructure.persistence.storage import read_json
 from trading_bot import TradingBot
 import config
+
+logger = logging.getLogger(__name__)
 
 DATA_DIR = Path(__file__).resolve().parents[2] / 'data'
 TOP5 = DATA_DIR / 'top5.json'
@@ -25,4 +28,4 @@ def run(token: str, poll_interval: int = 5):
         time.sleep(poll_interval)
 
 if __name__ == '__main__':
-    print('executor: read token from config or env and run')
+    logger.info('executor: read token from config or env and run')

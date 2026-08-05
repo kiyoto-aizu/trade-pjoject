@@ -1,8 +1,4 @@
 # component/get_5d_closes.py
-import sys
-import os
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
 from api import request_handler
 
 def get_yahoo_5d_closes(symbol):

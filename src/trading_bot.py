@@ -1,16 +1,19 @@
 ﻿import json
+import logging
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional
 
 import config
-from component import get_5d_closes
-from component import get_board
-from component import get_wallet
-from component import get_positions
-from component import line_notify
-from component import send_order
+from infrastructure.market_data import get_5d_closes
+from infrastructure.kabu import get_board
+from infrastructure.kabu import get_wallet
+from infrastructure.kabu import get_positions
+from infrastructure.notification import line_notify
+from infrastructure.kabu import send_order
+
+logger = logging.getLogger(__name__)
 
 
 class OrderHistoryManager:
@@ -27,8 +30,8 @@ class OrderHistoryManager:
             try:
                 with self.path.open('r', encoding='utf-8') as f:
                     self.orders = json.load(f)
-            except Exception:
-                self.orders = []
+            except Exception as exc:
+                raise ValueError(f"注文履歴ファイルの読み込みに失敗しました: {exc}") from exc
         else:
             self.orders = []
 
@@ -39,7 +42,7 @@ class OrderHistoryManager:
             with self.path.open('w', encoding='utf-8') as f:
                 json.dump(self.orders, f, ensure_ascii=False, indent=2)
         except Exception as e:
-            print(f"❌ 注文履歴保存失敗: {e}")
+            logger.error("注文履歴保存失敗: %s", e)
 
     def has_ordered_today(self, symbol: str, side: str) -> bool:
         """同じ銘柄と売買区分の注文が本日すでにあるかどうかを判定する。"""
@@ -103,11 +106,11 @@ class AccountManager:
                 'AuKCStockAccountWallet': wallet.get('AuKCStockAccountWallet'),
                 'AuJbnStockAccountWallet': wallet.get('AuJbnStockAccountWallet')
             }
-            print(f"  ✅ 現物買付可能額: {self.wallet['StockAccountWallet']}")
-            print(f"  ✅ 三菱UFJ現物可能額: {self.wallet['AuKCStockAccountWallet']}")
-            print(f"  ✅ auじぶん銀行残高: {self.wallet['AuJbnStockAccountWallet']}")
+            logger.info("現物買付可能額: %s", self.wallet['StockAccountWallet'])
+            logger.info("三菱UFJ現物可能額: %s", self.wallet['AuKCStockAccountWallet'])
+            logger.info("auじぶん銀行残高: %s", self.wallet['AuJbnStockAccountWallet'])
         else:
-            print("  ⚠️ 口座資産情報の取得に失敗しました。")
+            logger.warning("口座資産情報の取得に失敗しました。")
 
     def _refresh_positions(self) -> None:
         """kabu API から現在の保有ポジションを取得する。"""
@@ -115,17 +118,17 @@ class AccountManager:
         if positions is not None:
             self.positions = positions
             if self.positions:
-                print(f"  ✅ 保有ポジション件数: {len(self.positions)}")
+                logger.info("保有ポジション件数: %d", len(self.positions))
             else:
-                print("  ✅ 保有ポジションはありません。")
+                logger.info("保有ポジションはありません。")
         else:
-            print("  ⚠️ 保有ポジション情報の取得に失敗しました。")
+            logger.warning("保有ポジション情報の取得に失敗しました。")
 
     def has_holdings(self, symbol: str) -> bool:
         """指定銘柄について保有株があるかどうかを判定する。"""
         total_qty = 0
         for pos in self.positions:
-            if pos.get('Symbol') == symbol and pos.get('Side') == '1':
+            if pos.get('Symbol') == symbol and pos.get('Side') == config.OrderSide.SELL.value:
                 total_qty += int(pos.get('HoldQty', 0) or 0)
         return total_qty > 0
 
@@ -142,7 +145,7 @@ class AiLimitManager:
         for symbol in symbols:
             closes = get_5d_closes.get_yahoo_5d_closes(symbol)
             if not closes or len(closes) < 5:
-                print(f"⚠️ {symbol} の過去データが不足しているためスキップします")
+                logger.warning("%s の過去データが不足しているためスキップします", symbol)
                 continue
             moving_average = sum(closes) / len(closes)
             self.limits[symbol] = {
@@ -150,7 +153,13 @@ class AiLimitManager:
                 'buy': round(moving_average * 0.99, 1),
                 'sell': round(moving_average * 1.01, 1)
             }
-            print(f"  ✅ {symbol} を記憶 -> 5日平均: {self.limits[symbol]['ma_price']}円 (買い: {self.limits[symbol]['buy']}円 / 売り: {self.limits[symbol]['sell']}円)")
+            logger.info(
+                "%s を記憶 -> 5日平均: %s円 (買い: %s円 / 売り: %s円)",
+                symbol,
+                self.limits[symbol]['ma_price'],
+                self.limits[symbol]['buy'],
+                self.limits[symbol]['sell'],
+            )
             time.sleep(0.5)
 
     def get(self, symbol: str) -> Optional[Dict[str, float]]:
@@ -180,14 +189,14 @@ class TradingBot:
 
     def initialize(self) -> None:
         """注文履歴、口座情報、AI の閾値を初期化する。"""
-        print("\n🔍 起動処理: 口座資産・保有株状況の確認を開始します...")
+        logger.info("起動処理: 口座資産・保有株状況の確認を開始します...")
         self.order_history.load()
         self.account.refresh()
-        print("✨ 口座状態確認が完了しました。\n")
+        logger.info("口座状態確認が完了しました。")
 
-        print("\n⏳ 起動処理: 過去データを取得・記憶中...")
+        logger.info("起動処理: 過去データを取得・記憶中...")
         self.ai_limits.build(self.token, config.TARGET_SYMBOLS)
-        print(f"✨ 初期化完了。記憶件数: {len(self.ai_limits.limits)} 件\n")
+        logger.info("初期化完了。記憶件数: %d 件", len(self.ai_limits.limits))
 
     def is_market_closed(self, now: Optional[datetime] = None) -> bool:
         """現在時刻が取引終了時刻を過ぎているかどうかを判定する。"""
@@ -214,7 +223,7 @@ class TradingBot:
         if today_orders:
             lines.append("--- 注文履歴 ---")
             for order in today_orders:
-                side_text = '買い' if order.get('side') == '2' else '売り'
+                side_text = '買い' if order.get('side') == config.OrderSide.BUY.value else '売り'
                 lines.append(f"{side_text} {order.get('symbol')} {order.get('qty')}株 @ {order.get('price'):.1f}円")
         else:
             lines.append("本日実行された注文はありませんでした。")
@@ -222,33 +231,33 @@ class TradingBot:
         message = "\n".join(lines)
         success = NotificationService.send_line_report(message)
         if success:
-            print("✨ 終了レポートをLINEに送信しました。")
+            logger.info("終了レポートをLINEに送信しました。")
         else:
-            print("⚠️ 終了レポートのLINE送信に失敗しました。")
+            logger.warning("終了レポートのLINE送信に失敗しました。")
 
     def check_order_safety(self, symbol: str, side: str, current_price: float) -> bool:
         """発注前に安全性チェックを行い、注文可否を判定する。"""
-        if side == '2' and self.account.wallet.get('StockAccountWallet') is None:
-            print("   ⚠️ 予算確認未実施: 現物買付可能額が不明です。")
-            return False
+        if side == config.OrderSide.BUY:
+            if self.account.wallet.get('StockAccountWallet') is None:
+                logger.warning("予算確認未実施: 現物買付可能額が不明です。")
+                return False
 
-        if side == '2':
             required = current_price * config.DEFAULT_ORDER_QTY
             wallet_amount = self.account.wallet.get('StockAccountWallet', 0)
             if required > wallet_amount:
-                print(f"   ⚠️ 予算不足: 注文必要額 {required:.0f}円 > 買付可能額 {wallet_amount:.0f}円")
+                logger.warning("予算不足: 注文必要額 %s 円 > 買付可能額 %s 円", required, wallet_amount)
                 return False
 
         if self.order_history.has_ordered_today(symbol, side):
-            print("   ⚠️ 当日同一シンボル・同一方向の注文が既にあります。")
+            logger.warning("当日同一シンボル・同一方向の注文が既にあります。")
             return False
 
         if self.order_history.is_recent_order(symbol, side, config.ORDER_LOCK_SECONDS):
-            print(f"   ⚠️ 同一注文が {config.ORDER_LOCK_SECONDS}秒以内に発生しています。二重発注を防止します。")
+            logger.warning("同一注文が %s 秒以内に発生しています。二重発注を防止します。", config.ORDER_LOCK_SECONDS)
             return False
 
-        if side == '1' and not self.account.has_holdings(symbol):
-            print(f"   ⚠️ {symbol} の保有株が確認できないため、売り注文を見送ります。")
+        if side == config.OrderSide.SELL and not self.account.has_holdings(symbol):
+            logger.warning("%s の保有株が確認できないため、売り注文を見送ります。", symbol)
             return False
 
         return True
@@ -261,36 +270,34 @@ class TradingBot:
 
         board_data = get_board.get_current_board(self.token, symbol)
         if not board_data:
-            print(f"❌ {symbol} の板情報取得に失敗しました。")
+            logger.error("%s の板情報取得に失敗しました。注文を見送ります。", symbol)
             return
 
         symbol_name = board_data["symbol_name"]
         current_price = board_data["current_price"]
         if current_price is None:
-            import random
-            current_price = round(random.uniform(limits["ma_price"] - 40, limits["ma_price"] + 40), 1)
-            time_label = "⚠️時間外疑似"
-        else:
-            time_label = "📡検証用リアルタイム"
+            logger.error("%s (%s) の現在値が取得できませんでした。注文を見送ります。", symbol_name, symbol)
+            return
 
-        print(f"📊 {symbol_name} ({symbol}) | 現在値: {current_price} 円 [{time_label}]")
-        print(f"   🤖 [記憶データ] 5日平均: {limits['ma_price']}円 -> 買い: {limits['buy']}円以下 / 売り: {limits['sell']}円以上")
+        time_label = "📡検証用リアルタイム"
+        logger.info("%s (%s) | 現在値: %s 円 [%s]", symbol_name, symbol, current_price, time_label)
+        logger.info("記憶データ: 5日平均=%s 円, buy=%s 円以下, sell=%s 円以上", limits['ma_price'], limits['buy'], limits['sell'])
 
         if current_price <= limits["buy"]:
-            print("   🚨 【判定】買いシグナル発生！")
-            if self.check_order_safety(symbol, '2', current_price):
-                order_id = send_order.place_market_order(self.token, symbol, side="2")
+            logger.info("買いシグナル発生: %s <= %s", current_price, limits["buy"])
+            if self.check_order_safety(symbol, config.OrderSide.BUY, current_price):
+                order_id = send_order.place_market_order(self.token, symbol, side=config.OrderSide.BUY)
                 if order_id:
-                    self.order_history.register_order(symbol, '2', current_price, config.DEFAULT_ORDER_QTY)
+                    self.order_history.register_order(symbol, config.OrderSide.BUY.value, current_price, config.DEFAULT_ORDER_QTY)
 
         elif current_price >= limits["sell"]:
-            print("   🚨 【判定】売りシグナル発生！")
-            if self.check_order_safety(symbol, '1', current_price):
-                order_id = send_order.place_market_order(self.token, symbol, side="1")
+            logger.info("売りシグナル発生: %s >= %s", current_price, limits["sell"])
+            if self.check_order_safety(symbol, config.OrderSide.SELL, current_price):
+                order_id = send_order.place_market_order(self.token, symbol, side=config.OrderSide.SELL)
                 if order_id:
-                    self.order_history.register_order(symbol, '1', current_price, config.DEFAULT_ORDER_QTY)
+                    self.order_history.register_order(symbol, config.OrderSide.SELL.value, current_price, config.DEFAULT_ORDER_QTY)
         else:
-            print("   ⏳ 【判定】様子見")
+            logger.info("様子見: %s は買い/売り基準の間です。", current_price)
 
     def run(self) -> None:
         """取引終了までメインの監視ループを実行する。"""
@@ -298,18 +305,18 @@ class TradingBot:
 
         while True:
             now = datetime.now()
-            print(f"\n--- 【自動監視チェック】 {now.strftime('%H:%M:%S')} ---")
+            logger.info("--- 自動監視チェック %s ---", now.strftime('%H:%M:%S'))
             if self.is_market_closed(now):
-                print("⏰ 取引終了時間に達しました。終了レポートを送信します。")
+                logger.info("取引終了時間に達しました。終了レポートを送信します。")
                 self.send_end_of_day_report()
                 break
 
-            print("\n🔄 ループ開始前に口座・ポジションを更新します...")
+            logger.info("ループ開始前に口座・ポジションを更新します...")
             self.account.refresh()
 
             for symbol in config.TARGET_SYMBOLS:
                 self.evaluate_symbol(symbol)
                 time.sleep(1)
 
-            print(f"😴 {config.LOOP_INTERVAL}秒間待機します...")
+            logger.info("%s 秒間待機します...", config.LOOP_INTERVAL)
             time.sleep(config.LOOP_INTERVAL)

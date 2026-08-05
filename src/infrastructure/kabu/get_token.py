@@ -1,4 +1,4 @@
-# component/get_api_token.py
+# infrastructure/kabu/get_token.py
 import config
 from api import request_handler
 

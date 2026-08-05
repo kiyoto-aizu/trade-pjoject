@@ -5,11 +5,14 @@
 実際は WebSocket 等で歩み値を受けて評価してください。
 """
 import json
+import logging
 import time
 import random
 from pathlib import Path
 
-from common.storage import read_json, write_json
+from infrastructure.persistence.storage import read_json, write_json
+
+logger = logging.getLogger(__name__)
 
 DATA_DIR = Path(__file__).resolve().parents[2] / 'data'
 SCREENED = DATA_DIR / 'screened_symbols.json'
@@ -27,13 +30,13 @@ def run(poll_interval: int = 10):
     while True:
         symbols = read_json(SCREENED) or []
         if not symbols:
-            print('⚠️ No screened symbols found. Run `screening` first.')
+            logger.warning('⚠️ No screened symbols found. Run `screening` first.')
             time.sleep(poll_interval)
             continue
 
         top5 = score_symbols(symbols)
         write_json(TOP5, top5)
-        print(f"🔄 top5 updated: {top5}")
+        logger.info("🔄 top5 updated: %s", top5)
         time.sleep(poll_interval)
 
 

@@ -1,6 +1,9 @@
-# component/send_order.py
+# infrastructure/kabu/send_order.py
 import config
+import logging
 from api import request_handler
+
+logger = logging.getLogger(__name__)
 
 def place_market_order(token, symbol, side):
     """
@@ -39,16 +42,16 @@ def place_market_order(token, symbol, side):
         "ExpireDay": 0,          # 0 = 当日限り
     }
 
-    print(f"📣 [発注要求] 銘柄: {symbol} | 区分: {'買' if side == '2' else '売'} | 数量: {qty}株")
-    print("📦 発注ペイロード:", order_data)
+    logger.info("📣 [発注要求] 銘柄: %s | 区分: %s | 数量: %s株", symbol, '買' if side == '2' else '売', qty)
+    logger.debug("📦 発注ペイロード: %s", order_data)
     
     # 共通POSTハンドラーに丸投げ
     res_json = request_handler.send_post(url, data=order_data, headers=headers)
     
     if res_json and res_json.get('Result') == 0:
         order_id = res_json.get('OrderId')
-        print(f"🎯 【発注成功】 注文受付番号(OrderId): {order_id}")
+        logger.info("🎯 【発注成功】 注文受付番号(OrderId): %s", order_id)
         return order_id
     else:
-        print(f"❌ 【発注失敗】 APIからの応答: {res_json}")
+        logger.error("❌ 【発注失敗】 APIからの応答: %s", res_json)
         return None

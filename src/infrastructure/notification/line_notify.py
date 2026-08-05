@@ -1,14 +1,17 @@
+import logging
 import requests
 import config
+
+logger = logging.getLogger(__name__)
 
 def send_line_notify(message: str) -> bool:
     token = config.LINE_MESSAGE_CHANNEL_TOKEN
     to_user = config.LINE_MESSAGE_TO
     if not token:
-        print("⚠️ LINE Message API 用チャネルアクセストークンが設定されていません。config.LINE_MESSAGE_CHANNEL_TOKEN を確認してください。")
+        logger.warning("⚠️ LINE Message API 用チャネルアクセストークンが設定されていません。config.LINE_MESSAGE_CHANNEL_TOKEN を確認してください。")
         return False
     if not to_user:
-        print("⚠️ 送信先のLINEユーザーIDが設定されていません。config.LINE_MESSAGE_TO を確認してください。")
+        logger.warning("⚠️ 送信先のLINEユーザーIDが設定されていません。config.LINE_MESSAGE_TO を確認してください。")
         return False
 
     headers = {
@@ -33,7 +36,7 @@ def send_line_notify(message: str) -> bool:
         if hasattr(e, 'response') and getattr(e, 'response') is not None:
             response_text = getattr(e.response, 'text', None)
         if response_text:
-            print(f"❌ LINE送信失敗: {e} | レスポンス: {response_text}")
+            logger.error("❌ LINE送信失敗: %s | レスポンス: %s", e, response_text)
         else:
-            print(f"❌ LINE送信失敗: {e}")
+            logger.error("❌ LINE送信失敗: %s", e)
         return False

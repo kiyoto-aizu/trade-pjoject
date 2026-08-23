@@ -1,3 +1,10 @@
+"""
+================================================================================
+取引ユースケース
+フィルタリング対象銘柄の売買シグナル生成・注文実行を行うアプリケーションロジック層です。
+リアルタイムの価格監視、資金チェック、キルスイッチ判定などの取引制御を実装しています。
+================================================================================
+"""
 import logging
 import json
 import time
@@ -21,6 +28,17 @@ logger = logging.getLogger(__name__)
 
 
 class TradingUseCase:
+    """
+    取引処理を実行するユースケッククラス。
+    
+    機能：
+    - 株価監視と売買シグナル生成
+    - 資金確認と保有株確認
+    - キルスイッチによるリスク制御
+    - 注文実行と履歴管理
+    - 市場終了時のレポート送信
+    """
+    
     def __init__(
         self,
         token: str,
@@ -33,10 +51,24 @@ class TradingUseCase:
         filtering_result_repository=None,
         notifier=None,
     ):
+        """
+        TradingUseCaseを初期化します。
+        
+        Args:
+            token: Kabu.com Station API認証トークン
+            order_history_path: 注文履歴を保存するファイルパス
+            market_data_client: Yahoo FinanceなどのMarketDataクライアント（オプション、テスト用）
+            board_client: リアルタイム板情報クライアント（オプション、テスト用）
+            wallet_client: 口座資金情報クライアント（オプション、テスト用）
+            positions_client: 保有株情報クライアント（オプション、テスト用）
+            order_sender: 注文送信クライアント（オプション、テスト用）
+            filtering_result_repository: フィルタリング結果リポジトリ（オプション）
+            notifier: 通知機能（デフォルト：LINE通知）
+        """
         self.token = token
         self.order_history_path = order_history_path
         self.order_history: List[OrderHistoryEntry] = []
-        # dependency injection (defaults to infrastructure implementations)
+        # 依存性注入（テスト時は別実装を注入可能）
         self.market_data_client = market_data_client
         self.board_client = board_client
         self.wallet_client = wallet_client
@@ -47,7 +79,12 @@ class TradingUseCase:
         self.last_positions = []
         self.kill_switch_triggered = False
 
+    # ================================================================================
+    # 注文履歴の管理
+    # ================================================================================
+
     def _load_order_history(self) -> None:
+        """注文履歴ファイルから過去の注文を読み込みます。"""
         if not self.order_history_path.exists():
             data = []
         else:
@@ -58,14 +95,31 @@ class TradingUseCase:
         self.order_history = [OrderHistoryEntry.from_dict(item) for item in data]
 
     def _save_order_history(self) -> None:
+        """現在の注文履歴をファイルに保存します。"""
         write_json(self.order_history_path, [entry.to_dict() for entry in self.order_history])
 
     def _register_order(self, signal: TradeSignal) -> None:
+        """
+        実行した注文を履歴に記録します。
+        
+        Args:
+            signal: 実行した取引シグナル
+        """
         self.order_history.append(signal.to_order_history_entry())
         self._save_order_history()
 
+    # ================================================================================
+    # 口座状態の取得
+    # ================================================================================
+
     def _load_account_state(self) -> tuple[Optional[float], List[dict]]:
-        # use injected clients when provided (for testing), otherwise default infra
+        """
+        現在の口座状態（資金・保有株）を取得します。
+        
+        Returns:
+            タプル: (買付可能額, 保有株リスト)
+        """
+        # テスト用の注入クライアント、またはデフォルトのインフラストラクチャ実装を使用
         if self.wallet_client:
             wallet = self.wallet_client.get_wallet_cash(self.token)
         else:
@@ -81,12 +135,27 @@ class TradingUseCase:
         return wallet_amount, positions
 
     def _has_holdings(self, symbol: str, positions: List[dict]) -> bool:
+        """
+        指定銘柄の保有株があるかどうかを確認します。
+        
+        Args:
+            symbol: 銘柄シンボル
+            positions: 保有株リスト
+            
+        Returns:
+            保有している場合True、していない場合False
+        """
         return any(
             pos.get('Symbol') == symbol and pos.get('Side') == config.OrderSide.SELL.value and int(pos.get('HoldQty', 0) or 0) > 0
             for pos in positions
         )
 
+    # ================================================================================
+    # レポート送信
+    # ================================================================================
+
     def _send_end_of_day_report(self) -> None:
+        """市場終了時に本日の取引レポートを送信します。"""
         today = datetime.now().date().isoformat()
         daily_orders = [entry for entry in self.order_history if entry.timestamp.startswith(today)]
         lines = [
@@ -114,7 +183,30 @@ class TradingUseCase:
 
         self.notifier("\n".join(lines))
 
+    # ================================================================================
+    # メイン取引ループ
+    # ================================================================================
+
     def run(self, top_symbols_path: Path | None = None, now_provider=None, sleep=None) -> None:
+        """
+        取引ボットを起動します。市場終了まで銘柄を監視し、売買シグナルで自動注文を実行します。
+        
+        処理フロー：
+        1. 注文履歴を読み込み
+        2. フィルタ結果または指定ファイルから監視銘柄を取得
+        3. 市場終了まで以下を繰り返す：
+           - 各銘柄の株価を確認
+           - 売買シグナルを生成
+           - 資金確認とキルスイッチ判定を実施
+           - 安全が確認できた場合のみ注文実行
+        4. 最終的な評価損益を確認
+        5. レポートを送信
+        
+        Args:
+            top_symbols_path: 監視銘柄リストファイルのパス（オプション）
+            now_provider: 現在時刻を取得する関数（テスト用、デフォルト：datetime.now）
+            sleep: スリープ関数（テスト用、デフォルト：time.sleep）
+        """
         self._load_order_history()
         now_provider = now_provider or datetime.now
         sleep = sleep or time.sleep
@@ -133,18 +225,23 @@ class TradingUseCase:
             return
 
         kill_switch_triggered = False
+        # 市場終了時刻まで取引ループを実行
         while not kill_switch_triggered and (now_provider().hour < config.MARKET_CLOSE_HOUR or (now_provider().hour == config.MARKET_CLOSE_HOUR and now_provider().minute < config.MARKET_CLOSE_MINUTE)):
             for symbol in symbols:
+                # 過去5日の終値を取得
                 closes = self.market_data_client.get_yahoo_5d_closes(symbol) if self.market_data_client else get_yahoo_5d_closes(symbol)
                 limit = calculate_price_limit(closes)
                 if limit is None:
                     continue
+                # リアルタイム株価を取得
                 board = self.board_client.get_current_board(self.token, symbol) if self.board_client else get_current_board(self.token, symbol)
                 if not board or board.get('current_price') is None:
                     continue
+                # 売買シグナルを生成
                 signal = TradeSignal.evaluate(symbol, board['current_price'], limit)
                 if not signal:
                     continue
+                # 口座状態を確認
                 wallet_amount, positions = self._load_account_state()
                 self.last_positions = positions
                 api_limit = get_api_soft_limit(self.token)
@@ -154,6 +251,7 @@ class TradingUseCase:
                     kill_switch_triggered = True
                     break
                 config.API_SOFT_LIMIT = api_limit
+                # キルスイッチ判定
                 daily_pnl = sum(float(position.get('ProfitLoss', 0) or 0) for position in positions)
                 daily_orders = sum(
                     1 for entry in self.order_history
@@ -163,13 +261,16 @@ class TradingUseCase:
                     logger.warning("キルスイッチにより発注を停止しました。")
                     kill_switch_triggered = True
                     break
+                # 注文の安全性を確認
                 if not is_safe_to_order(signal, wallet_amount, self._has_holdings(symbol, positions), self.order_history, config.ORDER_LOCK_SECONDS):
                     continue
+                # 注文を実行
                 order_result = self.order_sender.place_market_order(self.token, symbol, signal.side.value) if self.order_sender else place_market_order(self.token, symbol, signal.side.value)
                 if order_result:
                     self._register_order(signal)
             sleep(config.LOOP_INTERVAL)
 
+        # 最終的な評価損益を取得して報告
         if self.positions_client:
             self.last_positions = self.positions_client.get_positions(self.token) or []
         else:

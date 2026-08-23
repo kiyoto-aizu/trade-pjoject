@@ -1,3 +1,9 @@
+"""
+================================================================================
+取引実行エントリーポイント
+フィルタ、リング結果を基に自動取引を実行します。
+================================================================================
+"""
 import logging
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -8,6 +14,7 @@ from src.infrastructure.kabu.get_token import get_api_token
 
 
 def configure_logging() -> None:
+    """ロギングを設定します。"""
     logging.root.handlers.clear()
     log_level = getattr(logging, config.LOG_LEVEL, logging.INFO)
     logging.root.setLevel(log_level)
@@ -29,6 +36,14 @@ def configure_logging() -> None:
 
 
 def main() -> None:
+    """
+    取引ボットを起動します。
+    
+    処理フロー：
+    1. ロギングを設定
+    2. APIトークンを取得
+    3. TradingBotを起動し、run()メソッドを実行
+    """
     configure_logging()
 
     token = get_api_token()

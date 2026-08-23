@@ -1,3 +1,9 @@
+"""
+================================================================================
+フィルタリング実行エントリーポイント
+スクリーニング結果から出来高急騰銘柄を抽出し、次の売買対象を決定します。
+================================================================================
+"""
 import logging
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -14,14 +20,35 @@ from src.infrastructure.persistence.screening_result_repository import Screening
 
 
 class BoardClient:
+    """
+    リアルタイム板情報を取得するクライアントラッパー。
+    テスト時に別実装を注入可能な設計になっています。
+    """
+    
     def __init__(self, token):
+        """
+        BoardClientを初期化します。
+        
+        Args:
+            token: Kabu.com Station API認証トークン
+        """
         self.token = token
 
     def get_current_board(self, symbol):
+        """
+        指定銘柄の現在の板情報を取得します。
+        
+        Args:
+            symbol: 銘柄シンボル
+            
+        Returns:
+            板情報を含む辞書
+        """
         return get_current_board(self.token, symbol)
 
 
 def configure_logging() -> None:
+    """ロギングを設定します。"""
     logging.root.handlers.clear()
     log_level = getattr(logging, config.LOG_LEVEL, logging.INFO)
     logging.root.setLevel(log_level)
@@ -43,6 +70,16 @@ def configure_logging() -> None:
 
 
 def main() -> None:
+    """
+    フィルタリング処理を実行します。
+    
+    処理フロー：
+    1. API トークンを取得
+    2. スクリーニング結果リポジトリを初期化
+    3. 各銘柄の本日出来高と過去平均を比較
+    4. 出来高急騰率でトップ10に絞り込み
+    5. 結果を保存・通知
+    """
     configure_logging()
     token = get_api_token()
     if not token:

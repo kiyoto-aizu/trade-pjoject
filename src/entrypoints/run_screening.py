@@ -1,3 +1,9 @@
+"""
+================================================================================
+スクリーニング実行エントリーポイント
+松元鉮ランキングから取引候補銀柄を技不的に選別します。
+================================================================================
+"""
 import logging
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -14,6 +20,7 @@ from src.application.screening_usecase import ScreeningUseCase
 
 
 def configure_logging() -> None:
+    """ロギングを設定します。"""
     logging.root.handlers.clear()
     log_level = getattr(logging, config.LOG_LEVEL, logging.INFO)
     logging.root.setLevel(log_level)
@@ -35,6 +42,14 @@ def configure_logging() -> None:
 
 
 def main() -> None:
+    """
+    スクリーニング処理を実行します。
+    
+    処理フロー：
+    1. APIトークンを取得
+    2. 各リポジトリを害化
+    3. ScreeningUseCaseを実行
+    """
     configure_logging()
     token = get_api_token()
     if not token:

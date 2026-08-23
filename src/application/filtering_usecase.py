@@ -1,3 +1,10 @@
+"""
+================================================================================
+フィルタリングユースケース
+スクリーニング結果から出来高急騰銘柄を抽出するアプリケーションロジック層です。
+前日のスクリーニング結果に基づいて、本日の出来高変動を分析します。
+================================================================================
+"""
 from datetime import datetime, timedelta
 
 from src.domain.models import FilteringResult, ScoredCandidate
@@ -5,7 +12,24 @@ from src.domain.rules import calculate_volume_surge_ratio, select_top_n_by_surge
 
 
 class FilteringUseCase:
+    """
+    フィルタリング処理を実行するユースケッククラス。
+    
+    前日のスクリーニング結果に対して、本日の出来高を確認し、
+    出来高急騰銘柄をトップNに絞り込みます。
+    """
+    
     def __init__(self, screening_repository, board_client, volume_client, result_repository, notifier=None):
+        """
+        FilteringUseCaseを初期化します。
+        
+        Args:
+            screening_repository: スクリーニング結果を取得するリポジトリ
+            board_client: リアルタイム板情報を取得するクライアント
+            volume_client: 過去の出来高データを取得するクライアント
+            result_repository: フィルタリング結果を保存するリポジトリ
+            notifier: 通知機能（オプション）
+        """
         self.screening_repository = screening_repository
         self.board_client = board_client
         self.volume_client = volume_client
@@ -13,8 +37,22 @@ class FilteringUseCase:
         self.notifier = notifier
 
     def execute(self) -> FilteringResult:
+        """
+        フィルタリング処理を実行します。
+        
+        処理フロー：
+        1. 前営業日のスクリーニング結果を取得
+        2. 各銘柄の本日出来高と過去20営業日平均を比較
+        3. 出来高急騰率でスコアリング
+        4. 上位10銘柄に絞り込み
+        5. 結果を保存して返却
+        
+        Returns:
+            FilteringResultオブジェクト
+        """
         today = datetime.now().date()
         previous_business_day = today - timedelta(days=1)
+        # 土日を跨ぐ場合は前営業日に遡る
         while previous_business_day.weekday() >= 5:
             previous_business_day -= timedelta(days=1)
         screening = self.screening_repository.load_for_date(previous_business_day)

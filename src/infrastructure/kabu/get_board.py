@@ -26,5 +26,6 @@ def get_current_board(token, symbol):
     # メイン側で使いやすいように、必要なデータだけを辞書で返す
     return {
         "symbol_name": res_json.get('SymbolName', f"銘柄:{symbol}"),
-        "current_price": res_json.get('CurrentPrice')
+            "current_price": res_json.get('CurrentPrice'),
+            "trading_volume": res_json.get('TradingVolume'),
     }

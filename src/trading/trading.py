@@ -4,6 +4,8 @@ from src.config import config
 from src.application.trading_usecase import TradingUseCase
 from src.infrastructure.persistence.order_history import OrderHistoryManager
 from src.infrastructure.kabu.account import AccountManager
+from src.infrastructure.persistence.filtering_result_repository import FilteringResultRepository
+from src.infrastructure.notification.line_notify import send_line_notify
 
 
 
@@ -20,6 +22,8 @@ class TradingBot(TradingUseCase):
             wallet_client=None,
             positions_client=None,
             order_sender=None,
+            filtering_result_repository=FilteringResultRepository(Path(__file__).resolve().parents[2] / 'data' / 'filtering'),
+            notifier=send_line_notify,
         )
         # convenience helpers for quick usage
         self.order_history_manager = OrderHistoryManager(order_history_path)

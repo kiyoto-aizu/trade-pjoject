@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Dict, Optional
 
-from src.domain.enums import OrderSide
+from src.domain.enums import OrderSide, RankingType
 
 
 @dataclass
@@ -63,3 +63,41 @@ class TradeSignal:
             qty=self.qty,
             timestamp=datetime.now().isoformat(),
         )
+
+
+@dataclass
+class RankingEntry:
+    symbol: str
+    rank: int
+    value: float
+    ranking_type: RankingType
+
+
+@dataclass
+class Regulation:
+    symbol: str
+    is_restricted: bool
+    reason: str = ""
+    primary_exchange: int = 1
+
+
+@dataclass
+class ScreeningResult:
+    date: str
+    symbols: list[str]
+    generated_at: str
+
+
+@dataclass
+class ScoredCandidate:
+    symbol: str
+    today_volume: float
+    average_volume: float
+    surge_ratio: float
+
+
+@dataclass
+class FilteringResult:
+    date: str
+    symbols: list[str]
+    generated_at: str

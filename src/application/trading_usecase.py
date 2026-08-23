@@ -1,13 +1,17 @@
 import logging
+import json
+import time
+from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
 from src.config import config
 from src.domain.models import OrderHistoryEntry, PriceLimit, TradeSignal
-from src.domain.rules import calculate_price_limit, is_safe_to_order
+from src.domain.rules import calculate_price_limit, check_kill_switch, is_safe_to_order
 from src.infrastructure.kabu.get_board import get_current_board
 from src.infrastructure.kabu.get_positions import get_positions
 from src.infrastructure.kabu.get_wallet import get_wallet_cash
+from src.infrastructure.kabu.get_apisoftlimit import get_api_soft_limit
 from src.infrastructure.kabu.send_order import place_market_order
 from src.infrastructure.market_data.get_5d_closes import get_yahoo_5d_closes
 from src.infrastructure.notification.line_notify import send_line_notify
@@ -26,6 +30,8 @@ class TradingUseCase:
         wallet_client=None,
         positions_client=None,
         order_sender=None,
+        filtering_result_repository=None,
+        notifier=None,
     ):
         self.token = token
         self.order_history_path = order_history_path
@@ -36,9 +42,19 @@ class TradingUseCase:
         self.wallet_client = wallet_client
         self.positions_client = positions_client
         self.order_sender = order_sender
+        self.filtering_result_repository = filtering_result_repository
+        self.notifier = notifier or send_line_notify
+        self.last_positions = []
+        self.kill_switch_triggered = False
 
     def _load_order_history(self) -> None:
-        data = read_json(self.order_history_path) or []
+        if not self.order_history_path.exists():
+            data = []
+        else:
+            try:
+                data = json.loads(self.order_history_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                raise ValueError(f"注文履歴ファイルの読み込みに失敗しました: {exc}") from exc
         self.order_history = [OrderHistoryEntry.from_dict(item) for item in data]
 
     def _save_order_history(self) -> None:
@@ -71,65 +87,91 @@ class TradingUseCase:
         )
 
     def _send_end_of_day_report(self) -> None:
+        today = datetime.now().date().isoformat()
+        daily_orders = [entry for entry in self.order_history if entry.timestamp.startswith(today)]
         lines = [
             f"本日の自動売買レポート ({config.ORDER_HISTORY_FILE})",
-            f"発注件数: {len(self.order_history)}"
+            f"発注件数: {len(daily_orders)}"
         ]
-        if self.order_history:
+        if self.kill_switch_triggered:
+            lines.append("キルスイッチ: 発動")
+        if daily_orders:
             lines.append("--- 注文履歴 ---")
-            for entry in self.order_history:
+            for entry in daily_orders:
                 lines.append(f"{entry.symbol} {entry.side.value} {entry.qty}株 @ {entry.price:.1f}円")
         else:
             lines.append("本日実行された注文はありませんでした。")
+        if self.last_positions:
+            lines.append("--- 評価損益 ---")
+            for position in self.last_positions:
+                lines.append(
+                    f"{position.get('Symbol', '')}: "
+                    f"{position.get('ProfitLoss', 0)}円 "
+                    f"({position.get('ProfitLossRate', 0)}%)"
+                )
+            total_pnl = sum(float(position.get('ProfitLoss', 0) or 0) for position in self.last_positions)
+            lines.append(f"合計損益: {total_pnl}円")
 
-        send_line_notify("\n".join(lines))
+        self.notifier("\n".join(lines))
 
-    def run(self, top_symbols_path: Path) -> None:
+    def run(self, top_symbols_path: Path | None = None, now_provider=None, sleep=None) -> None:
         self._load_order_history()
-        wallet_amount, positions = self._load_account_state()
-        symbols = read_json(top_symbols_path) or []
+        now_provider = now_provider or datetime.now
+        sleep = sleep or time.sleep
+        if self.filtering_result_repository:
+            result = self.filtering_result_repository.load_latest()
+            today = now_provider().date().isoformat()
+            if not result or result.date != today or not result.symbols:
+                self.notifier("当日のフィルタ結果がないため、取引を開始しません")
+                return
+            symbols = result.symbols
+        else:
+            symbols = read_json(top_symbols_path) if top_symbols_path else []
+            symbols = symbols or []
         if not symbols:
             logger.info("上位銘柄リストが空です。取引を行いません。")
             return
 
-        for symbol in symbols:
-            # calculate price limit via injected market data client or default
-            closes = None
-            if self.market_data_client:
-                closes = self.market_data_client.get_yahoo_5d_closes(symbol)
-            else:
-                closes = get_yahoo_5d_closes(symbol)
-            limit = calculate_price_limit(closes)
-            if limit is None:
-                logger.warning("%s の価格閾値を計算できませんでした。スキップします。", symbol)
-                continue
+        kill_switch_triggered = False
+        while not kill_switch_triggered and (now_provider().hour < config.MARKET_CLOSE_HOUR or (now_provider().hour == config.MARKET_CLOSE_HOUR and now_provider().minute < config.MARKET_CLOSE_MINUTE)):
+            for symbol in symbols:
+                closes = self.market_data_client.get_yahoo_5d_closes(symbol) if self.market_data_client else get_yahoo_5d_closes(symbol)
+                limit = calculate_price_limit(closes)
+                if limit is None:
+                    continue
+                board = self.board_client.get_current_board(self.token, symbol) if self.board_client else get_current_board(self.token, symbol)
+                if not board or board.get('current_price') is None:
+                    continue
+                signal = TradeSignal.evaluate(symbol, board['current_price'], limit)
+                if not signal:
+                    continue
+                wallet_amount, positions = self._load_account_state()
+                self.last_positions = positions
+                api_limit = get_api_soft_limit(self.token)
+                if api_limit is None:
+                    logger.warning("API発注上限を取得できないため、発注を停止しました。")
+                    self.kill_switch_triggered = True
+                    kill_switch_triggered = True
+                    break
+                config.API_SOFT_LIMIT = api_limit
+                daily_pnl = sum(float(position.get('ProfitLoss', 0) or 0) for position in positions)
+                daily_orders = sum(
+                    1 for entry in self.order_history
+                    if entry.timestamp.startswith(now_provider().date().isoformat())
+                )
+                if not check_kill_switch(daily_orders, daily_pnl, config.OPERATING_CAPITAL, config, signal.price * signal.qty):
+                    logger.warning("キルスイッチにより発注を停止しました。")
+                    kill_switch_triggered = True
+                    break
+                if not is_safe_to_order(signal, wallet_amount, self._has_holdings(symbol, positions), self.order_history, config.ORDER_LOCK_SECONDS):
+                    continue
+                order_result = self.order_sender.place_market_order(self.token, symbol, signal.side.value) if self.order_sender else place_market_order(self.token, symbol, signal.side.value)
+                if order_result:
+                    self._register_order(signal)
+            sleep(config.LOOP_INTERVAL)
 
-            if self.board_client:
-                board = self.board_client.get_current_board(self.token, symbol)
-            else:
-                board = get_current_board(self.token, symbol)
-            if not board or board.get('current_price') is None:
-                logger.warning("%s の板情報取得に失敗しました。", symbol)
-                continue
-
-            current_price = board['current_price']
-            signal = TradeSignal.evaluate(symbol, current_price, limit)
-            if not signal:
-                logger.info("%s は閾値に達していないため、発注しません。", symbol)
-                continue
-
-            has_holdings = self._has_holdings(symbol, positions)
-            if not is_safe_to_order(signal, wallet_amount, has_holdings, self.order_history, config.ORDER_LOCK_SECONDS):
-                continue
-
-            if self.order_sender:
-                order_result = self.order_sender.place_market_order(self.token, symbol, signal.side.value)
-            else:
-                order_result = place_market_order(self.token, symbol, signal.side.value)
-            if order_result:
-                self._register_order(signal)
-                logger.info("%s の注文を登録しました。", symbol)
-            else:
-                logger.warning("%s の注文送信に失敗しました。", symbol)
-
+        if self.positions_client:
+            self.last_positions = self.positions_client.get_positions(self.token) or []
+        else:
+            self.last_positions = get_positions(self.token) or []
         self._send_end_of_day_report()

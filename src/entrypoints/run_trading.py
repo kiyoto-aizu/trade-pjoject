@@ -36,8 +36,7 @@ def main() -> None:
         raise SystemExit('トークン取得に失敗しました。')
 
     bot = TradingBot(token)
-    top5_path = Path(__file__).resolve().parents[2] / 'data' / 'top5.json'
-    bot.run(top_symbols_path=top5_path)
+    bot.run()
 
 
 if __name__ == '__main__':

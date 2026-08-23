@@ -10,7 +10,7 @@ import time
 import random
 from pathlib import Path
 
-from infrastructure.persistence.storage import read_json, write_json
+from src.infrastructure.persistence.storage import read_json, write_json
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +38,3 @@ def run(poll_interval: int = 10):
         write_json(TOP5, top5)
         logger.info("🔄 top5 updated: %s", top5)
         time.sleep(poll_interval)
-
-
-if __name__ == '__main__':
-    run()

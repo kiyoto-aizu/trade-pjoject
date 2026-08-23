@@ -1,7 +1,7 @@
-# infrastructure/kabu/send_order.py
-import config
+"""infrastructure/kabu/send_order.py"""
 import logging
-from api import request_handler
+from src.config import config
+from src.api import request_handler
 
 logger = logging.getLogger(__name__)
 

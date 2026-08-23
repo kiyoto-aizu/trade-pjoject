@@ -19,8 +19,7 @@ trade-pjoject/
 ├── application/
 │   ├── trading_usecase.py          # 売買実行ユースケース
 │   ├── screening_usecase.py        # 銘柄スクリーニングユースケース
-│   ├── filtering_usecase.py        # 動的評価ユースケース
-│   └── executor_usecase.py         # 実行・監視ユースケース
+│   └── filtering_usecase.py        # 動的評価ユースケース
 ├── infrastructure/
 │   ├── kabu/
 │   │   ├── kabu_client.py
@@ -37,8 +36,7 @@ trade-pjoject/
 ├── entrypoints/
 │   ├── run_trading.py              # 起動トリガー別の薄いラッパー
 │   ├── run_screening.py
-│   ├── run_filtering.py
-│   └── run_executor.py
+│   └── run_filtering.py
 ├── main.py                         # デフォルト実行・CLI用のランナー
 └── tests/
     ├── domain/
@@ -180,7 +178,6 @@ src/
     run_trading.py
     run_screening.py
     run_filtering.py
-    run_executor.py
   main.py
   application/
   domain/

@@ -1,5 +1,5 @@
-import config
-from api import request_handler
+from src.config import config
+from src.api import request_handler
 
 def get_positions(token, product='1', symbol=None, side=None, addinfo='true'):
     """保有建玉（残高）を取得する。"""

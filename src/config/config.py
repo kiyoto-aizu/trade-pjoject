@@ -1,5 +1,6 @@
 # config.py
 import os
+import sys
 from enum import Enum
 from pathlib import Path
 
@@ -14,21 +15,33 @@ _env_path = _repo_root / '.env'
 if _DOTENV_AVAILABLE and _env_path.exists():
     load_dotenv(dotenv_path=str(_env_path))
 
+
+def _is_test_runtime() -> bool:
+    return "pytest" in sys.modules or os.getenv("ALLOW_MISSING_ENV", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 class OrderSide(str, Enum):
     SELL = "1"
     BUY = "2"
 
 
-def _load_required_env(name: str) -> str:
+def _load_required_env(name: str, *, allow_missing: bool | None = None) -> str:
     value = os.getenv(name, "").strip()
-    if not value:
-        raise ValueError(f"Required environment variable '{name}' is not set.")
-    return value
+    if value:
+        return value
+
+    if allow_missing is None:
+        allow_missing = _is_test_runtime()
+    if allow_missing:
+        return ""
+
+    raise ValueError(f"Missing required environment variable: {name}")
 
 
 _IS_DEMO_ENV = os.getenv("IS_DEMO", "true").strip().lower()
 IS_DEMO = _IS_DEMO_ENV in ("1", "true", "yes")
 ENABLE_LIVE_ORDERING = os.getenv("ENABLE_LIVE_ORDERING", "false").strip().lower() in ("1", "true", "yes")
+_ALLOW_MISSING_ENV = _is_test_runtime()
 
 # 💡 銘柄ごとに個別の売買基準値を設定（辞書形式）
 # 「コード」: {"buy": 買い基準値, "sell": 売り基準値}
@@ -51,7 +64,7 @@ LINE_MESSAGE_TO = os.getenv("LINE_MESSAGE_TO", "")
 LINE_MESSAGE_API = "https://api.line.me/v2/bot/message/push"
 
 API_PORT = os.getenv("API_PORT_DEV", "18081") if IS_DEMO else os.getenv("API_PORT_PRD", "18080")
-API_PASSWORD = _load_required_env("API_PASSWORD_DEV" if IS_DEMO else "API_PASSWORD_PRD")
+API_PASSWORD = _load_required_env("API_PASSWORD_DEV" if IS_DEMO else "API_PASSWORD_PRD", allow_missing=_ALLOW_MISSING_ENV)
 
 if not IS_DEMO and not ENABLE_LIVE_ORDERING:
     raise ValueError(

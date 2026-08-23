@@ -1,4 +1,4 @@
-﻿import logging
+import logging
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
@@ -12,10 +12,7 @@ def configure_logging() -> None:
     log_level = getattr(logging, config.LOG_LEVEL, logging.INFO)
     logging.root.setLevel(log_level)
 
-    formatter = logging.Formatter(
-        '%(asctime)s %(levelname)s %(name)s: %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S',
-    )
+    formatter = logging.Formatter('%(asctime)s %(levelname)s %(name)s: %(message)s')
 
     stream_handler = logging.StreamHandler()
     stream_handler.setFormatter(formatter)
@@ -33,15 +30,13 @@ def configure_logging() -> None:
 
 def main() -> None:
     configure_logging()
-    logger = logging.getLogger(__name__)
-    logger.info('🚀 自動発注機能搭載システムを起動しました。')
 
-    my_token = get_api_token()
-    if not my_token:
-        logger.error('❌ トークン取得失敗。')
-        raise SystemExit(1)
-    bot = TradingBot(my_token)
-    top5_path = Path(__file__).resolve().parents[1] / 'data' / 'top5.json'
+    token = get_api_token()
+    if not token:
+        raise SystemExit('トークン取得に失敗しました。')
+
+    bot = TradingBot(token)
+    top5_path = Path(__file__).resolve().parents[2] / 'data' / 'top5.json'
     bot.run(top_symbols_path=top5_path)
 
 

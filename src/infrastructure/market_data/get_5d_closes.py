@@ -1,6 +1,6 @@
-# infrastructure/market_data/get_5d_closes.py
+"""infrastructure/market_data/get_5d_closes.py"""
 import logging
-from api import request_handler
+from src.api import request_handler
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +24,6 @@ def get_yahoo_5d_closes(symbol):
         quote = result[0].get("indicators", {}).get("quote", [{}])[0]
         closes = [float(close) for close in quote.get("close", []) if close is not None]
         return closes[-5:]
-    except Exception as e:
-        logger.warning("⚠️ Yahooデータの解析に失敗しました (%s): %s", symbol, e)
+    except (KeyError, TypeError, ValueError) as e:
+        logger.exception("Yahooデータの解析に失敗しました (%s): %s", symbol, e)
         return []

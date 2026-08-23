@@ -1,9 +1,10 @@
-# infrastructure/kabu/get_board.py
-import config
+"""infrastructure/kabu/get_board.py"""
 import logging
-from api import request_handler
+from src.config import config
+from src.api import request_handler
 
 logger = logging.getLogger(__name__)
+
 
 def get_current_board(token, symbol):
     """

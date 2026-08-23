@@ -4,8 +4,10 @@ from datetime import datetime, timedelta
 
 import pytest
 
-import config
-from src.trading_bot import OrderHistoryManager, AccountManager, TradingBot
+from src.config import config
+from src.trading.trading import TradingBot
+from src.infrastructure.persistence.order_history import OrderHistoryManager
+from src.infrastructure.kabu.account import AccountManager
 
 
 class DummyWalletApi:
@@ -29,6 +31,12 @@ def set_env(monkeypatch):
     monkeypatch.setenv('API_PASSWORD_DEV', 'dummy')
     monkeypatch.setenv('IS_DEMO', 'true')
     return monkeypatch
+
+
+def test_required_env_helper_raises_when_missing():
+    with pytest.raises(ValueError, match='Missing required environment variable: MISSING_ENV_FOR_TEST'):
+        from src.config import config
+        config._load_required_env('MISSING_ENV_FOR_TEST', allow_missing=False)
 
 
 def test_order_history_load_corrupt(tmp_path):

@@ -7,8 +7,8 @@ import logging
 import random
 from pathlib import Path
 
-from infrastructure.persistence.storage import write_json
-import config
+from src.infrastructure.persistence.storage import write_json
+from src.config import config
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +37,3 @@ def run(output_path: Path = DATA_DIR / 'screened_symbols.json'):
     screened = score_and_filter(universe)
     write_json(output_path, screened)
     logger.info("✅ screening finished: %d symbols -> %s", len(screened), output_path)
-
-
-if __name__ == '__main__':
-    run()

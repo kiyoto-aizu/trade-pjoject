@@ -40,7 +40,6 @@ python src/main.py
 python src/entrypoints/run_trading.py
 python src/entrypoints/run_screening.py
 python src/entrypoints/run_filtering.py
-python src/entrypoints/run_executor.py
 ```
 
 ## アーキテクチャ

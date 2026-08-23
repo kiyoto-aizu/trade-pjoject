@@ -1,0 +1,27 @@
+flowchart TD
+    Start(["cron: 平日15:35頃起動<br/>run_screening.py"]) --> A1["GET /ranking Type=4<br/>売買代金ランキング取得"]
+    A1 --> A2["GET /ranking Type=1<br/>値上がり率ランキング取得"]
+    A2 --> Check{"ランキングが<br/>空レスポンス?"}
+    Check -->|Yes 7:53以降実行等| ErrEnd(["即エラー終了<br/>+ 通知"])
+    Check -->|No| B1["merge_ranking_candidates()<br/>順位合算方式で統合<br/>(片方欠落は下限順位扱い)"]
+
+    B1 --> C1["各候補銘柄について<br/>GET /regulations/symbol"]
+    C1 --> C2["各候補銘柄について<br/>GET /primaryexchange/symbol"]
+    C2 --> C3{"規制情報API<br/>取得失敗?"}
+    C3 -->|Yes| C3a["安全側に倒して除外"]
+    C3 -->|No| D1
+
+    C3a --> D1["exclude_by_regulation()<br/>信用規制・値幅制限銘柄を除外<br/>地方取引所単独上場(3/5/6)を除外<br/>※東証(1)はすべて残す"]
+
+    D1 --> E1["limit_candidates(min=30, max=50)<br/>多すぎればスコア上位で丸め<br/>少なすぎれば警告ログ"]
+    E1 --> E2{"30件未満?"}
+    E2 -->|Yes| E2a["警告ログ出力<br/>(処理は継続)"]
+    E2 -->|No| F1
+    E2a --> F1["ScreeningResultRepository.save()<br/>data/screening/YYYY-MM-DD.json"]
+
+    F1 --> G1{"通知(任意)"}
+    G1 --> End(["終了<br/>翌朝run_filtering.pyが<br/>この結果を読み込む"])
+
+    style ErrEnd fill:#f8d7da,stroke:#c0392b
+    style E2a fill:#fff3cd,stroke:#d4a017
+    style C3a fill:#fff3cd,stroke:#d4a017

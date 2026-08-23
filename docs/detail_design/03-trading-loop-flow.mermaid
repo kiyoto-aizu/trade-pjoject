@@ -1,0 +1,45 @@
+flowchart TD
+    Start(["cron: 当日9:35頃起動<br/>run_trading.py"]) --> A1["API接続 & トークン取得"]
+    A1 --> A2["FilteringResultRepository.load_latest()<br/>対象10銘柄を読み込み"]
+    A2 --> A3{"generated_atが当日でない<br/>or 対象0件?"}
+    A3 -->|Yes| A3a(["起動中止 + 通知<br/>ループ開始しない"])
+    A3 -->|No| A4["資産・保有株の初期確認"]
+
+    A4 --> Loop["メイン監視ループ開始<br/>(10銘柄 1日固定)"]
+
+    subgraph LOOP["監視ループ（各銘柄ごと）"]
+        direction TB
+        S3["③ GET /board/symbol<br/>現在値取得"]
+        S3 --> S3chk{"取得不可?"}
+        S3chk -->|Yes| Skip["当該銘柄のみ評価スキップ"]
+        S3chk -->|No| S4
+
+        S4["④ domain/rules.py<br/>売買条件判定<br/>→ Signal(BUY/SELL/NONE)"]
+        S4 --> S4chk{"Signalあり?"}
+        S4chk -->|NONE| Skip
+
+        S4chk -->|BUY/SELL| S5a["⑤a GET /wallet/cash 再取得<br/>⑤b GET /positions 再取得"]
+        S5a --> S5b["⑤ 発注セーフティチェック<br/>予算/重複注文/保有有無<br/>+ キルスイッチ判定"]
+        S5b --> S5chk{"チェックOK?"}
+        S5chk -->|NG| Skip
+
+        S5chk -->|OK| S6["⑥ POST /sendorder<br/>発注実行"]
+        S6 --> S6log["OrderHistoryRepositoryへ永続化<br/>監査ログ記録"]
+        S6log --> Skip
+    end
+
+    Loop --> LOOP
+    Skip --> AllDone{"全銘柄処理済み?"}
+    AllDone -->|No| LOOP
+    AllDone -->|Yes| S7["⑦ 60秒スリープ"]
+
+    S7 --> S8["⑧ 時刻チェック<br/>is_market_closed()"]
+    S8 --> S8chk{"取引時間内?"}
+    S8chk -->|Yes| Loop
+    S8chk -->|No| S9
+
+    S9["⑨ 大引け後レポート通知(詳細版)<br/>発注件数・約定状況<br/>銘柄別評価損益額/率(/positions)<br/>当日合計損益サマリ<br/>+ キルスイッチ発動有無を明記"]
+    S9 --> End(["終了"])
+
+    style A3a fill:#f8d7da,stroke:#c0392b
+    style Skip fill:#fff3cd,stroke:#d4a017

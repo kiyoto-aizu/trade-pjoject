@@ -1,0 +1,35 @@
+flowchart TD
+    Start(["cron: 当日9:30頃起動<br/>run_filtering.py"]) --> A1["ScreeningResultRepository.load_latest()<br/>前日の30〜50銘柄を読み込み"]
+    A1 --> A2{"結果ファイルが<br/>存在しない?"}
+    A2 -->|Yes 前日実行失敗等| A2a["処理をスキップしエラー通知<br/>FilteringResultを「対象0件」で保存"]
+    A2a --> End(["終了"])
+
+    A2 -->|No| B1["対象銘柄ごとにループ開始"]
+    B1 --> B2["GET /board/symbol<br/>当日累計出来高(TradingVolume)取得"]
+    B2 --> B3{"取得失敗?"}
+    B3 -->|Yes| B3a["当該銘柄をスコアリング対象から除外"]
+    B3 -->|No| C1
+
+    C1["yahoo_finance_client.get_average_volume()<br/>過去20営業日平均出来高を取得<br/>(コード変換: 4桁+.T)"]
+    C1 --> C2{"取得失敗?"}
+    C2 -->|Yes| C2a["基準値不明のため<br/>スコアリング対象から除外"]
+    C2 -->|No| D1
+
+    B3a --> NextSymbol{"全銘柄処理済み?"}
+    C2a --> NextSymbol
+    D1["calculate_volume_surge_ratio()<br/>出来高急増率 = 当日出来高 ÷ 平均出来高"] --> NextSymbol
+    NextSymbol -->|No| B2
+    NextSymbol -->|Yes| E1
+
+    E1["select_top_n_by_surge_ratio(n=10)<br/>急増率が高い順に上位10件を抽出"]
+    E1 --> E2{"10件に満たない?"}
+    E2 -->|Yes| E2a["取得できた分だけで継続<br/>(警告ログのみ)"]
+    E2 -->|No| F1
+    E2a --> F1["FilteringResultRepository.save()"]
+
+    F1 --> End2(["終了<br/>③トレードループが<br/>この結果を読み込む"])
+
+    style A2a fill:#f8d7da,stroke:#c0392b
+    style B3a fill:#fff3cd,stroke:#d4a017
+    style C2a fill:#fff3cd,stroke:#d4a017
+    style E2a fill:#fff3cd,stroke:#d4a017

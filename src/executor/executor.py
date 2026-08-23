@@ -1,0 +1,29 @@
+"""売買実行ラッパー雛形。
+
+`filter_dynamic` が生成する `data/top5.json` を読み込み、
+既存の `TradingBot` に注文判定を委譲する簡易ランナーです。
+"""
+import logging
+import time
+from pathlib import Path
+
+from src.infrastructure.persistence.storage import read_json
+from src.trading.trading import TradingBot
+from src.config.config import config
+
+logger = logging.getLogger(__name__)
+
+DATA_DIR = Path(__file__).resolve().parents[2] / 'data'
+TOP5 = DATA_DIR / 'top5.json'
+
+def run(token: str, poll_interval: int = 5):
+    logger.info('executor: read token from config or env and run')
+    bot = TradingBot(token)
+    bot.initialize()
+
+    while True:
+        top5 = read_json(TOP5) or []
+        for symbol in top5:
+            # TradingBot.evaluate_symbol を利用して判定・発注処理を行う
+            bot.evaluate_symbol(symbol)
+        time.sleep(poll_interval)

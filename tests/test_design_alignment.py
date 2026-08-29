@@ -8,6 +8,7 @@ from src.domain.rules import calculate_volume_surge_ratio, check_kill_switch, me
 from src.infrastructure.persistence.filtering_result_repository import FilteringResultRepository
 from src.infrastructure.persistence.screening_result_repository import ScreeningResultRepository
 from src.config import config
+from pathlib import Path
 
 
 class RankingStub:
@@ -48,6 +49,11 @@ def test_merge_ranking_candidates_uses_rank_sum():
 def test_volume_ratio_and_kill_switch():
     assert calculate_volume_surge_ratio(300, 100) == 3
     assert not check_kill_switch(10, 0, 1_000_000, config, 1)
+
+
+def test_config_loads_env_from_repository_root():
+    repository_root = Path(__file__).resolve().parents[1]
+    assert config._env_path == repository_root / ".env"
 
 
 def test_screening_usecase_persists_date_result(tmp_path):

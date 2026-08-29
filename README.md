@@ -127,7 +127,7 @@ API_SOFT_LIMIT=1000000
 前日15:35頃に実行し、翌営業日の候補銘柄を保存します。
 
 ```powershell
-python src/entrypoints/run_screening.py
+python -m src.entrypoints.run_screening
 ```
 
 ### 2. フィルタリング
@@ -135,7 +135,7 @@ python src/entrypoints/run_screening.py
 営業開始後の9:00頃に実行し、出来高急騰率の高い銘柄へ絞り込みます。
 
 ```powershell
-python src/entrypoints/run_filtering.py
+python -m src.entrypoints.run_filtering
 ```
 
 ### 3. 取引
@@ -143,7 +143,7 @@ python src/entrypoints/run_filtering.py
 営業開始前に起動し、15:30まで価格を監視します。
 
 ```powershell
-python src/entrypoints/run_trading.py
+python -m src.entrypoints.run_trading
 ```
 
 ## 取引フロー

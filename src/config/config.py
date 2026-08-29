@@ -19,7 +19,8 @@ except ImportError:
     _DOTENV_AVAILABLE = False
 
 # リポジトリのルートディレクトリを取得
-_repo_root = Path(__file__).resolve().parents[1]
+# config.py -> config/ -> src/ -> リポジトリルート の順にたどる。
+_repo_root = Path(__file__).resolve().parents[2]
 _env_path = _repo_root / '.env'
 if _DOTENV_AVAILABLE and _env_path.exists():
     load_dotenv(dotenv_path=str(_env_path))

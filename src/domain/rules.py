@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 from typing import List, Optional
 
 from src.domain.enums import OrderSide, RankingType
-from src.domain.models import OrderHistoryEntry, PriceLimit, ScoredCandidate, TradeSignal
+from src.domain.models import ExclusionResult, OrderHistoryEntry, PriceLimit, ScoredCandidate, TradeSignal
 
 logger = logging.getLogger(__name__)
 
@@ -205,14 +205,24 @@ def exclude_by_regulation(candidates, regulations):
         regulations: 銘柄ごとの規制情報を含む辞書
         
     Returns:
-        規制対象外の銘柄シンボルのリスト
+        残った銘柄と理由別の除外件数
     """
-    return [
-        symbol for symbol in candidates
-        if symbol in regulations
-        and not regulations[symbol].is_restricted
-        and getattr(regulations[symbol], "primary_exchange", 1) not in {3, 5, 6}
-    ]
+    remaining = []
+    excluded_by_regulation_count = 0
+    excluded_by_exchange_count = 0
+    for symbol in candidates:
+        regulation = regulations.get(symbol)
+        if regulation is None or regulation.is_restricted:
+            excluded_by_regulation_count += 1
+        elif regulation.primary_exchange in {3, 5, 6}:
+            excluded_by_exchange_count += 1
+        else:
+            remaining.append(symbol)
+    return ExclusionResult(
+        remaining=remaining,
+        excluded_by_regulation_count=excluded_by_regulation_count,
+        excluded_by_exchange_count=excluded_by_exchange_count,
+    )
 
 
 def limit_candidates(candidates, min_count=30, max_count=50):

@@ -4,7 +4,7 @@ from src.application.filtering_usecase import FilteringUseCase
 from src.application.screening_usecase import ScreeningUseCase
 from src.domain.enums import RankingType
 from src.domain.models import FilteringResult, RankingEntry, Regulation, ScreeningResult
-from src.domain.rules import calculate_volume_surge_ratio, check_kill_switch, merge_ranking_candidates
+from src.domain.rules import calculate_volume_surge_ratio, check_kill_switch, exclude_by_regulation, merge_ranking_candidates
 from src.infrastructure.persistence.filtering_result_repository import FilteringResultRepository
 from src.infrastructure.persistence.screening_result_repository import ScreeningResultRepository
 from src.infrastructure.kabu.ranking_repository import RankingRepository
@@ -48,6 +48,20 @@ def test_merge_ranking_candidates_uses_rank_sum():
     assert merge_ranking_candidates(turnover, gain) == ["7203", "8306"]
 
 
+def test_exclude_by_regulation_counts_each_reason():
+    result = exclude_by_regulation(
+        ["7203", "1234", "5678"],
+        {
+            "7203": Regulation("7203", False, primary_exchange=1),
+            "1234": Regulation("1234", True),
+            "5678": Regulation("5678", False, primary_exchange=3),
+        },
+    )
+    assert result.remaining == ["7203"]
+    assert result.excluded_by_regulation_count == 1
+    assert result.excluded_by_exchange_count == 1
+
+
 def test_volume_ratio_and_kill_switch():
     assert calculate_volume_surge_ratio(300, 100) == 3
     assert not check_kill_switch(10, 0, 1_000_000, config, 1)
@@ -81,10 +95,15 @@ def test_ranking_repository_uses_api_rank_and_type_specific_value(monkeypatch):
 
 def test_screening_usecase_persists_date_result(tmp_path):
     repository = ScreeningResultRepository(tmp_path)
+    notifications = []
     result = ScreeningUseCase(
-        RankingStub(), RegulationStub(), ExchangeStub(), repository
+        RankingStub(), RegulationStub(), ExchangeStub(), repository, notifications.append
     ).execute()
     assert result.symbols == ["7203", "8306"]
+    assert notifications == [
+        "スクリーニング完了: 2銘柄（候補2件中、規制0件・地方取引所0件を除外）\n"
+        "上位: 7203(値上がり率+100%) / 8306(値上がり率+90%)"
+    ]
     saved_result = repository.load_latest()
     assert saved_result.symbols == result.symbols
     assert [(entry.symbol, entry.total_rank, entry.selected) for entry in saved_result.audit_entries] == [

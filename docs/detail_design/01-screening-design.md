@@ -34,8 +34,10 @@ kabuステーションAPIの `GET /ranking` は「kabuステーションが保�
   → domain/rules.py の純粋関数でランキング結果を統合評価
 ④ 30〜50銘柄に絞って永続化
   → infrastructure/persistence/screening_result_repository.py
-⑤ 結果を通知（任意）
+⑤ 結果を通知（監視も兼ねる。1〜2行に要約）
   → infrastructure/notification/line_notify_client.py
+  → 内容: 最終件数 / 除外内訳（規制・地方取引所） / 上位銘柄（代表値付き）
+     詳細はセクション3.5参照
 ```
 
 ---
@@ -46,6 +48,7 @@ kabuステーションAPIの `GET /ranking` は「kabuステーションが保�
 - `ScreeningUseCase.execute() -> ScreeningResult`
 - 責務: ①〜⑤の呼び出し順序を制御する司令塔。ロジックは持たない。
 - 依存: `RankingRepository`, `RegulationRepository`, `PrimaryExchangeRepository`, `screening_rules`（domain）, `ScreeningResultRepository`, `Notifier`
+- **通知用サマリの組み立てもここで行う**（`ExclusionResult`の除外件数、`limit_candidates`前の統合済みランキングから上位数銘柄のrank/valueを抜き出して`Notifier`に渡す）。永続化する`ScreeningResult`自体には持たせない（3.5節参照）
 
 ### infrastructure/kabu/ranking_repository.py（新規）
 - `get_ranking(ranking_type: RankingType) -> list[RankingEntry]`
@@ -67,8 +70,10 @@ kabuステーションAPIの `GET /ranking` は「kabuステーションが保�
 - `merge_ranking_candidates(turnover_ranking: list[RankingEntry], price_gain_ranking: list[RankingEntry]) -> list[str]`
   - **順位合算方式**: 各銘柄について「売買代金ランキングの順位＋値上がり率ランキングの順位」を合計し、合計順位が小さい順に採用する
   - 片方のランキングにしか出ていない銘柄は、出ていない側の順位を「ランキング対象外の下限値（例: 取得件数+1）」として計算し、著しく不利な扱いにする
-- `exclude_by_regulation(candidates: list[str], regulations: dict[str, Regulation]) -> list[str]`
+- `exclude_by_regulation(candidates: list[str], regulations: dict[str, Regulation]) -> ExclusionResult`
   - 規制銘柄・対象外取引所（地方取引所単独上場銘柄）の銘柄を除外
+  - **通知の除外内訳表示のため、単なる`list[str]`ではなく `ExclusionResult`（残った銘柄 + 理由別の除外件数）を返す**（下記モデル参照）
+  - 理由の切り分け: 信用規制・値幅制限による除外は`reason="regulation"`、地方取引所単独上場による除外は`reason="exchange"`としてカウントを分ける
 - `limit_candidates(candidates: list[str], min_count: int = 30, max_count: int = 50) -> list[str]`
   - 最終的に30〜50件に丸める（多すぎる場合はスコア上位から、少なすぎる場合は警告ログ）
 
@@ -81,13 +86,35 @@ kabuステーションAPIの `GET /ranking` は「kabuステーションが保�
 |---|---|---|
 | `RankingEntry` | symbol, rank, value, ranking_type | ①の取得結果 |
 | `Regulation` | symbol, is_restricted, reason | ②の判定材料 |
-| `ScreeningResult` | date, symbols(list[str]), generated_at | ④の永続化対象・②の入力 |
+| `ExclusionResult` | remaining(list[str]), excluded_by_regulation_count, excluded_by_exchange_count | ③`exclude_by_regulation()`の出力・⑤通知の除外内訳の元データ |
+| `ScreeningResult` | date, symbols(list[str]), generated_at | ④の永続化対象・②の入力（**通知用の順位・値・除外内訳は含めない。永続化モデルは変更しない**） |
 
 ### infrastructure/persistence/screening_result_repository.py（新規）
 - `save(result: ScreeningResult) -> None`
 - `load_latest() -> ScreeningResult | None`
 - 保存先: 日付付きファイル（例: `data/screening/2026-08-15.json`）
 - 用途: ②のフィルタ機能が翌朝この結果を読み込んで使用する
+
+### 3.5 通知内容の設計（LINE通知）
+
+**方針**: 監視も兼ねる。1〜2行に収め、銘柄コードの羅列はしない。
+
+```
+スクリーニング完了: 42銘柄（候補58件中、規制3件・地方取引所2件を除外）
+上位: 285A(値上がり率+18.2%) / 593A(売買代金12.4億) / 1234(値上がり率+15.1%)
+```
+
+- **1行目: 件数 + 除外内訳**
+  - 最終件数（`limit_candidates`後の件数、`ScreeningResult.symbols`の件数と一致）
+  - `候補◯件中` = `merge_ranking_candidates()`直後（除外・丸め込み前）の件数
+  - `規制◯件` = `ExclusionResult.excluded_by_regulation_count`
+  - `地方取引所◯件` = `ExclusionResult.excluded_by_exchange_count`
+  - 用途: 除外件数が普段と桁違いに多い/少ない日に気づける（監視目的）
+- **2行目: 上位銘柄（3〜5件程度、代表値付き）**
+  - 各銘柄について、売買代金ランキング・値上がり率ランキングのうち**より高順位だった方**の種別と実際の値を添える
+  - 銘柄コードだけの羅列を避け、「なぜ選ばれたか」が一目でわかるようにする
+- 候補が多い日は上位行を優先し、残りは1行目の件数のみで足りるものとする
+- 通知失敗は本処理（絞り込み・永続化）に影響させない（§4の異常系表に準ずる）
 
 ---
 
@@ -109,6 +136,8 @@ kabuステーションAPIの `GET /ranking` は「kabuステーションが保�
 - 実行タイミング: 前日大引け直後（15:35頃）
 - 銘柄統合ロジック: 順位合算方式（両ランキングの合計順位が小さい順）
 - 除外する対象外市場: `PrimaryExchange` が `3(名証)` `5(福証)` `6(札証)` の地方取引所単独上場銘柄のみ（東証はすべて対象内）
+- 通知内容: 監視も兼ねる方針で確定。1行目「最終件数＋候補件数＋除外内訳（規制/地方取引所）」、2行目「上位3〜5銘柄＋代表値（順位で勝った方のランキング種別と値）」の2行構成（3.5節参照）
+- 永続化モデル(`ScreeningResult`)は変更しない。通知用の詳細情報（順位・値・除外内訳）は`ScreeningUseCase`内で都度組み立てて`Notifier`に渡す
 
 ## 6. 実行スケジュール（cron設定例）
 
@@ -126,3 +155,4 @@ kabuステーションAPIの `GET /ranking` は「kabuステーションが保�
 
 1. cron実行時刻を15:35のまま運用するか、余裕を見て数分ずらすか（§6参照、実運用データを見て判断）
 2. 休場日の扱い（祝日カレンダーとの連携要否）
+3. 通知の上位銘柄件数（3件か5件か）の最終決定、および除外内訳の具体的な文言（§3.5参照、運用しながら調整）

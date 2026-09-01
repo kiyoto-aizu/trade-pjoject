@@ -6,12 +6,15 @@
 ================================================================================
 """
 from datetime import datetime
+import logging
 from time import sleep
 
 from src.config import config
 from src.domain.enums import RankingType
 from src.domain.models import Regulation, ScreeningAuditEntry, ScreeningResult
 from src.domain.rules import exclude_by_regulation, limit_candidates, merge_ranking_candidates
+
+logger = logging.getLogger(__name__)
 
 
 class ScreeningUseCase:
@@ -80,7 +83,8 @@ class ScreeningUseCase:
                 reason=regulation.reason,
                 primary_exchange=exchange,
             )
-        symbols = limit_candidates(exclude_by_regulation(candidates, regulations))
+        exclusion_result = exclude_by_regulation(candidates, regulations)
+        symbols = limit_candidates(exclusion_result.remaining)
         selected_symbols = set(symbols)
         default_turnover_rank = len(turnover) + 1
         default_price_gain_rank = len(price_gain) + 1
@@ -108,5 +112,39 @@ class ScreeningUseCase:
         )
         self.result_repository.save(result)
         if self.notifier:
-            self.notifier("スクリーニング完了: " + ", ".join(symbols))
+            self._notify_completion(
+                candidates,
+                exclusion_result,
+                symbols,
+                turnover_by_symbol,
+                price_gain_by_symbol,
+            )
         return result
+
+    def _notify_completion(
+        self,
+        candidates,
+        exclusion_result,
+        symbols,
+        turnover_by_symbol,
+        price_gain_by_symbol,
+    ) -> None:
+        message = (
+            f"スクリーニング完了: {len(symbols)}銘柄（候補{len(candidates)}件中、"
+            f"規制{exclusion_result.excluded_by_regulation_count}件・"
+            f"地方取引所{exclusion_result.excluded_by_exchange_count}件を除外）"
+        )
+        top_entries = []
+        for symbol in exclusion_result.remaining[:3]:
+            turnover_entry = turnover_by_symbol.get(symbol)
+            price_gain_entry = price_gain_by_symbol.get(symbol)
+            if price_gain_entry and (not turnover_entry or price_gain_entry.rank <= turnover_entry.rank):
+                top_entries.append(f"{symbol}(値上がり率+{price_gain_entry.value:g}%)")
+            elif turnover_entry:
+                top_entries.append(f"{symbol}(売買代金{turnover_entry.value / 100_000_000:g}億)")
+        if top_entries:
+            message += "\n上位: " + " / ".join(top_entries)
+        try:
+            self.notifier(message)
+        except Exception:
+            logger.exception("スクリーニング完了通知に失敗しました。")

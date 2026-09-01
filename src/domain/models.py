@@ -183,6 +183,14 @@ class Regulation:
     primary_exchange: int = 1
 
 
+@dataclass
+class ExclusionResult:
+    """規制・取引所条件による候補除外の結果。"""
+    remaining: list[str]
+    excluded_by_regulation_count: int
+    excluded_by_exchange_count: int
+
+
 # ================================================================================
 # スクリーニング結果
 # ================================================================================

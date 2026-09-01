@@ -17,5 +17,8 @@ instance/
 # Logs
 *.log
 
+# Runtime data
+data/
+
 # Others
 .DS_Store

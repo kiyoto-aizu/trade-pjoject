@@ -7,9 +7,9 @@ class RegulationRepository:
     def __init__(self, token: str):
         self.token = token
 
-    def get_regulation(self, symbol: str) -> Regulation:
+    def get_regulation(self, symbol: str, market_code: int) -> Regulation:
         response = request_handler.send_get(
-            f"{config.BASE_URL}/regulations/{symbol}",
+            f"{config.BASE_URL}/regulations/{symbol}@{market_code}",
             headers={"X-API-KEY": self.token},
         )
         if not response:

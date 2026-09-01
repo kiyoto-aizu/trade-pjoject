@@ -129,6 +129,9 @@ DAILY_LOSS_LIMIT_RATIO = float(os.getenv("DAILY_LOSS_LIMIT_RATIO", "0.02"))
 # APIソフトリミット - リスク管理用の内部閾値
 API_SOFT_LIMIT = float(os.getenv("API_SOFT_LIMIT", "1000000"))
 
+# kabuステーションAPIの実行回数制限を超えないための最小呼出間隔（秒）
+API_REQUEST_INTERVAL_SECONDS = float(os.getenv("API_REQUEST_INTERVAL_SECONDS", "0.12"))
+
 # 取引に利用可能な運用資本
 OPERATING_CAPITAL = float(os.getenv("OPERATING_CAPITAL", "1000000"))
 

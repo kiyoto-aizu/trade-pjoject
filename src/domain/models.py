@@ -5,7 +5,7 @@
 ================================================================================
 """
 from __future__ import annotations
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Dict, Optional
 
@@ -188,6 +188,21 @@ class Regulation:
 # ================================================================================
 
 @dataclass
+class ScreeningAuditEntry:
+    """スクリーニング候補の採用判定を再現するための監査情報。"""
+    symbol: str
+    turnover_rank: int
+    turnover_value: float
+    price_gain_rank: int
+    price_gain_value: float
+    total_rank: int
+    primary_exchange: int
+    is_restricted: bool
+    restriction_reason: str
+    selected: bool
+
+
+@dataclass
 class ScreeningResult:
     """
     スクリーニング処理の結果を保持するデータクラス。
@@ -196,10 +211,31 @@ class ScreeningResult:
         date: スクリーニング実行日（ISO形式）
         symbols: スクリーニング対象銘柄のリスト
         generated_at: 結果生成時刻（ISO形式）
+        audit_entries: 全候補のランキング・規制・採用判定情報
     """
     date: str
     symbols: list[str]
     generated_at: str
+    audit_entries: list[ScreeningAuditEntry] = field(default_factory=list)
+
+    def to_dict(self) -> Dict:
+        """JSON永続化用の辞書へ変換します。"""
+        return {
+            "date": self.date,
+            "symbols": self.symbols,
+            "generated_at": self.generated_at,
+            "audit_entries": [entry.__dict__ for entry in self.audit_entries],
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict) -> "ScreeningResult":
+        """旧形式のJSONも含め、辞書から結果を復元します。"""
+        return cls(
+            date=data["date"],
+            symbols=data["symbols"],
+            generated_at=data["generated_at"],
+            audit_entries=[ScreeningAuditEntry(**entry) for entry in data.get("audit_entries", [])],
+        )
 
 
 # ================================================================================

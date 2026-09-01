@@ -7,6 +7,7 @@ from src.domain.models import FilteringResult, RankingEntry, Regulation, Screeni
 from src.domain.rules import calculate_volume_surge_ratio, check_kill_switch, merge_ranking_candidates
 from src.infrastructure.persistence.filtering_result_repository import FilteringResultRepository
 from src.infrastructure.persistence.screening_result_repository import ScreeningResultRepository
+from src.infrastructure.kabu.ranking_repository import RankingRepository
 from src.config import config
 from pathlib import Path
 
@@ -20,7 +21,8 @@ class RankingStub:
 
 
 class RegulationStub:
-    def get_regulation(self, symbol):
+    def get_regulation(self, symbol, market_code):
+        assert market_code == 1
         return Regulation(symbol, False)
 
 
@@ -56,13 +58,39 @@ def test_config_loads_env_from_repository_root():
     assert config._env_path == repository_root / ".env"
 
 
+def test_ranking_repository_uses_api_rank_and_type_specific_value(monkeypatch):
+    responses = {
+        "1": {"Ranking": [{"Symbol": "7203", "No": 8, "ChangePercentage": 3.25, "CurrentPrice": 2500}]},
+        "4": {"Ranking": [{"Symbol": "8306", "No": 4, "Turnover": 125000.5, "CurrentPrice": 1000}]},
+    }
+
+    def send_get_stub(url, params, headers):
+        assert url == f"{config.BASE_URL}/ranking"
+        assert headers == {"X-API-KEY": "test-token"}
+        return responses[params["Type"]]
+
+    monkeypatch.setattr("src.infrastructure.kabu.ranking_repository.request_handler.send_get", send_get_stub)
+    repository = RankingRepository("test-token")
+
+    price_gain = repository.get_ranking(RankingType.PRICE_GAIN)[0]
+    turnover = repository.get_ranking(RankingType.TURNOVER)[0]
+
+    assert (price_gain.rank, price_gain.value) == (8, 3.25)
+    assert (turnover.rank, turnover.value) == (4, 125000.5)
+
+
 def test_screening_usecase_persists_date_result(tmp_path):
     repository = ScreeningResultRepository(tmp_path)
     result = ScreeningUseCase(
         RankingStub(), RegulationStub(), ExchangeStub(), repository
     ).execute()
     assert result.symbols == ["7203", "8306"]
-    assert repository.load_latest().symbols == result.symbols
+    saved_result = repository.load_latest()
+    assert saved_result.symbols == result.symbols
+    assert [(entry.symbol, entry.total_rank, entry.selected) for entry in saved_result.audit_entries] == [
+        ("7203", 2, True),
+        ("8306", 4, True),
+    ]
 
 
 def test_filtering_usecase_reads_previous_screening_result(tmp_path):

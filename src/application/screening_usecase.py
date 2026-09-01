@@ -6,9 +6,11 @@
 ================================================================================
 """
 from datetime import datetime
+from time import sleep
 
+from src.config import config
 from src.domain.enums import RankingType
-from src.domain.models import Regulation, ScreeningResult
+from src.domain.models import Regulation, ScreeningAuditEntry, ScreeningResult
 from src.domain.rules import exclude_by_regulation, limit_candidates, merge_ranking_candidates
 
 
@@ -61,18 +63,49 @@ class ScreeningUseCase:
                 self.notifier("ランキングが空のためスクリーニングを中止しました")
             raise RuntimeError("ランキングが空のためスクリーニングを中止しました")
         candidates = merge_ranking_candidates(turnover, price_gain)
+        turnover_by_symbol = {entry.symbol: entry for entry in turnover}
+        price_gain_by_symbol = {entry.symbol: entry for entry in price_gain}
         regulations = {}
         for symbol in candidates:
-            regulation = self.regulation_repository.get_regulation(symbol)
             exchange = self.exchange_repository.get_primary_exchange(symbol)
+            sleep(config.API_REQUEST_INTERVAL_SECONDS)
+            if exchange is None:
+                regulations[symbol] = Regulation(symbol, True, "優先市場情報取得失敗", 0)
+                continue
+            regulation = self.regulation_repository.get_regulation(symbol, exchange)
+            sleep(config.API_REQUEST_INTERVAL_SECONDS)
             regulations[symbol] = Regulation(
                 symbol=symbol,
-                is_restricted=regulation.is_restricted or exchange is None,
+                is_restricted=regulation.is_restricted,
                 reason=regulation.reason,
-                primary_exchange=exchange or 0,
+                primary_exchange=exchange,
             )
         symbols = limit_candidates(exclude_by_regulation(candidates, regulations))
-        result = ScreeningResult(datetime.now().date().isoformat(), symbols, datetime.now().isoformat())
+        selected_symbols = set(symbols)
+        default_turnover_rank = len(turnover) + 1
+        default_price_gain_rank = len(price_gain) + 1
+        audit_entries = []
+        for symbol in candidates:
+            turnover_entry = turnover_by_symbol.get(symbol)
+            price_gain_entry = price_gain_by_symbol.get(symbol)
+            turnover_rank = turnover_entry.rank if turnover_entry else default_turnover_rank
+            price_gain_rank = price_gain_entry.rank if price_gain_entry else default_price_gain_rank
+            regulation = regulations[symbol]
+            audit_entries.append(ScreeningAuditEntry(
+                symbol=symbol,
+                turnover_rank=turnover_rank,
+                turnover_value=turnover_entry.value if turnover_entry else 0.0,
+                price_gain_rank=price_gain_rank,
+                price_gain_value=price_gain_entry.value if price_gain_entry else 0.0,
+                total_rank=turnover_rank + price_gain_rank,
+                primary_exchange=regulation.primary_exchange,
+                is_restricted=regulation.is_restricted,
+                restriction_reason=regulation.reason,
+                selected=symbol in selected_symbols,
+            ))
+        result = ScreeningResult(
+            datetime.now().date().isoformat(), symbols, datetime.now().isoformat(), audit_entries
+        )
         self.result_repository.save(result)
         if self.notifier:
             self.notifier("スクリーニング完了: " + ", ".join(symbols))

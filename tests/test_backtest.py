@@ -133,6 +133,61 @@ def test_simulate_backtest_tracks_daily_summary_for_review():
     assert all("total_realized_pnl" in entry for entry in result["daily_summary"])
 
 
+def test_simulate_backtest_supports_tunable_signal_thresholds():
+    history = {
+        "7203": [100.0, 100.0, 100.0, 100.0, 100.0, 97.0, 103.0],
+    }
+
+    result = simulate_backtest(
+        ["7203"],
+        history,
+        starting_cash=10_000.0,
+        qty_per_trade=100,
+        buy_threshold_ratio=0.98,
+        sell_threshold_ratio=1.03,
+        noise_band_ratio=0.02,
+    )
+
+    assert result["total_trades"] == 0
+    assert result["cash"] == 10_000.0
+    assert result["final_position"] == 0
+
+
+def test_simulate_backtest_applies_stop_loss_to_limit_downside():
+    history = {
+        "7203": [100.0, 100.0, 100.0, 100.0, 100.0, 98.0, 96.0],
+    }
+
+    result = simulate_backtest(
+        ["7203"],
+        history,
+        starting_cash=10_000.0,
+        qty_per_trade=100,
+        stop_loss_ratio=0.02,
+    )
+
+    assert result["total_trades"] >= 1
+    assert result["final_position"] == 0
+    assert min(entry["realized_pnl"] for entry in result["trade_history"]) < 0
+
+
+def test_simulate_backtest_requires_directional_momentum_for_signal():
+    history = {
+        "7203": [100.0, 100.0, 100.0, 100.0, 100.0, 98.0, 102.0],
+    }
+
+    result = simulate_backtest(
+        ["7203"],
+        history,
+        starting_cash=10_000.0,
+        qty_per_trade=100,
+        trend_strength_ratio=0.05,
+    )
+
+    assert result["total_trades"] == 0
+    assert result["final_position"] == 0
+
+
 def test_simulate_backtest_closes_positions_at_end_of_day_for_day_trade_mode():
     history = {
         "7203": [100.0, 100.0, 100.0, 100.0, 98.0, 103.0, 105.0],

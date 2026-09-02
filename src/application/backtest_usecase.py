@@ -42,6 +42,11 @@ def simulate_backtest(
     qty_per_trade: int = 100,
     fee_rate: float = 0.0,
     close_at_eod: bool = False,
+    buy_threshold_ratio: float = 1.0,
+    sell_threshold_ratio: float = 1.0,
+    noise_band_ratio: float = 0.0,
+    stop_loss_ratio: float = 0.0,
+    trend_strength_ratio: float = 0.0,
 ) -> dict:
     """
     シンプルなバックテストを実行します。
@@ -103,6 +108,42 @@ def simulate_backtest(
                     "note": "close_at_eod",
                 })
 
+            if holdings[symbol] > 0 and stop_loss_ratio > 0:
+                stop_limit = avg_cost[symbol] * (1.0 - stop_loss_ratio)
+                if price <= stop_limit:
+                    qty = holdings[symbol]
+                    fee = price * qty * fee_rate
+                    proceeds = price * qty
+                    realized_pnl = (price - avg_cost[symbol]) * qty - fee
+                    cash += proceeds - fee
+                    trade_results.append(realized_pnl)
+                    trade_history.append({
+                        "symbol": symbol,
+                        "buy_price": avg_cost[symbol],
+                        "sell_price": price,
+                        "qty": qty,
+                        "fee": fee,
+                        "realized_pnl": round(realized_pnl, 2),
+                        "entry_day": buy_index[symbol],
+                        "exit_day": index,
+                        "holding_days": max(0, index - buy_index[symbol]),
+                    })
+                    symbols_visited.add(symbol)
+                    holdings[symbol] = 0
+                    avg_cost[symbol] = 0.0
+                    buy_index[symbol] = -1
+                    total_trades += 1
+                    signals.append({
+                        "symbol": symbol,
+                        "side": OrderSide.SELL.value,
+                        "price": price,
+                        "qty": qty,
+                        "fee": fee,
+                        "realized_pnl": round(realized_pnl, 2),
+                        "note": "stop_loss",
+                    })
+                    continue
+
             window = closes[max(0, index - 4): index + 1]
             if len(window) < 5:
                 continue
@@ -110,7 +151,27 @@ def simulate_backtest(
             if limit is None:
                 continue
 
-            signal = TradeSignal.evaluate(symbol, price, limit)
+            if noise_band_ratio > 0:
+                avg_price = (limit.buy + limit.sell) / 2.0
+                if abs(price - avg_price) / avg_price < noise_band_ratio:
+                    continue
+
+            if trend_strength_ratio > 0:
+                base_mean = (limit.buy + limit.sell) / 2.0
+                direction_strength = abs(price - base_mean) / base_mean
+                if direction_strength < trend_strength_ratio:
+                    continue
+
+            base_buy = limit.buy
+            base_sell = limit.sell
+            buy_threshold = base_buy * buy_threshold_ratio
+            sell_threshold = base_sell * sell_threshold_ratio
+            if price <= buy_threshold:
+                signal = TradeSignal(symbol=symbol, side=OrderSide.BUY, price=price, qty=qty_per_trade)
+            elif price >= sell_threshold:
+                signal = TradeSignal(symbol=symbol, side=OrderSide.SELL, price=price, qty=qty_per_trade)
+            else:
+                signal = None
             if signal is None:
                 continue
 

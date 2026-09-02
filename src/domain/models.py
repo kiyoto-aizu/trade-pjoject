@@ -185,10 +185,11 @@ class Regulation:
 
 @dataclass
 class ExclusionResult:
-    """規制・取引所条件による候補除外の結果。"""
+    """候補除外の結果。"""
     remaining: list[str]
-    excluded_by_regulation_count: int
-    excluded_by_exchange_count: int
+    excluded_by_price_count: int = 0
+    excluded_by_regulation_count: int = 0
+    excluded_by_exchange_count: int = 0
 
 
 # ================================================================================

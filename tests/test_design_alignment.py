@@ -4,7 +4,7 @@ from src.application.filtering_usecase import FilteringUseCase
 from src.application.screening_usecase import ScreeningUseCase
 from src.domain.enums import RankingType
 from src.domain.models import FilteringResult, RankingEntry, Regulation, ScreeningResult
-from src.domain.rules import calculate_volume_surge_ratio, check_kill_switch, exclude_by_regulation, merge_ranking_candidates
+from src.domain.rules import calculate_volume_surge_ratio, check_kill_switch, exclude_by_price_ceiling, exclude_by_regulation, limit_candidates, merge_ranking_candidates
 from src.infrastructure.persistence.filtering_result_repository import FilteringResultRepository
 from src.infrastructure.persistence.screening_result_repository import ScreeningResultRepository
 from src.infrastructure.kabu.ranking_repository import RankingRepository
@@ -32,6 +32,9 @@ class ExchangeStub:
 
 
 class BoardStub:
+    def get_current_price(self, symbol):
+        return 100
+
     def get_current_board(self, symbol):
         return {"current_price": 100, "trading_volume": 200}
 
@@ -60,6 +63,19 @@ def test_exclude_by_regulation_counts_each_reason():
     assert result.remaining == ["7203"]
     assert result.excluded_by_regulation_count == 1
     assert result.excluded_by_exchange_count == 1
+
+
+def test_exclude_by_price_ceiling_excludes_expensive_and_unavailable_prices():
+    result = exclude_by_price_ceiling(
+        ["7203", "1234", "5678"], {"7203": 300, "1234": 301}, 300
+    )
+    assert result.remaining == ["7203"]
+    assert result.excluded_by_price_count == 2
+
+
+def test_limit_candidates_caps_the_result_at_fifty():
+    candidates = [str(index) for index in range(51)]
+    assert limit_candidates(candidates) == candidates[:50]
 
 
 def test_volume_ratio_and_kill_switch():
@@ -97,11 +113,11 @@ def test_screening_usecase_persists_date_result(tmp_path):
     repository = ScreeningResultRepository(tmp_path)
     notifications = []
     result = ScreeningUseCase(
-        RankingStub(), RegulationStub(), ExchangeStub(), repository, notifications.append
+        RankingStub(), BoardStub(), RegulationStub(), ExchangeStub(), repository, notifications.append
     ).execute()
     assert result.symbols == ["7203", "8306"]
     assert notifications == [
-        "スクリーニング完了: 2銘柄（候補2件中、規制0件・地方取引所0件を除外）\n"
+        "スクリーニング完了: 2銘柄（候補2件中、高額(300円超)0件・規制0件・地方取引所0件を除外）\n"
         "上位: 7203(値上がり率+100%) / 8306(値上がり率+90%)"
     ]
     saved_result = repository.load_latest()

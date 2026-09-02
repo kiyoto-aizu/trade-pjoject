@@ -192,6 +192,22 @@ def merge_ranking_candidates(turnover_ranking, price_gain_ranking):
 # 規制・制限チェック
 # ================================================================================
 
+def exclude_by_price_ceiling(candidates, prices, max_price):
+    """株価が上限を超える、または取得できない銘柄を除外します。"""
+    remaining = []
+    excluded_by_price_count = 0
+    for symbol in candidates:
+        price = prices.get(symbol)
+        if price is None or price > max_price:
+            excluded_by_price_count += 1
+        else:
+            remaining.append(symbol)
+    return ExclusionResult(
+        remaining=remaining,
+        excluded_by_price_count=excluded_by_price_count,
+    )
+
+
 def exclude_by_regulation(candidates, regulations):
     """
     規制対象外の銘柄のみをフィルタリングして返します。

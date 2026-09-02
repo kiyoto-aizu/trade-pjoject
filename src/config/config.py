@@ -135,6 +135,9 @@ API_REQUEST_INTERVAL_SECONDS = float(os.getenv("API_REQUEST_INTERVAL_SECONDS", "
 # 取引に利用可能な運用資本
 OPERATING_CAPITAL = float(os.getenv("OPERATING_CAPITAL", "1000000"))
 
+# スクリーニング対象とする1株あたりの株価上限
+MAX_SHARE_PRICE = float(os.getenv("MAX_SHARE_PRICE", "300"))
+
 # ================================================================================
 # 注文履歴・市場設定
 # ================================================================================

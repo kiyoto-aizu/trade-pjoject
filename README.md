@@ -116,6 +116,7 @@ MAX_ORDER_COUNT_PER_DAY=10
 DAILY_LOSS_LIMIT_RATIO=0.02
 OPERATING_CAPITAL=1000000
 API_SOFT_LIMIT=1000000
+MAX_SHARE_PRICE=300
 ```
 
 `IS_DEMO=false` の場合でも、実注文を有効にするには `ENABLE_LIVE_ORDERING=true` を明示的に設定する必要があります。
@@ -130,6 +131,30 @@ API_SOFT_LIMIT=1000000
 python -m src.entrypoints.run_screening
 ```
 
+#### Windowsでの計画実行
+
+kabuステーションを起動・ログインしたWindowsユーザーで、平日15:35にスクリーニングを実行するタスクを登録します。初回のみ、PowerShellから次を実行してください。
+
+```powershell
+.\scripts\register_screening_task.ps1
+```
+
+登録内容の確認と手動起動は次のとおりです。
+
+```powershell
+Get-ScheduledTask -TaskName trade-pjoject-screening
+Start-ScheduledTask -TaskName trade-pjoject-screening
+```
+
+タスクはログオン中にのみ実行されます。実行時刻の変更と削除は次のコマンドで行えます。
+
+```powershell
+.\scripts\register_screening_task.ps1 -At '15:40'
+.\scripts\register_screening_task.ps1 -Remove
+```
+
+実行時にはkabuステーションが起動済みで、`.env` に本番用の `IS_DEMO=false`、`API_PASSWORD_PRD`、`API_PORT_PRD` が設定されている必要があります。休場日またはランキング未取得時は、スクリーニング処理がエラー終了し、推測値で候補を作成しません。
+
 ### 2. フィルタリング
 
 営業開始後の9:00頃に実行し、出来高急騰率の高い銘柄へ絞り込みます。
@@ -137,6 +162,30 @@ python -m src.entrypoints.run_screening
 ```powershell
 python -m src.entrypoints.run_filtering
 ```
+
+#### Windowsでの計画実行
+
+kabuステーションを起動・ログインしたWindowsユーザーで、平日9:00にフィルタリングを実行するタスクを登録します。初回のみ、PowerShellから次を実行してください。
+
+```powershell
+.\scripts\register_filtering_task.ps1
+```
+
+登録内容の確認と手動起動は次のとおりです。
+
+```powershell
+Get-ScheduledTask -TaskName trade-pjoject-filtering
+Start-ScheduledTask -TaskName trade-pjoject-filtering
+```
+
+実行時刻の変更と削除は次のコマンドで行えます。
+
+```powershell
+.\scripts\register_filtering_task.ps1 -At '09:05'
+.\scripts\register_filtering_task.ps1 -Remove
+```
+
+タスクはログオン中にのみ実行されます。前営業日のスクリーニング結果がない場合は、フィルタリング結果を0件として保存・通知します。
 
 ### 3. 取引
 

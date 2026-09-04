@@ -77,12 +77,22 @@ def test_has_holdings_checks_sell_side_positions():
 
 
 def test_trading_bot_uses_paper_executor_by_default(monkeypatch):
+    monkeypatch.setattr(config, 'TRADING_MODE', 'paper')
     monkeypatch.setattr(config, 'IS_DEMO', True)
     monkeypatch.setattr(config, 'ENABLE_LIVE_ORDERING', False)
 
     bot = TradingBot(token='dummy')
 
     assert isinstance(bot.order_sender, PaperOrderExecutor)
+
+
+def test_trading_bot_rejects_live_mode_without_explicit_production_settings(monkeypatch):
+    monkeypatch.setattr(config, 'TRADING_MODE', 'live')
+    monkeypatch.setattr(config, 'IS_DEMO', True)
+    monkeypatch.setattr(config, 'ENABLE_LIVE_ORDERING', True)
+
+    with pytest.raises(ValueError, match='ライブ注文には'):
+        TradingBot(token='dummy')
 
 
 def test_trading_use_case_places_and_records_buy_order_without_live_api(monkeypatch, tmp_path):

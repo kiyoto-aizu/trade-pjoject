@@ -32,11 +32,15 @@ class TradingBot(TradingUseCase):
         order_history_path = Path(__file__).resolve().parents[2] / config.ORDER_HISTORY_FILE
         paper_state_path = Path(__file__).resolve().parents[2] / config.PAPER_ACCOUNT_STATE_FILE
         order_sender = None
-        if config.IS_DEMO or not config.ENABLE_LIVE_ORDERING:
+        if config.TRADING_MODE == 'paper':
             order_sender = PaperOrderExecutor(
                 prices={},
                 cash=config.OPERATING_CAPITAL,
                 state_path=paper_state_path,
+            )
+        elif config.TRADING_MODE != 'live' or config.IS_DEMO or not config.ENABLE_LIVE_ORDERING:
+            raise ValueError(
+                'ライブ注文にはTRADING_MODE=live、IS_DEMO=false、ENABLE_LIVE_ORDERING=trueが必要です。'
             )
         # インフラストラクチャレイヤーのデフォルト実装を注入
         super().__init__(

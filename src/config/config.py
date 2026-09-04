@@ -75,6 +75,9 @@ def _load_required_env(name: str, *, allow_missing: bool | None = None) -> str:
 _IS_DEMO_ENV = os.getenv("IS_DEMO", "true").strip().lower()
 IS_DEMO = _IS_DEMO_ENV in ("1", "true", "yes")  # True: デモモード、False: 本番モード
 ENABLE_LIVE_ORDERING = os.getenv("ENABLE_LIVE_ORDERING", "false").strip().lower() in ("1", "true", "yes")  # 実取引を許可
+TRADING_MODE = os.getenv("TRADING_MODE", "paper").strip().lower()
+if TRADING_MODE not in {"paper", "live"}:
+    raise ValueError("TRADING_MODEはpaperまたはliveを指定してください。")
 _ALLOW_MISSING_ENV = _is_test_runtime()  # テスト中は環境変数がなくても許可
 
 
@@ -138,6 +141,8 @@ ORDER_HISTORY_FILE = "order_history.json"
 PAPER_ACCOUNT_STATE_FILE = "paper_account_state.json"
 
 # 市場クローズ時刻（日本標準時）
+MARKET_OPEN_HOUR = 9
+MARKET_OPEN_MINUTE = 0
 MARKET_CLOSE_HOUR = 15
 MARKET_CLOSE_MINUTE = 30
 

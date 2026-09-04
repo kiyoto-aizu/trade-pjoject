@@ -6,11 +6,21 @@
 """
 import logging
 from logging.handlers import RotatingFileHandler
+from datetime import datetime, time
 from pathlib import Path
 
 from src.config import config
 from src.trading.trading import TradingBot
 from src.infrastructure.kabu.get_token import get_api_token
+
+
+def is_trading_session(now: datetime) -> bool:
+    """平日の市場時間内かを判定します。"""
+    if now.weekday() >= 5:
+        return False
+    session_start = time(config.MARKET_OPEN_HOUR, config.MARKET_OPEN_MINUTE)
+    session_end = time(config.MARKET_CLOSE_HOUR, config.MARKET_CLOSE_MINUTE)
+    return session_start <= now.time() < session_end
 
 
 def configure_logging() -> None:
@@ -35,7 +45,7 @@ def configure_logging() -> None:
     logging.root.addHandler(file_handler)
 
 
-def main() -> None:
+def main(now_provider=None) -> None:
     """
     取引ボットを起動します。
     
@@ -45,6 +55,17 @@ def main() -> None:
     3. TradingBotを起動し、run()メソッドを実行
     """
     configure_logging()
+
+    now = (now_provider or datetime.now)()
+    if not is_trading_session(now):
+        logging.getLogger(__name__).info('市場時間外または休場日のため、取引を開始しません。')
+        return
+
+    filtering_repository = FilteringResultRepository(Path(__file__).resolve().parents[2] / 'data' / 'filtering')
+    filtering_result = filtering_repository.load_for_date(now.date())
+    if not filtering_result or not filtering_result.symbols:
+        logging.getLogger(__name__).info('当日のフィルタ結果がないため、取引を開始しません。')
+        return
 
     token = get_api_token()
     if not token:

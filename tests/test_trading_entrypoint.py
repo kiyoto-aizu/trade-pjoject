@@ -23,3 +23,28 @@ def test_main_does_not_request_token_outside_trading_session(monkeypatch):
     )
 
     run_trading.main(now_provider=lambda: datetime(2026, 9, 5, 10, 0))
+
+
+def test_check_market_data_sources_accepts_complete_market_data(monkeypatch):
+    monkeypatch.setattr(run_trading, 'get_yahoo_5d_closes', lambda symbol: [100.0] * 5)
+    monkeypatch.setattr(run_trading, 'get_current_board', lambda token, symbol: {'current_price': 101.0})
+
+    assert run_trading.check_market_data_sources('dummy', ['7203', '8306'])
+
+
+def test_check_market_data_sources_rejects_incomplete_market_data(monkeypatch):
+    monkeypatch.setattr(run_trading, 'get_yahoo_5d_closes', lambda symbol: [100.0] * 4)
+    monkeypatch.setattr(
+        run_trading,
+        'get_current_board',
+        lambda token, symbol: (_ for _ in ()).throw(AssertionError('board should not be called')),
+    )
+
+    assert not run_trading.check_market_data_sources('dummy', ['7203'])
+
+
+def test_check_market_data_sources_rejects_missing_board_price(monkeypatch):
+    monkeypatch.setattr(run_trading, 'get_yahoo_5d_closes', lambda symbol: [100.0] * 5)
+    monkeypatch.setattr(run_trading, 'get_current_board', lambda token, symbol: {})
+
+    assert not run_trading.check_market_data_sources('dummy', ['7203'])

@@ -5,9 +5,27 @@ API通信の共通化・例外処理を一元管理します。
 ================================================================================
 """
 import logging
+import threading
+import time
 import requests
 
+from src.config import config
+
 logger = logging.getLogger(__name__)
+_request_lock = threading.Lock()
+_last_request_at = None
+
+
+def _wait_for_request_slot() -> None:
+    global _last_request_at
+    with _request_lock:
+        now = time.monotonic()
+        if _last_request_at is not None:
+            elapsed = now - _last_request_at
+            wait_seconds = config.API_REQUEST_INTERVAL_SECONDS - elapsed
+            if wait_seconds > 0:
+                time.sleep(wait_seconds)
+        _last_request_at = time.monotonic()
 
 
 def send_post(url, data=None, headers=None, timeout=10):
@@ -28,6 +46,7 @@ def send_post(url, data=None, headers=None, timeout=10):
         - エラーが発生した場合は Noneを返す
     """
     try:
+        _wait_for_request_slot()
         response = requests.post(url, json=data, headers=headers, timeout=timeout)
         response.raise_for_status()
         return response.json()
@@ -60,6 +79,7 @@ def send_get(url, params=None, headers=None, timeout=10):
         - エラーが発生した場合は Noneを返す
     """
     try:
+        _wait_for_request_slot()
         response = requests.get(url, params=params, headers=headers, timeout=timeout)
         response.raise_for_status()
         return response.json()

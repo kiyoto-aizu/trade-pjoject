@@ -12,6 +12,9 @@ from pathlib import Path
 from src.config import config
 from src.trading.trading import TradingBot
 from src.infrastructure.kabu.get_token import get_api_token
+from src.infrastructure.kabu.get_board import get_current_board
+from src.infrastructure.market_data.get_5d_closes import get_yahoo_5d_closes
+from src.infrastructure.persistence.filtering_result_repository import FilteringResultRepository
 
 
 def is_trading_session(now: datetime) -> bool:
@@ -21,6 +24,25 @@ def is_trading_session(now: datetime) -> bool:
     session_start = time(config.MARKET_OPEN_HOUR, config.MARKET_OPEN_MINUTE)
     session_end = time(config.MARKET_CLOSE_HOUR, config.MARKET_CLOSE_MINUTE)
     return session_start <= now.time() < session_end
+
+
+def collect_market_data_sources(token: str, symbols: list[str]) -> dict[str, dict] | None:
+    """対象銘柄の過去終値と現在の板価格を取得し、初回判定用に返します。"""
+    market_data = {}
+    for symbol in symbols:
+        closes = get_yahoo_5d_closes(symbol)
+        if not closes or len(closes) < 5:
+            return None
+        board = get_current_board(token, symbol)
+        if not board or board.get('current_price') is None:
+            return None
+        market_data[symbol] = {'closes': closes, 'board': board}
+    return market_data
+
+
+def check_market_data_sources(token: str, symbols: list[str]) -> bool:
+    """対象銘柄の過去終値と現在の板価格を取得できるか確認します。"""
+    return collect_market_data_sources(token, symbols) is not None
 
 
 def configure_logging() -> None:
@@ -71,8 +93,13 @@ def main(now_provider=None) -> None:
     if not token:
         raise SystemExit('トークン取得に失敗しました。')
 
+    market_data = collect_market_data_sources(token, filtering_result.symbols)
+    if market_data is None:
+        logging.getLogger(__name__).error('市場データまたは板情報を取得できないため、取引を開始しません。')
+        return
+
     bot = TradingBot(token)
-    bot.run()
+    bot.run(preflight_market_data=market_data)
 
 
 if __name__ == '__main__':

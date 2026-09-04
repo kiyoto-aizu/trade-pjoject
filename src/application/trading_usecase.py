@@ -194,7 +194,7 @@ class TradingUseCase:
     # メイン取引ループ
     # ================================================================================
 
-    def run(self, top_symbols_path: Path | None = None, now_provider=None, sleep=None) -> None:
+    def run(self, top_symbols_path: Path | None = None, now_provider=None, sleep=None, preflight_market_data=None) -> None:
         """
         取引ボットを起動します。市場終了まで銘柄を監視し、売買シグナルで自動注文を実行します。
         
@@ -233,15 +233,23 @@ class TradingUseCase:
 
         kill_switch_triggered = False
         # 市場終了時刻まで取引ループを実行
+        use_preflight_market_data = bool(preflight_market_data)
         while not kill_switch_triggered and not is_market_closed(now_provider().time(), config.MARKET_CLOSE_HOUR, config.MARKET_CLOSE_MINUTE):
             for symbol in symbols:
                 # 過去5日の終値を取得
-                closes = self.market_data_client.get_yahoo_5d_closes(symbol) if self.market_data_client else get_yahoo_5d_closes(symbol)
+                snapshot = preflight_market_data.get(symbol) if use_preflight_market_data else None
+                closes = snapshot['closes'] if snapshot else (
+                    self.market_data_client.get_yahoo_5d_closes(symbol)
+                    if self.market_data_client else get_yahoo_5d_closes(symbol)
+                )
                 limit = calculate_price_limit(closes)
                 if limit is None:
                     continue
                 # リアルタイム株価を取得
-                board = self.board_client.get_current_board(self.token, symbol) if self.board_client else get_current_board(self.token, symbol)
+                board = snapshot['board'] if snapshot else (
+                    self.board_client.get_current_board(self.token, symbol)
+                    if self.board_client else get_current_board(self.token, symbol)
+                )
                 if not board or board.get('current_price') is None:
                     continue
                 # 売買シグナルを生成
@@ -277,6 +285,7 @@ class TradingUseCase:
                 order_result = self.order_sender.place_market_order(self.token, symbol, signal.side.value) if self.order_sender else place_market_order(self.token, symbol, signal.side.value)
                 if order_result and order_result.get('Result') == 0:
                     self._register_order(signal, limit, order_result)
+            use_preflight_market_data = False
             sleep(config.LOOP_INTERVAL)
 
         # 最終的な評価損益を取得して報告

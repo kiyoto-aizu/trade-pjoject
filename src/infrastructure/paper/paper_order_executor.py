@@ -3,8 +3,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
+from pathlib import Path
 
 from src.config import config
+from src.infrastructure.persistence.storage import read_json, write_json
 
 
 @dataclass
@@ -16,7 +18,30 @@ class PaperOrderExecutor:
     order_qty: int = field(default_factory=lambda: config.DEFAULT_ORDER_QTY)
     holdings: Dict[str, int] = field(default_factory=dict)
     orders: List[dict] = field(default_factory=list)
+    state_path: Optional[Path] = None
     _next_order_id: int = 1
+
+    def __post_init__(self) -> None:
+        if self.state_path is None:
+            return
+        state = read_json(self.state_path)
+        if not isinstance(state, dict):
+            return
+        self.cash = float(state.get('cash', self.cash))
+        self.holdings = {
+            str(symbol): int(quantity)
+            for symbol, quantity in state.get('holdings', {}).items()
+            if int(quantity) > 0
+        }
+        self._next_order_id = max(1, int(state.get('next_order_id', self._next_order_id)))
+
+    def _save_state(self) -> None:
+        if self.state_path is not None:
+            write_json(self.state_path, {
+                'cash': self.cash,
+                'holdings': self.holdings,
+                'next_order_id': self._next_order_id,
+            })
 
     def set_price(self, symbol: str, price: float) -> None:
         self.prices[symbol] = price
@@ -59,4 +84,21 @@ class PaperOrderExecutor:
             "Price": price,
         }
         self.orders.append(order)
+        self._save_state()
         return order
+
+    def get_wallet_cash(self, token: str) -> dict:
+        del token
+        return {'StockAccountWallet': self.cash}
+
+    def get_positions(self, token: str) -> list[dict]:
+        del token
+        return [
+            {
+                'Symbol': symbol,
+                'Side': config.OrderSide.SELL.value,
+                'HoldQty': quantity,
+                'ProfitLoss': 0,
+            }
+            for symbol, quantity in self.holdings.items()
+        ]

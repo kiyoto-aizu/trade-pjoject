@@ -125,11 +125,15 @@ class TradingUseCase:
         # テスト用の注入クライアント、またはデフォルトのインフラストラクチャ実装を使用
         if self.wallet_client:
             wallet = self.wallet_client.get_wallet_cash(self.token)
+        elif self.order_sender and hasattr(self.order_sender, 'get_wallet_cash'):
+            wallet = self.order_sender.get_wallet_cash(self.token)
         else:
             wallet = get_wallet_cash(self.token)
 
         if self.positions_client:
             positions = self.positions_client.get_positions(self.token) or []
+        elif self.order_sender and hasattr(self.order_sender, 'get_positions'):
+            positions = self.order_sender.get_positions(self.token) or []
         else:
             positions = get_positions(self.token) or []
         wallet_amount = None
@@ -247,7 +251,7 @@ class TradingUseCase:
                 # 口座状態を確認
                 wallet_amount, positions = self._load_account_state()
                 self.last_positions = positions
-                api_limit = get_api_soft_limit(self.token)
+                api_limit = config.API_SOFT_LIMIT if config.IS_DEMO else get_api_soft_limit(self.token)
                 if api_limit is None:
                     logger.warning("API発注上限を取得できないため、発注を停止しました。")
                     self.kill_switch_triggered = True
@@ -278,6 +282,8 @@ class TradingUseCase:
         # 最終的な評価損益を取得して報告
         if self.positions_client:
             self.last_positions = self.positions_client.get_positions(self.token) or []
+        elif self.order_sender and hasattr(self.order_sender, 'get_positions'):
+            self.last_positions = self.order_sender.get_positions(self.token) or []
         else:
             self.last_positions = get_positions(self.token) or []
         self._send_end_of_day_report()

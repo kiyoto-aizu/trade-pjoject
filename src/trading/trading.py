@@ -30,9 +30,14 @@ class TradingBot(TradingUseCase):
             token: Kabu.com Station API認証トークン
         """
         order_history_path = Path(__file__).resolve().parents[2] / config.ORDER_HISTORY_FILE
+        paper_state_path = Path(__file__).resolve().parents[2] / config.PAPER_ACCOUNT_STATE_FILE
         order_sender = None
         if config.IS_DEMO or not config.ENABLE_LIVE_ORDERING:
-            order_sender = PaperOrderExecutor(prices={}, cash=config.OPERATING_CAPITAL)
+            order_sender = PaperOrderExecutor(
+                prices={},
+                cash=config.OPERATING_CAPITAL,
+                state_path=paper_state_path,
+            )
         # インフラストラクチャレイヤーのデフォルト実装を注入
         super().__init__(
             token=token,

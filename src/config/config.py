@@ -135,6 +135,7 @@ MAX_SHARE_PRICE = float(os.getenv("MAX_SHARE_PRICE", "300"))
 
 # 注文履歴を保存するファイル
 ORDER_HISTORY_FILE = "order_history.json"
+PAPER_ACCOUNT_STATE_FILE = "paper_account_state.json"
 
 # 市場クローズ時刻（日本標準時）
 MARKET_CLOSE_HOUR = 15

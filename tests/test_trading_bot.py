@@ -86,6 +86,7 @@ def test_trading_bot_uses_paper_executor_by_default(monkeypatch):
 
 
 def test_trading_use_case_places_and_records_buy_order_without_live_api(monkeypatch, tmp_path):
+    monkeypatch.setattr(config, 'IS_DEMO', True)
     symbols_path = tmp_path / 'top_symbols.json'
     symbols_path.write_text(json.dumps(['7203']), encoding='utf-8')
     history_path = tmp_path / 'order_history.json'
@@ -113,7 +114,11 @@ def test_trading_use_case_places_and_records_buy_order_without_live_api(monkeypa
             return {'Result': 0, 'OrderId': 'paper-order-1'}
 
     current_times = iter([datetime(2026, 9, 4, 10, 0), datetime(2026, 9, 4, 15, 30)])
-    monkeypatch.setattr('src.application.trading_usecase.get_api_soft_limit', lambda token: 100_000.0)
+    monkeypatch.setattr(config, 'API_SOFT_LIMIT', 100_000.0)
+    monkeypatch.setattr(
+        'src.application.trading_usecase.get_api_soft_limit',
+        lambda token: (_ for _ in ()).throw(AssertionError('live soft-limit API was called')),
+    )
 
     use_case = TradingUseCase(
         token='dummy',

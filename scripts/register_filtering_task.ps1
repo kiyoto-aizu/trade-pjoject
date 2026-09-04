@@ -1,7 +1,7 @@
 [CmdletBinding(SupportsShouldProcess)]
 param(
     [string]$TaskName = 'trade-pjoject-filtering',
-    [datetime]$At = [datetime]'09:00',
+    [datetime]$At = [datetime]'09:30',
     [switch]$Remove
 )
 

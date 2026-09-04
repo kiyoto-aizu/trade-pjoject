@@ -157,7 +157,7 @@ Start-ScheduledTask -TaskName trade-pjoject-screening
 
 ### 2. フィルタリング
 
-営業開始後の9:00頃に実行し、出来高急騰率の高い銘柄へ絞り込みます。
+営業開始後の9:30頃に実行し、出来高急騰率の高い銘柄へ絞り込みます。
 
 ```powershell
 python -m src.entrypoints.run_filtering
@@ -165,7 +165,7 @@ python -m src.entrypoints.run_filtering
 
 #### Windowsでの計画実行
 
-kabuステーションを起動・ログインしたWindowsユーザーで、平日9:00にフィルタリングを実行するタスクを登録します。初回のみ、PowerShellから次を実行してください。
+kabuステーションを起動・ログインしたWindowsユーザーで、平日9:30にフィルタリングを実行するタスクを登録します。初回のみ、PowerShellから次を実行してください。
 
 ```powershell
 .\scripts\register_filtering_task.ps1
@@ -181,7 +181,7 @@ Start-ScheduledTask -TaskName trade-pjoject-filtering
 実行時刻の変更と削除は次のコマンドで行えます。
 
 ```powershell
-.\scripts\register_filtering_task.ps1 -At '09:05'
+.\scripts\register_filtering_task.ps1 -At '09:35'
 .\scripts\register_filtering_task.ps1 -Remove
 ```
 
@@ -201,10 +201,10 @@ python -m src.entrypoints.run_trading
 前日15:35頃
   スクリーニング -> 候補銘柄を保存
        |
-当日9:00頃
+当日9:30頃
   フィルタリング -> 出来高急騰銘柄を保存
        |
-当日9:00-15:30
+当日9:35-15:30
   価格監視 -> シグナル判定 -> 安全性確認 -> 注文
        |
 15:30

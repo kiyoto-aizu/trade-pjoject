@@ -269,7 +269,7 @@ class TradingUseCase:
                     continue
                 # 注文を実行（成否はResultコードで判定。失敗時はNoneが返る）
                 order_result = self.order_sender.place_market_order(self.token, symbol, signal.side.value) if self.order_sender else place_market_order(self.token, symbol, signal.side.value)
-                if order_result:
+                if order_result and order_result.get('Result') == 0:
                     self._register_order(signal, limit, order_result)
             sleep(config.LOOP_INTERVAL)
 

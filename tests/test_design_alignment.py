@@ -15,8 +15,8 @@ from pathlib import Path
 class RankingStub:
     def get_ranking(self, ranking_type):
         return [
-            RankingEntry("7203", 1, 100.0, ranking_type),
-            RankingEntry("8306", 2, 90.0, ranking_type),
+            RankingEntry("7203", 1, 100.0, ranking_type, 100.0),
+            RankingEntry("8306", 2, 90.0, ranking_type, 100.0),
         ]
 
 
@@ -105,19 +105,19 @@ def test_ranking_repository_uses_api_rank_and_type_specific_value(monkeypatch):
     price_gain = repository.get_ranking(RankingType.PRICE_GAIN)[0]
     turnover = repository.get_ranking(RankingType.TURNOVER)[0]
 
-    assert (price_gain.rank, price_gain.value) == (8, 3.25)
-    assert (turnover.rank, turnover.value) == (4, 125000.5)
+    assert (price_gain.rank, price_gain.value, price_gain.current_price) == (8, 3.25, 2500)
+    assert (turnover.rank, turnover.value, turnover.current_price) == (4, 125000.5, 1000)
 
 
 def test_screening_usecase_persists_date_result(tmp_path):
     repository = ScreeningResultRepository(tmp_path)
     notifications = []
     result = ScreeningUseCase(
-        RankingStub(), BoardStub(), RegulationStub(), ExchangeStub(), repository, notifications.append
+        RankingStub(), RegulationStub(), ExchangeStub(), repository, notifications.append
     ).execute()
     assert result.symbols == ["7203", "8306"]
     assert notifications == [
-        "スクリーニング完了: 2銘柄（候補2件中、高額(300円超)0件・規制0件・地方取引所0件を除外）\n"
+        f"スクリーニング完了: 2銘柄（候補2件中、高額({config.MAX_SHARE_PRICE:g}円超)0件・規制0件・地方取引所0件を除外）\n"
         "上位: 7203(値上がり率+100%) / 8306(値上がり率+90%)"
     ]
     saved_result = repository.load_latest()
@@ -138,10 +138,16 @@ def test_filtering_usecase_reads_previous_screening_result(tmp_path):
         previous_business_day.isoformat(), [str(index) for index in range(12)], datetime.now().isoformat()
     ))
     result_repository = FilteringResultRepository(tmp_path / "filtering")
+    notifications = []
     result = FilteringUseCase(
-        screening_repository, BoardStub(), VolumeStub(), result_repository
+        screening_repository, BoardStub(), VolumeStub(), result_repository, notifications.append
     ).execute()
     assert len(result.symbols) == 10
+    assert notifications == [
+        "フィルタリング完了: 10銘柄（スクリーニング12件中）\n"
+        "上位: 0(20日平均の2.0倍) / 1(20日平均の2.0倍) / "
+        "10(20日平均の2.0倍) / 11(20日平均の2.0倍) / 2(20日平均の2.0倍)"
+    ]
     assert result_repository.load_latest().symbols == result.symbols
 
 

@@ -30,20 +30,18 @@ class ScreeningUseCase:
     取引対象銘柄のリストを生成します。
     """
     
-    def __init__(self, ranking_repository, board_repository, regulation_repository, exchange_repository, result_repository, notifier=None):
+    def __init__(self, ranking_repository, regulation_repository, exchange_repository, result_repository, notifier=None):
         """
         ScreeningUseCaseを初期化します。
         
         Args:
             ranking_repository: ランキング情報を取得するリポジトリ
-            board_repository: 株価情報を取得するリポジトリ
             regulation_repository: 規制情報を取得するリポジトリ
             exchange_repository: 取引所情報を取得するリポジトリ
             result_repository: スクリーニング結果を保存するリポジトリ
             notifier: 通知機能（オプション）
         """
         self.ranking_repository = ranking_repository
-        self.board_repository = board_repository
         self.regulation_repository = regulation_repository
         self.exchange_repository = exchange_repository
         self.result_repository = result_repository
@@ -75,10 +73,10 @@ class ScreeningUseCase:
         candidates = merge_ranking_candidates(turnover, price_gain)
         turnover_by_symbol = {entry.symbol: entry for entry in turnover}
         price_gain_by_symbol = {entry.symbol: entry for entry in price_gain}
-        prices = {}
-        for symbol in candidates:
-            prices[symbol] = self.board_repository.get_current_price(symbol)
-            sleep(config.API_REQUEST_INTERVAL_SECONDS)
+        prices = {
+            symbol: (turnover_by_symbol.get(symbol) or price_gain_by_symbol.get(symbol)).current_price
+            for symbol in candidates
+        }
         price_exclusion_result = exclude_by_price_ceiling(
             candidates, prices, config.MAX_SHARE_PRICE
         )

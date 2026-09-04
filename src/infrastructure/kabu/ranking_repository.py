@@ -24,6 +24,7 @@ class RankingRepository:
                 rank=int(item.get("No", index + 1)),
                 value=float(item.get(value_field, 0) or 0),
                 ranking_type=ranking_type,
+                current_price=float(item["CurrentPrice"]) if item.get("CurrentPrice") is not None else None,
             )
             for index, item in enumerate(entries)
             if item.get("Symbol")

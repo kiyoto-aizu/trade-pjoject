@@ -160,6 +160,7 @@ class RankingEntry:
     rank: int
     value: float
     ranking_type: RankingType
+    current_price: float | None = None
 
 
 # ================================================================================

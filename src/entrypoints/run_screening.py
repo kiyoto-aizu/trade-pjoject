@@ -11,7 +11,6 @@ from pathlib import Path
 from src.config import config
 from src.screening.screening import run as screening_run
 from src.infrastructure.kabu.get_token import get_api_token
-from src.infrastructure.kabu.board_repository import BoardRepository
 from src.infrastructure.kabu.ranking_repository import RankingRepository
 from src.infrastructure.kabu.regulation_repository import RegulationRepository
 from src.infrastructure.kabu.primaryexchange_repository import PrimaryExchangeRepository
@@ -58,7 +57,6 @@ def main() -> None:
     data_dir = Path(__file__).resolve().parents[2] / 'data' / 'screening'
     usecase = ScreeningUseCase(
         RankingRepository(token),
-        BoardRepository(token),
         RegulationRepository(token),
         PrimaryExchangeRepository(token),
         ScreeningResultRepository(data_dir),

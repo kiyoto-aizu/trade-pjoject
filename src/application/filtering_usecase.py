@@ -6,9 +6,12 @@
 ================================================================================
 """
 from datetime import datetime, timedelta
+import logging
 
 from src.domain.models import FilteringResult, ScoredCandidate
 from src.domain.rules import calculate_volume_surge_ratio, select_top_n_by_surge_ratio
+
+logger = logging.getLogger(__name__)
 
 
 class FilteringUseCase:
@@ -70,6 +73,22 @@ class FilteringUseCase:
         symbols = select_top_n_by_surge_ratio(scored, 10)
         result = FilteringResult(today.isoformat(), symbols, datetime.now().isoformat())
         self.result_repository.save(result)
-        if not screening and self.notifier:
-            self.notifier("前日のスクリーニング結果がないため、フィルタ結果は0件です")
+        if self.notifier:
+            self._notify_completion(screening, symbols, scored)
         return result
+
+    def _notify_completion(self, screening, symbols, scored) -> None:
+        if not screening:
+            message = "前日のスクリーニング結果がないため、フィルタ結果は0件です"
+        else:
+            ratios_by_symbol = {candidate.symbol: candidate.surge_ratio for candidate in scored}
+            top_symbols = " / ".join(
+                f"{symbol}(20日平均の{ratios_by_symbol[symbol]:.1f}倍)" for symbol in symbols[:5]
+            )
+            message = f"フィルタリング完了: {len(symbols)}銘柄（スクリーニング{len(screening.symbols)}件中）"
+            if top_symbols:
+                message += f"\n上位: {top_symbols}"
+        try:
+            self.notifier(message)
+        except Exception:
+            logger.exception("フィルタリング完了通知に失敗しました。")

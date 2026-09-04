@@ -8,8 +8,9 @@
 
 import os
 import sys
-from enum import Enum
 from pathlib import Path
+
+from src.domain.enums import OrderSide  # noqa: F401  # config.OrderSide として再エクスポート（重複定義を避ける）
 
 # .envファイルから環境変数を読み込む（利用可能な場合）
 try:
@@ -36,16 +37,6 @@ def _is_test_runtime() -> bool:
     pytestがアクティブまたはALLOW_MISSING_ENVが明示的に設定されている場合、Trueを返す。
     """
     return "pytest" in sys.modules or os.getenv("ALLOW_MISSING_ENV", "").strip().lower() in {"1", "true", "yes", "on"}
-
-
-# ================================================================================
-# 列挙型
-# ================================================================================
-
-class OrderSide(str, Enum):
-    """売買操作で使用される注文タイプの列挙型。"""
-    SELL = "1"
-    BUY = "2"
 
 
 # ================================================================================

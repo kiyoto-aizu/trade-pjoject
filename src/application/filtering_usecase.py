@@ -69,7 +69,12 @@ class FilteringUseCase:
                 today_volume = board.get("trading_volume")
                 if today_volume is None:
                     continue
-                scored.append(ScoredCandidate(symbol, float(today_volume), average, calculate_volume_surge_ratio(float(today_volume), average)))
+                try:
+                    surge_ratio = calculate_volume_surge_ratio(float(today_volume), average)
+                except ValueError:
+                    logger.warning("平均出来高が0以下のため、%s をスキップします。", symbol)
+                    continue
+                scored.append(ScoredCandidate(symbol, float(today_volume), average, surge_ratio))
         symbols = select_top_n_by_surge_ratio(scored, 10)
         result = FilteringResult(today.isoformat(), symbols, datetime.now().isoformat())
         self.result_repository.save(result)

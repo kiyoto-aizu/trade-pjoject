@@ -14,7 +14,7 @@ from typing import List, Optional
 
 from src.config import config
 from src.domain.models import OrderHistoryEntry, PriceLimit, TradeSignal
-from src.domain.rules import calculate_price_limit, check_kill_switch, is_safe_to_order
+from src.domain.rules import calculate_price_limit, check_kill_switch, is_market_closed, is_safe_to_order
 from src.infrastructure.kabu.get_board import get_current_board
 from src.infrastructure.kabu.get_positions import get_positions
 from src.infrastructure.kabu.get_wallet import get_wallet_cash
@@ -78,6 +78,7 @@ class TradingUseCase:
         self.notifier = notifier or send_line_notify
         self.last_positions = []
         self.kill_switch_triggered = False
+        self.api_soft_limit: Optional[float] = None
 
     # ================================================================================
     # 注文履歴の管理
@@ -98,14 +99,16 @@ class TradingUseCase:
         """現在の注文履歴をファイルに保存します。"""
         write_json(self.order_history_path, [entry.to_dict() for entry in self.order_history])
 
-    def _register_order(self, signal: TradeSignal) -> None:
+    def _register_order(self, signal: TradeSignal, limit: PriceLimit, order_response: Optional[dict]) -> None:
         """
         実行した注文を履歴に記録します。
         
         Args:
             signal: 実行した取引シグナル
+            limit: 発注根拠となった価格基準値
+            order_response: kabu APIの発注応答（監査ログ用）
         """
-        self.order_history.append(signal.to_order_history_entry())
+        self.order_history.append(signal.to_order_history_entry(limit, order_response))
         self._save_order_history()
 
     # ================================================================================
@@ -226,7 +229,7 @@ class TradingUseCase:
 
         kill_switch_triggered = False
         # 市場終了時刻まで取引ループを実行
-        while not kill_switch_triggered and (now_provider().hour < config.MARKET_CLOSE_HOUR or (now_provider().hour == config.MARKET_CLOSE_HOUR and now_provider().minute < config.MARKET_CLOSE_MINUTE)):
+        while not kill_switch_triggered and not is_market_closed(now_provider().time(), config.MARKET_CLOSE_HOUR, config.MARKET_CLOSE_MINUTE):
             for symbol in symbols:
                 # 過去5日の終値を取得
                 closes = self.market_data_client.get_yahoo_5d_closes(symbol) if self.market_data_client else get_yahoo_5d_closes(symbol)
@@ -250,24 +253,24 @@ class TradingUseCase:
                     self.kill_switch_triggered = True
                     kill_switch_triggered = True
                     break
-                config.API_SOFT_LIMIT = api_limit
+                self.api_soft_limit = api_limit
                 # キルスイッチ判定
                 daily_pnl = sum(float(position.get('ProfitLoss', 0) or 0) for position in positions)
                 daily_orders = sum(
                     1 for entry in self.order_history
                     if entry.timestamp.startswith(now_provider().date().isoformat())
                 )
-                if not check_kill_switch(daily_orders, daily_pnl, config.OPERATING_CAPITAL, config, signal.price * signal.qty):
+                if not check_kill_switch(daily_orders, daily_pnl, config.OPERATING_CAPITAL, config, signal.price * signal.qty, api_soft_limit=self.api_soft_limit):
                     logger.warning("キルスイッチにより発注を停止しました。")
                     kill_switch_triggered = True
                     break
                 # 注文の安全性を確認
                 if not is_safe_to_order(signal, wallet_amount, self._has_holdings(symbol, positions), self.order_history, config.ORDER_LOCK_SECONDS):
                     continue
-                # 注文を実行
+                # 注文を実行（成否はResultコードで判定。失敗時はNoneが返る）
                 order_result = self.order_sender.place_market_order(self.token, symbol, signal.side.value) if self.order_sender else place_market_order(self.token, symbol, signal.side.value)
                 if order_result:
-                    self._register_order(signal)
+                    self._register_order(signal, limit, order_result)
             sleep(config.LOOP_INTERVAL)
 
         # 最終的な評価損益を取得して報告

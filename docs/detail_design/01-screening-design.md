@@ -100,7 +100,8 @@ kabuステーションAPIの `GET /ranking` は「kabuステーションが保�
 | `RankingEntry` | symbol, rank, value, ranking_type, current_price | ①の取得結果・②の判定材料 |
 | `Regulation` | symbol, is_restricted, reason | ②の判定材料 |
 | `ExclusionResult` | remaining(list[str]), excluded_by_price_count, excluded_by_regulation_count, excluded_by_exchange_count | ②`exclude_by_price_ceiling()`・③`exclude_by_regulation()`の出力・⑥通知の除外内訳の元データ |
-| `ScreeningResult` | date, symbols(list[str]), generated_at | ⑤の永続化対象・②の入力（**通知用の順位・値・除外内訳は含めない。永続化モデルは変更しない**） |
+| `ScreeningResult` | date, symbols(list[str]), generated_at, audit_entries(list[`ScreeningAuditEntry`]) | ⑤の永続化対象・②の入力。`audit_entries`は監査目的で追加した実装差分（2026-09-04追記、5節参照）で、全候補のランキング・規制・採用判定情報を保持する |
+| `ScreeningAuditEntry` | symbol, turnover_rank, turnover_value, price_gain_rank, price_gain_value, total_rank, primary_exchange, is_restricted, restriction_reason, selected | 監査ログ用。なぜその銘柄が採用/除外されたかを後から再現するための全候補分の記録 |
 
 `config/settings.py`に以下の設定項目を追加する:
 - `MAX_SHARE_PRICE`（1株あたりの株価上限。コードのフォールバックは300円、現行運用値は1,000円。運用資金の増減に応じて調整できるよう設定値化）
@@ -158,6 +159,7 @@ kabuステーションAPIの `GET /ranking` は「kabuステーションが保�
   - **根拠**: 運用資金100万円を前提に、単元(100株)コストを最大100,000円に抑える。複数銘柄への分散余力を残しつつ、ランキング由来の候補数を確保するため、1,000円を上限に設定
 - 通知内容: 監視も兼ねる方針で確定。1行目「最終件数＋候補件数＋除外内訳（高額/規制/地方取引所）」、2行目「上位3〜5銘柄＋代表値（順位で勝った方のランキング種別と値）」の2行構成（3.5節参照）
 - 永続化モデル(`ScreeningResult`)は変更しない。通知用の詳細情報（順位・値・除外内訳）は`ScreeningUseCase`内で都度組み立てて`Notifier`に渡す
+- **（2026-09-04追記）実装レビューを踏まえ、監査目的で`ScreeningResult.audit_entries`（`ScreeningAuditEntry`のリスト）を例外的に追加した。上記の「永続化モデルは変更しない」方針からの逸脱だが、後から採用判定の根拠を追えるようにするための意図的な差分として本節に記録する**
 
 ## 6. 実行スケジュール（cron設定例）
 

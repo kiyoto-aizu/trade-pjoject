@@ -27,12 +27,20 @@ class OrderHistoryEntry:
         price: 約定価格
         qty: 注文数量
         timestamp: 注文時刻（ISO形式）
+        result_code: kabu APIの発注応答コード（Result。0が成功）
+        order_id: kabu APIが発行した注文受付番号（OrderId）
+        basis_buy_limit: 発注根拠となった買い基準値（PriceLimit.buy）
+        basis_sell_limit: 発注根拠となった売り基準値（PriceLimit.sell）
     """
     symbol: str
     side: OrderSide
     price: float
     qty: int
     timestamp: str
+    result_code: Optional[int] = None
+    order_id: Optional[str] = None
+    basis_buy_limit: Optional[float] = None
+    basis_sell_limit: Optional[float] = None
 
     @classmethod
     def from_dict(cls, data: Dict) -> 'OrderHistoryEntry':
@@ -51,6 +59,10 @@ class OrderHistoryEntry:
             price=data['price'],
             qty=data['qty'],
             timestamp=data['timestamp'],
+            result_code=data.get('result_code'),
+            order_id=data.get('order_id'),
+            basis_buy_limit=data.get('basis_buy_limit'),
+            basis_sell_limit=data.get('basis_sell_limit'),
         )
 
     def to_dict(self) -> Dict:
@@ -66,6 +78,10 @@ class OrderHistoryEntry:
             'price': self.price,
             'qty': self.qty,
             'timestamp': self.timestamp,
+            'result_code': self.result_code,
+            'order_id': self.order_id,
+            'basis_buy_limit': self.basis_buy_limit,
+            'basis_sell_limit': self.basis_sell_limit,
         }
 
 
@@ -125,19 +141,28 @@ class TradeSignal:
             return cls(symbol=symbol, side=OrderSide.SELL, price=current_price, qty=100)
         return None
 
-    def to_order_history_entry(self) -> 'OrderHistoryEntry':
+    def to_order_history_entry(self, limit: 'PriceLimit', order_response: Optional[Dict] = None) -> 'OrderHistoryEntry':
         """
         TradeSignalを注文履歴エントリに変換します。
         
+        Args:
+            limit: シグナル生成の根拠となった買い/売り基準値
+            order_response: kabu APIの発注応答（Result, OrderIdを含む）
+            
         Returns:
             OrderHistoryEntryインスタンス
         """
+        order_response = order_response or {}
         return OrderHistoryEntry(
             symbol=self.symbol,
             side=self.side,
             price=self.price,
             qty=self.qty,
             timestamp=datetime.now().isoformat(),
+            result_code=order_response.get('Result'),
+            order_id=order_response.get('OrderId'),
+            basis_buy_limit=limit.buy,
+            basis_sell_limit=limit.sell,
         )
 
 

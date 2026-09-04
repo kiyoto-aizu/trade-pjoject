@@ -5,7 +5,7 @@
 ================================================================================
 """
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
 from typing import List, Optional
 
 from src.domain.enums import OrderSide, RankingType
@@ -37,6 +37,25 @@ def calculate_price_limit(closes: List[float]) -> Optional[PriceLimit]:
         buy=round(moving_average * 0.99, 1),
         sell=round(moving_average * 1.01, 1),
     )
+
+
+# ================================================================================
+# 市場終了時刻チェック
+# ================================================================================
+
+def is_market_closed(now: time, close_hour: int, close_minute: int) -> bool:
+    """
+    現在時刻が市場終了時刻を過ぎているかどうかを判定します。
+
+    Args:
+        now: 現在時刻
+        close_hour: 市場クローズ時刻（時）
+        close_minute: 市場クローズ時刻（分）
+
+    Returns:
+        市場終了時刻に達している場合True
+    """
+    return (now.hour, now.minute) >= (close_hour, close_minute)
 
 
 # ================================================================================
@@ -257,8 +276,9 @@ def select_top_n_by_surge_ratio(scored: List[ScoredCandidate], n: int = 10):
     return [candidate.symbol for candidate in sorted(scored, key=lambda item: (-item.surge_ratio, item.symbol))[:n]]
 
 
-def check_kill_switch(daily_orders, daily_pnl, capital, settings, order_amount):
-    max_amount = min(settings.MAX_ORDER_AMOUNT_PER_TRADE, settings.API_SOFT_LIMIT)
+def check_kill_switch(daily_orders, daily_pnl, capital, settings, order_amount, api_soft_limit=None):
+    effective_soft_limit = api_soft_limit if api_soft_limit is not None else settings.API_SOFT_LIMIT
+    max_amount = min(settings.MAX_ORDER_AMOUNT_PER_TRADE, effective_soft_limit)
     if order_amount > max_amount or daily_orders >= settings.MAX_ORDER_COUNT_PER_DAY:
         return False
     if capital > 0 and daily_pnl <= -(capital * settings.DAILY_LOSS_LIMIT_RATIO):

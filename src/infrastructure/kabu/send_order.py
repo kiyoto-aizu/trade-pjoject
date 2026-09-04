@@ -62,12 +62,11 @@ def place_market_order(token, symbol, side):
     
     # 共通POSTハンドラーを呼び出し
     res_json = request_handler.send_post(url, data=order_data, headers=headers)
-    return res_json
-    
+
     if res_json and res_json.get('Result') == 0:
         order_id = res_json.get('OrderId')
         logger.info("🎯 【発注成功】 注文受付番号(OrderId): %s", order_id)
-        return order_id
+        return res_json
     else:
         logger.error("❌ 【発注失敗】 APIからの応答: %s", res_json)
         return None

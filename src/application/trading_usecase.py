@@ -268,6 +268,8 @@ class TradingUseCase:
                 if not is_safe_to_order(signal, wallet_amount, self._has_holdings(symbol, positions), self.order_history, config.ORDER_LOCK_SECONDS):
                     continue
                 # 注文を実行（成否はResultコードで判定。失敗時はNoneが返る）
+                if self.order_sender and hasattr(self.order_sender, 'set_price'):
+                    self.order_sender.set_price(symbol, signal.price)
                 order_result = self.order_sender.place_market_order(self.token, symbol, signal.side.value) if self.order_sender else place_market_order(self.token, symbol, signal.side.value)
                 if order_result and order_result.get('Result') == 0:
                     self._register_order(signal, limit, order_result)

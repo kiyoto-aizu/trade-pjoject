@@ -11,6 +11,7 @@ from src.config import config
 from src.application.trading_usecase import TradingUseCase
 from src.infrastructure.persistence.filtering_result_repository import FilteringResultRepository
 from src.infrastructure.notification.line_notify import send_line_notify
+from src.infrastructure.paper.paper_order_executor import PaperOrderExecutor
 
 
 class TradingBot(TradingUseCase):
@@ -29,6 +30,9 @@ class TradingBot(TradingUseCase):
             token: Kabu.com Station API認証トークン
         """
         order_history_path = Path(__file__).resolve().parents[2] / config.ORDER_HISTORY_FILE
+        order_sender = None
+        if config.IS_DEMO or not config.ENABLE_LIVE_ORDERING:
+            order_sender = PaperOrderExecutor(prices={}, cash=config.OPERATING_CAPITAL)
         # インフラストラクチャレイヤーのデフォルト実装を注入
         super().__init__(
             token=token,
@@ -37,7 +41,7 @@ class TradingBot(TradingUseCase):
             board_client=None,
             wallet_client=None,
             positions_client=None,
-            order_sender=None,
+            order_sender=order_sender,
             filtering_result_repository=FilteringResultRepository(Path(__file__).resolve().parents[2] / 'data' / 'filtering'),
             notifier=send_line_notify,
         )

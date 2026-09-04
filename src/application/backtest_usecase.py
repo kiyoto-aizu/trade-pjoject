@@ -144,7 +144,7 @@ def simulate_backtest(
                     })
                     continue
 
-            window = closes[max(0, index - 4): index + 1]
+            window = closes[max(0, index - 5): index]
             if len(window) < 5:
                 continue
             limit = calculate_price_limit(window)

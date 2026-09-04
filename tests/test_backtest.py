@@ -45,6 +45,17 @@ def test_simulate_backtest_buys_then_sells_on_signal():
     assert result["total_pnl"] == 400.0
 
 
+def test_simulate_backtest_does_not_use_current_price_for_signal_baseline():
+    history = {
+        "7203": [100.0, 100.0, 100.0, 100.0, 100.0, 98.0, 100.65],
+    }
+
+    result = simulate_backtest(["7203"], history, starting_cash=10_000.0, qty_per_trade=100)
+
+    assert result["total_trades"] == 2
+    assert result["final_position"] == 0
+
+
 def test_simulate_backtest_fees_and_position_state():
     history = {
         "7203": [100.0, 100.0, 100.0, 100.0, 100.0, 98.0, 102.0],
@@ -135,7 +146,7 @@ def test_simulate_backtest_tracks_daily_summary_for_review():
 
 def test_simulate_backtest_supports_tunable_signal_thresholds():
     history = {
-        "7203": [100.0, 100.0, 100.0, 100.0, 100.0, 97.0, 103.0],
+        "7203": [100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 97.1, 103.0],
     }
 
     result = simulate_backtest(
@@ -190,7 +201,7 @@ def test_simulate_backtest_requires_directional_momentum_for_signal():
 
 def test_simulate_backtest_closes_positions_at_end_of_day_for_day_trade_mode():
     history = {
-        "7203": [100.0, 100.0, 100.0, 100.0, 98.0, 103.0, 105.0],
+        "7203": [100.0, 100.0, 100.0, 100.0, 100.0, 98.0, 103.0, 105.0],
     }
 
     result = simulate_backtest(

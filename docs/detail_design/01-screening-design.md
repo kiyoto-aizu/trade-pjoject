@@ -27,8 +27,8 @@ kabuステーションAPIの `GET /ranking` は「kabuステーションが保�
 ```
 ① ランキング取得（2種別を組み合わせ）
   → GET /ranking （Type=4:売買代金, Type=1:値上がり率 の2種類を取得）
-② 統合候補の株価を取得し、高額銘柄を除外
-  → GET /board/{symbol}（当日終値相当の株価）
+② 統合候補のランキング内株価で高額銘柄を除外
+  → GET /ranking 応答の `CurrentPrice`（当日終値相当の株価）
   → 1株あたり300円を超える銘柄は候補から除外（初期資金では単元取得が難しいため）
 ③ 規制・除外条件の確認
   → GET /regulations/{symbol}（値幅制限・信用規制など）
@@ -43,8 +43,9 @@ kabuステーションAPIの `GET /ranking` は「kabuステーションが保�
      詳細はセクション3.5参照
 ```
 
-> **株価取得のタイミングについて**: ②の株価除外は規制・取引所確認(③)より先に行う。
+> **株価判定のタイミングについて**: ②の株価除外は規制・取引所確認(③)より先に行う。
 > 高額で最初から対象外になる銘柄について③の規制・取引所APIコールを無駄に発生させないため。
+> `/board` は未登録銘柄の照会時にAPI登録銘柄枠を消費し、最大50件の制限に抵触するため、スクリーニングでは使用しない。
 
 ---
 
@@ -53,19 +54,14 @@ kabuステーションAPIの `GET /ranking` は「kabuステーションが保�
 ### application/screening_usecase.py
 - `ScreeningUseCase.execute() -> ScreeningResult`
 - 責務: ①〜⑤の呼び出し順序を制御する司令塔。ロジックは持たない。
-- 依存: `RankingRepository`, `BoardRepository`, `RegulationRepository`, `PrimaryExchangeRepository`, `screening_rules`（domain）, `ScreeningResultRepository`, `Notifier`
+- 依存: `RankingRepository`, `RegulationRepository`, `PrimaryExchangeRepository`, `screening_rules`（domain）, `ScreeningResultRepository`, `Notifier`
 - **通知用サマリの組み立てもここで行う**（`ExclusionResult`の除外件数、`limit_candidates`前の統合済みランキングから上位数銘柄のrank/valueを抜き出して`Notifier`に渡す）。永続化する`ScreeningResult`自体には持たせない（3.5節参照）
-
-### infrastructure/kabu/board_repository.py（新規）
-- `get_current_price(symbol: str) -> float | None`
-- API: `GET /board/{symbol}`（`CurrentPrice`相当のフィールドを使用）
-- 用途: ②の高額銘柄除外の判定材料。前日大引け直後（15:35頃）に実行するため、取得できる株価は実質的に当日の終値
-- ③トレードループ機能の`board_repository.py`（現在値取得用）と同一エンドポイントを叩くため、実装上は共通化を検討してよい（本設計書では①視点でのメソッドのみ記載）
 
 ### infrastructure/kabu/ranking_repository.py（新規）
 - `get_ranking(ranking_type: RankingType) -> list[RankingEntry]`
 - API: `GET /ranking`（`Type`パラメータをEnum化。coding-guidelines.md 2.3節「マジックストリングはEnum化」に準拠）
 - `RankingType.TURNOVER`（Type=4: 売買代金）と `RankingType.PRICE_GAIN`（Type=1: 値上がり率）の2種類を取得し、`ScreeningUseCase`側で結合する
+- 応答の `CurrentPrice` を `RankingEntry` に保持し、②の高額銘柄除外に使用する
 
 ### infrastructure/kabu/regulation_repository.py（新規）
 - `get_regulation(symbol: str) -> Regulation`
@@ -101,7 +97,7 @@ kabuステーションAPIの `GET /ranking` は「kabuステーションが保�
 ### domain/models.py 追加モデル
 | モデル | フィールド | 用途 |
 |---|---|---|
-| `RankingEntry` | symbol, rank, value, ranking_type | ①の取得結果 |
+| `RankingEntry` | symbol, rank, value, ranking_type, current_price | ①の取得結果・②の判定材料 |
 | `Regulation` | symbol, is_restricted, reason | ②の判定材料 |
 | `ExclusionResult` | remaining(list[str]), excluded_by_price_count, excluded_by_regulation_count, excluded_by_exchange_count | ②`exclude_by_price_ceiling()`・③`exclude_by_regulation()`の出力・⑥通知の除外内訳の元データ |
 | `ScreeningResult` | date, symbols(list[str]), generated_at | ⑤の永続化対象・②の入力（**通知用の順位・値・除外内訳は含めない。永続化モデルは変更しない**） |
@@ -144,7 +140,7 @@ kabuステーションAPIの `GET /ranking` は「kabuステーションが保�
 | ケース | 対応 |
 |---|---|
 | `/ranking` が空レスポンス（7:53以降に実行してしまった等） | 処理を中断し、推測値で補わず即エラー終了・通知（coding-guidelines.md 3.3節） |
-| 株価取得（`GET /board/{symbol}`）失敗 | 当該銘柄は安全側に倒して除外（候補に残さない。高額かどうか判定不能なため） |
+| ランキング応答の`CurrentPrice`が欠損 | 当該銘柄は安全側に倒して除外（候補に残さない。高額かどうか判定不能なため） |
 | 規制情報API取得失敗 | 当該銘柄は安全側に倒して除外（候補に残さない） |
 | 絞り込み後の候補が30件未満 | 警告ログを出し、処理は継続（発注可否は②③側の責務。①は「候補を出す」までが責務） |
 | 前日実行が失敗し当日候補が存在しない | ②のフィルタ機能側でも「候補ファイルが存在しない場合は処理をスキップし通知する」ガードを持つ（②の設計書側に記載） |

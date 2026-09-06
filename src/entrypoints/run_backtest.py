@@ -7,6 +7,7 @@ from pathlib import Path
 import requests
 
 from src.application.backtest_usecase import simulate_backtest
+from src.infrastructure.notification.line_notify import process_notification
 
 
 def fetch_yahoo_history(symbols: list[str], days: int = 30) -> dict[str, list[float]]:
@@ -104,50 +105,51 @@ def load_history(path: Path) -> dict[str, list[float]]:
 
 
 def main() -> None:
-    repo_root = Path(__file__).resolve().parents[2]
-    default_symbols_path = repo_root / "data" / "filtering" / "2026-09-01.json"
-    default_history_path = repo_root / "data" / "backtest" / "sample_history.json"
+    with process_notification('バックテスト'):
+        repo_root = Path(__file__).resolve().parents[2]
+        default_symbols_path = repo_root / "data" / "filtering" / "2026-09-01.json"
+        default_history_path = repo_root / "data" / "backtest" / "sample_history.json"
 
-    parser = argparse.ArgumentParser(description="バックテストを実行します")
-    parser.add_argument("--symbols", type=Path, default=default_symbols_path, help="銘柄一覧のJSONファイル")
-    parser.add_argument("--history", type=Path, default=default_history_path, help="銘柄ごとの終値履歴JSONファイル")
-    parser.add_argument("--cash", type=float, default=100000.0, help="開始現金")
-    parser.add_argument("--qty", type=int, default=100, help="1回の売買数量")
-    parser.add_argument("--fee", type=float, default=0.0, help="売買手数料率 (例: 0.001 = 0.1%%)")
-    parser.add_argument("--live", action="store_true", help="Yahoo Finance から実データを取得してバックテストを実行")
-    parser.add_argument("--days", type=int, default=30, help="Yahoo Finance から取得する日数")
-    parser.add_argument("--day-trade", action="store_true", help="デイトレードとして実行し、当日の終値で保有を強制的に決済する")
-    args = parser.parse_args()
+        parser = argparse.ArgumentParser(description="バックテストを実行します")
+        parser.add_argument("--symbols", type=Path, default=default_symbols_path, help="銘柄一覧のJSONファイル")
+        parser.add_argument("--history", type=Path, default=default_history_path, help="銘柄ごとの終値履歴JSONファイル")
+        parser.add_argument("--cash", type=float, default=100000.0, help="開始現金")
+        parser.add_argument("--qty", type=int, default=100, help="1回の売買数量")
+        parser.add_argument("--fee", type=float, default=0.0, help="売買手数料率 (例: 0.001 = 0.1%%)")
+        parser.add_argument("--live", action="store_true", help="Yahoo Finance から実データを取得してバックテストを実行")
+        parser.add_argument("--days", type=int, default=30, help="Yahoo Finance から取得する日数")
+        parser.add_argument("--day-trade", action="store_true", help="デイトレードとして実行し、当日の終値で保有を強制的に決済する")
+        args = parser.parse_args()
 
-    symbols = load_symbols(args.symbols)
-    history = load_history(args.history) if args.history.exists() else {}
-    if args.live:
-        history = fetch_yahoo_history(symbols, days=args.days)
+        symbols = load_symbols(args.symbols)
+        history = load_history(args.history) if args.history.exists() else {}
+        if args.live:
+            history = fetch_yahoo_history(symbols, days=args.days)
 
-    result = simulate_backtest(
-        symbols,
-        history,
-        starting_cash=args.cash,
-        qty_per_trade=args.qty,
-        fee_rate=args.fee,
-        close_at_eod=args.day_trade,
-    )
+        result = simulate_backtest(
+            symbols,
+            history,
+            starting_cash=args.cash,
+            qty_per_trade=args.qty,
+            fee_rate=args.fee,
+            close_at_eod=args.day_trade,
+        )
 
-    # CLI 出力は日本語ラベルを優先して見やすくする
-    display_result = {
-        "総損益": result.get("総損益", result.get("total_pnl", 0.0)),
-        "勝率": result.get("勝率", result.get("win_rate", 0.0)),
-        "利益因子": result.get("利益因子", result.get("profit_factor", 0.0)),
-        "最大ドローダウン": result.get("最大ドローダウン", result.get("max_drawdown", 0.0)),
-        "総取引数": result.get("総取引数", result.get("total_trades", 0)),
-        "現金残高": result.get("現金残高", result.get("cash", 0.0)),
-        "最終保有数": result.get("最終保有数", result.get("final_position", 0)),
-        "取引履歴": result.get("取引履歴", result.get("trade_history", [])),
-        "銘柄別要約": result.get("銘柄別要約", result.get("summary_by_symbol", [])),
-        "日別要約": result.get("日別要約", result.get("daily_summary", [])),
-        "保有期間別要約": result.get("保有期間別要約", result.get("holding_bucket_summary", [])),
-    }
-    print(json.dumps(display_result, ensure_ascii=False, indent=2))
+        # CLI 出力は日本語ラベルを優先して見やすくする
+        display_result = {
+            "総損益": result.get("総損益", result.get("total_pnl", 0.0)),
+            "勝率": result.get("勝率", result.get("win_rate", 0.0)),
+            "利益因子": result.get("利益因子", result.get("profit_factor", 0.0)),
+            "最大ドローダウン": result.get("最大ドローダウン", result.get("max_drawdown", 0.0)),
+            "総取引数": result.get("総取引数", result.get("total_trades", 0)),
+            "現金残高": result.get("現金残高", result.get("cash", 0.0)),
+            "最終保有数": result.get("最終保有数", result.get("final_position", 0)),
+            "取引履歴": result.get("取引履歴", result.get("trade_history", [])),
+            "銘柄別要約": result.get("銘柄別要約", result.get("summary_by_symbol", [])),
+            "日別要約": result.get("日別要約", result.get("daily_summary", [])),
+            "保有期間別要約": result.get("保有期間別要約", result.get("holding_bucket_summary", [])),
+        }
+        print(json.dumps(display_result, ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":

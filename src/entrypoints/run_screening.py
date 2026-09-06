@@ -14,7 +14,7 @@ from src.infrastructure.kabu.get_token import get_api_token
 from src.infrastructure.kabu.ranking_repository import RankingRepository
 from src.infrastructure.kabu.regulation_repository import RegulationRepository
 from src.infrastructure.kabu.primaryexchange_repository import PrimaryExchangeRepository
-from src.infrastructure.notification.line_notify import send_line_notify
+from src.infrastructure.notification.line_notify import process_notification, send_line_notify
 from src.infrastructure.persistence.screening_result_repository import ScreeningResultRepository
 from src.application.screening_usecase import ScreeningUseCase
 
@@ -51,18 +51,19 @@ def main() -> None:
     3. ScreeningUseCaseを実行
     """
     configure_logging()
-    token = get_api_token()
-    if not token:
-        raise SystemExit('トークン取得に失敗しました。')
-    data_dir = Path(__file__).resolve().parents[2] / 'data' / 'screening'
-    usecase = ScreeningUseCase(
-        RankingRepository(token),
-        RegulationRepository(token),
-        PrimaryExchangeRepository(token),
-        ScreeningResultRepository(data_dir),
-        send_line_notify,
-    )
-    screening_run(usecase)
+    with process_notification('スクリーニング'):
+        token = get_api_token()
+        if not token:
+            raise SystemExit('トークン取得に失敗しました。')
+        data_dir = Path(__file__).resolve().parents[2] / 'data' / 'screening'
+        usecase = ScreeningUseCase(
+            RankingRepository(token),
+            RegulationRepository(token),
+            PrimaryExchangeRepository(token),
+            ScreeningResultRepository(data_dir),
+            send_line_notify,
+        )
+        screening_run(usecase)
 
 
 if __name__ == '__main__':

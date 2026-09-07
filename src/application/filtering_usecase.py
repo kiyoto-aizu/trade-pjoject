@@ -9,7 +9,8 @@ from datetime import datetime, timedelta
 import logging
 
 from src.domain.models import FilteringResult, ScoredCandidate
-from src.domain.rules import calculate_volume_surge_ratio, select_top_n_by_surge_ratio
+from src.domain.rules import calculate_volume_surge_ratio, filter_by_min_surge_ratio, select_top_n_by_surge_ratio
+from src.config import config
 
 logger = logging.getLogger(__name__)
 
@@ -75,14 +76,16 @@ class FilteringUseCase:
                     logger.warning("平均出来高が0以下のため、%s をスキップします。", symbol)
                     continue
                 scored.append(ScoredCandidate(symbol, float(today_volume), average, surge_ratio))
-        symbols = select_top_n_by_surge_ratio(scored, 10)
+        candidates = filter_by_min_surge_ratio(scored, config.MIN_VOLUME_SURGE_RATIO)
+        symbols = select_top_n_by_surge_ratio(candidates, 10)
         result = FilteringResult(today.isoformat(), symbols, datetime.now().isoformat())
         self.result_repository.save(result)
         if self.notifier:
-            self._notify_completion(screening, symbols, scored)
+            excluded_by_surge_count = len(scored) - len(candidates)
+            self._notify_completion(screening, symbols, scored, excluded_by_surge_count)
         return result
 
-    def _notify_completion(self, screening, symbols, scored) -> None:
+    def _notify_completion(self, screening, symbols, scored, excluded_by_surge_count: int = 0) -> None:
         if not screening:
             message = "前日のスクリーニング結果がないため、フィルタ結果は0件です"
         else:
@@ -90,7 +93,7 @@ class FilteringUseCase:
             top_symbols = " / ".join(
                 f"{symbol}(20日平均の{ratios_by_symbol[symbol]:.1f}倍)" for symbol in symbols[:5]
             )
-            message = f"フィルタリング完了: {len(symbols)}銘柄（スクリーニング{len(screening.symbols)}件中）"
+            message = f"フィルタリング完了: {len(symbols)}銘柄（スクリーニング{len(screening.symbols)}件中、出来高減少{excluded_by_surge_count}件除外）"
             if top_symbols:
                 message += f"\n上位: {top_symbols}"
         try:

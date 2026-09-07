@@ -132,6 +132,9 @@ OPERATING_CAPITAL = float(os.getenv("OPERATING_CAPITAL", "1000000"))
 # スクリーニング対象とする1株あたりの株価上限
 MAX_SHARE_PRICE = float(os.getenv("MAX_SHARE_PRICE", "300"))
 
+# フィルタリングで候補として残す出来高急増率の下限（この倍率未満は対象外）
+MIN_VOLUME_SURGE_RATIO = float(os.getenv("MIN_VOLUME_SURGE_RATIO", "1.0"))
+
 # ================================================================================
 # 注文履歴・市場設定
 # ================================================================================

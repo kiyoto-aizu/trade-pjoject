@@ -71,6 +71,10 @@ kabuステーションAPIはリアルタイム取引APIであり、**過去の�
 ### domain/rules.py 追加関数
 - `calculate_volume_surge_ratio(today_volume: float, average_volume: float) -> float`
   - 出来高急増率 = 当日出来高 ÷ 平均出来高（純粋関数）
+- `filter_by_min_surge_ratio(scored: list[ScoredCandidate], min_ratio: float) -> list[ScoredCandidate]`
+  - 出来高急増率が`min_ratio`未満の候補を除外する（**出来高が減少している銘柄が頭数合わせで選ばれることを防ぐ**。2026-09-07追記）
+  - `min_ratio`は`config/config.py`の`MIN_VOLUME_SURGE_RATIO`（既定値1.0＝前日比で出来高が増えていない銘柄は除外）から注入
+  - `select_top_n_by_surge_ratio`の直前に適用し、絞り込み後の候補が10件未満になる場合は取得できた分だけで継続する（②フィルタ機能の異常系「絞り込み後の候補が10件に満たない」と同様の扱い）
 - `select_top_n_by_surge_ratio(scored: list[ScoredCandidate], n: int = 10) -> list[str]`
   - 出来高急増率が高い順に上位10件（固定）を抽出
 
@@ -95,6 +99,7 @@ kabuステーションAPIはリアルタイム取引APIであり、**過去の�
 | `GET /board/{symbol}` が一部銘柄で失敗 | 当該銘柄はスコアリング対象から除外（他銘柄の処理は継続） |
 | Yahoo Financeの平均出来高取得が一部銘柄で失敗 | 当該銘柄はスコアリング対象から除外（基準値不明のため急増率を計算しない） |
 | 絞り込み後の候補が10件に満たない | 取得できた分だけで継続（警告ログのみ、処理は止めない） |
+| 出来高急増率が`MIN_VOLUME_SURGE_RATIO`（既定値1.0）未満 | 上位10件の枠が埋まらなくても候補から除外し、機械的に「出来高が減少している銘柄」まで選ばれないようにする（2026-09-07追記） |
 
 ---
 
@@ -106,7 +111,7 @@ kabuステーションAPIはリアルタイム取引APIであり、**過去の�
 - 銘柄コード変換ルール: 「4桁+.T」（例: `7203` → `7203.T`）
 - 起動方式: 独立起動（`entrypoints/run_filtering.py`を別プロセスで実行、結果はファイル経由で③に受け渡す）
 - 実行タイミング: 当日9:30頃
-- 対象銘柄数: 10件固定
+- 対象銘柄数: 10件固定（ただし`MIN_VOLUME_SURGE_RATIO`未満の候補は10件に満たなくても除外する。2026-09-07追記）
 
 ## 7. 実行スケジュール（cron設定例）
 

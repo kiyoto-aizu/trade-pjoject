@@ -272,6 +272,11 @@ def calculate_volume_surge_ratio(today_volume: float, average_volume: float) -> 
     return today_volume / average_volume
 
 
+def filter_by_min_surge_ratio(scored: List[ScoredCandidate], min_ratio: float) -> List[ScoredCandidate]:
+    """出来高急増率が閾値未満の候補を除外する（出来高が減少している銘柄の混入を防ぐ）。"""
+    return [candidate for candidate in scored if candidate.surge_ratio >= min_ratio]
+
+
 def select_top_n_by_surge_ratio(scored: List[ScoredCandidate], n: int = 10):
     return [candidate.symbol for candidate in sorted(scored, key=lambda item: (-item.surge_ratio, item.symbol))[:n]]
 

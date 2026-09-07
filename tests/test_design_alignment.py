@@ -144,11 +144,41 @@ def test_filtering_usecase_reads_previous_screening_result(tmp_path):
     ).execute()
     assert len(result.symbols) == 10
     assert notifications == [
-        "フィルタリング完了: 10銘柄（スクリーニング12件中）\n"
+        "フィルタリング完了: 10銘柄（スクリーニング12件中、出来高減少0件除外）\n"
         "上位: 0(20日平均の2.0倍) / 1(20日平均の2.0倍) / "
         "10(20日平均の2.0倍) / 11(20日平均の2.0倍) / 2(20日平均の2.0倍)"
     ]
     assert result_repository.load_latest().symbols == result.symbols
+
+
+def test_filtering_usecase_excludes_symbols_below_min_surge_ratio(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "MIN_VOLUME_SURGE_RATIO", 1.0)
+    today = datetime.now().date()
+    previous_business_day = today - timedelta(days=1)
+    while previous_business_day.weekday() >= 5:
+        previous_business_day -= timedelta(days=1)
+    screening_repository = ScreeningResultRepository(tmp_path / "screening")
+    screening_repository.save(ScreeningResult(
+        previous_business_day.isoformat(), ["7689", "6619"], datetime.now().isoformat()
+    ))
+
+    class MixedBoardStub:
+        def get_current_board(self, symbol):
+            volume = 1150 if symbol == "7689" else 90
+            return {"current_price": 100, "trading_volume": volume}
+
+    result_repository = FilteringResultRepository(tmp_path / "filtering")
+    notifications = []
+    result = FilteringUseCase(
+        screening_repository, MixedBoardStub(), VolumeStub(), result_repository, notifications.append
+    ).execute()
+
+    # 出来高減少銘柄(6619, 0.9倍)は閾値未満のため候補から除外される
+    assert result.symbols == ["7689"]
+    assert notifications == [
+        "フィルタリング完了: 1銘柄（スクリーニング2件中、出来高減少1件除外）\n"
+        "上位: 7689(20日平均の11.5倍)"
+    ]
 
 
 def test_filtering_without_previous_result_saves_empty_result(tmp_path):

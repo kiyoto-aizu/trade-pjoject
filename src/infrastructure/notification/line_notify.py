@@ -28,17 +28,20 @@ def _send_process_message(message: str) -> None:
 
 
 @contextmanager
-def process_notification(process_name: str):
+def process_notification(process_name: str, notify_lifecycle: bool = True):
     """処理の開始と終了を通知します。例外は呼び出し元へ再送出します。"""
-    notify_process_start(process_name)
+    if notify_lifecycle:
+        notify_process_start(process_name)
     try:
         yield
     except BaseException:
         logger.exception("%s処理が予期しないエラーで終了しました", process_name)
-        notify_process_end(process_name, success=False)
+        if notify_lifecycle:
+            notify_process_end(process_name, success=False)
         raise
     else:
-        notify_process_end(process_name)
+        if notify_lifecycle:
+            notify_process_end(process_name)
 
 
 def send_line_notify(message: str) -> bool:

@@ -81,7 +81,7 @@ def main() -> None:
     5. 結果を保存・通知
     """
     configure_logging()
-    with process_notification('フィルタリング'):
+    with process_notification('フィルタリング', notify_lifecycle=False):
         token = get_api_token()
         if not token:
             raise SystemExit('トークン取得に失敗しました。')

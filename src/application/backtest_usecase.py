@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import date
 from typing import Dict, List
 
 from src.domain.enums import OrderSide
@@ -311,4 +312,138 @@ def simulate_backtest(
         "銘柄別要約": summary_by_symbol,
         "日別要約": daily_summary,
         "保有期間別要約": holding_bucket_summary,
+    }
+
+
+def simulate_timeseries_backtest(
+    daily_symbols: Dict[str, List[str]],
+    dated_history_by_symbol: Dict[str, Dict[str, float]],
+    starting_cash: float = 100_000.0,
+    qty_per_trade: int = 100,
+    fee_rate: float = 0.0,
+    buy_threshold_ratio: float = 1.0,
+    sell_threshold_ratio: float = 1.0,
+    noise_band_ratio: float = 0.0,
+    stop_loss_ratio: float = 0.0,
+    trend_strength_ratio: float = 0.0,
+) -> dict:
+    """日付ごとのフィルタリング結果を再生するバックテストを実行します。"""
+    cash = float(starting_cash)
+    holdings: dict[str, int] = {}
+    avg_cost: dict[str, float] = {}
+    buy_dates: dict[str, str] = {}
+    trade_results: list[float] = []
+    trade_history: list[dict] = []
+    signals: list[dict] = []
+    all_symbols = set(dated_history_by_symbol)
+
+    def close_position(symbol: str, date_text: str, price: float, note: str | None = None) -> None:
+        nonlocal cash
+        qty = holdings.get(symbol, 0)
+        if qty <= 0:
+            return
+        fee = price * qty * fee_rate
+        realized_pnl = (price - avg_cost[symbol]) * qty - fee
+        cash += price * qty - fee
+        trade_results.append(realized_pnl)
+        entry_date = buy_dates[symbol]
+        holding_days = max(0, (date.fromisoformat(date_text) - date.fromisoformat(entry_date)).days)
+        trade_history.append({
+            "symbol": symbol,
+            "buy_price": avg_cost[symbol],
+            "sell_price": price,
+            "qty": qty,
+            "fee": fee,
+            "realized_pnl": round(realized_pnl, 2),
+            "entry_date": entry_date,
+            "exit_date": date_text,
+            "holding_days": holding_days,
+        })
+        signal = {
+            "symbol": symbol,
+            "side": OrderSide.SELL.value,
+            "price": price,
+            "qty": qty,
+            "fee": fee,
+            "realized_pnl": round(realized_pnl, 2),
+        }
+        if note:
+            signal["note"] = note
+        signals.append(signal)
+        holdings[symbol] = 0
+        avg_cost[symbol] = 0.0
+        buy_dates.pop(symbol, None)
+
+    for date_text in sorted(daily_symbols):
+        active_symbols = set(daily_symbols[date_text])
+
+        for symbol in all_symbols:
+            price = dated_history_by_symbol.get(symbol, {}).get(date_text)
+            if price is None or holdings.get(symbol, 0) <= 0 or stop_loss_ratio <= 0:
+                continue
+            if price <= avg_cost[symbol] * (1.0 - stop_loss_ratio):
+                close_position(symbol, date_text, price, "stop_loss")
+
+        for symbol in sorted(active_symbols):
+            price = dated_history_by_symbol.get(symbol, {}).get(date_text)
+            if price is None:
+                continue
+            previous_prices = [
+                price_value
+                for history_date, price_value in sorted(dated_history_by_symbol.get(symbol, {}).items())
+                if history_date < date_text
+            ][-5:]
+            if len(previous_prices) < 5:
+                continue
+            limit = calculate_price_limit(previous_prices)
+            if limit is None:
+                continue
+
+            base_mean = (limit.buy + limit.sell) / 2.0
+            if noise_band_ratio > 0 and abs(price - base_mean) / base_mean < noise_band_ratio:
+                continue
+            if trend_strength_ratio > 0 and abs(price - base_mean) / base_mean < trend_strength_ratio:
+                continue
+
+            if price <= limit.buy * buy_threshold_ratio:
+                if holdings.get(symbol, 0) == 0 and cash >= price * qty_per_trade:
+                    fee = price * qty_per_trade * fee_rate
+                    cash -= price * qty_per_trade + fee
+                    holdings[symbol] = qty_per_trade
+                    avg_cost[symbol] = price
+                    buy_dates[symbol] = date_text
+                    signals.append({
+                        "symbol": symbol,
+                        "side": OrderSide.BUY.value,
+                        "price": price,
+                        "qty": qty_per_trade,
+                        "fee": fee,
+                        "date": date_text,
+                    })
+            elif price >= limit.sell * sell_threshold_ratio and holdings.get(symbol, 0) > 0:
+                close_position(symbol, date_text, price)
+
+    last_date = max(daily_symbols) if daily_symbols else ""
+    equity = cash
+    for symbol, qty in holdings.items():
+        prices = dated_history_by_symbol.get(symbol, {})
+        available_prices = [value for key, value in sorted(prices.items()) if key <= last_date]
+        if qty > 0 and available_prices:
+            equity += qty * available_prices[-1]
+
+    metrics = _calculate_metrics(trade_results, starting_cash)
+    total_pnl = round(equity - starting_cash, 2)
+    return {
+        "cash": round(cash, 2),
+        "final_position": sum(holdings.values()),
+        "total_trades": len(signals),
+        "total_pnl": total_pnl,
+        "win_rate": round(metrics["win_rate"], 4),
+        "max_drawdown": round(metrics["max_drawdown"], 2),
+        "profit_factor": metrics["profit_factor"],
+        "signals": signals,
+        "trade_history": trade_history,
+        "period_start": min(daily_symbols) if daily_symbols else None,
+        "period_end": last_date or None,
+        "days": len(daily_symbols),
     }

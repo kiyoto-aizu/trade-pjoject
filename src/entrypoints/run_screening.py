@@ -51,7 +51,7 @@ def main() -> None:
     3. ScreeningUseCaseを実行
     """
     configure_logging()
-    with process_notification('スクリーニング'):
+    with process_notification('スクリーニング', notify_lifecycle=False):
         token = get_api_token()
         if not token:
             raise SystemExit('トークン取得に失敗しました。')

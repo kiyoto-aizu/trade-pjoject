@@ -1,4 +1,4 @@
-from src.application.backtest_usecase import simulate_backtest
+from src.application.backtest_usecase import simulate_backtest, simulate_timeseries_backtest
 from src.entrypoints.run_backtest import fetch_yahoo_history, load_history
 
 
@@ -43,6 +43,36 @@ def test_simulate_backtest_buys_then_sells_on_signal():
     assert result["cash"] == 10_400.0
     assert result["final_position"] == 0
     assert result["total_pnl"] == 400.0
+
+
+def test_simulate_timeseries_backtest_uses_daily_symbol_sets():
+    dated_history = {
+        "7203": {
+            "2026-09-01": 100.0,
+            "2026-09-02": 100.0,
+            "2026-09-03": 100.0,
+            "2026-09-04": 100.0,
+            "2026-09-05": 100.0,
+            "2026-09-06": 98.0,
+            "2026-09-07": 102.0,
+        },
+    }
+    daily_symbols = {
+        "2026-09-06": ["7203"],
+        "2026-09-07": ["7203"],
+    }
+
+    result = simulate_timeseries_backtest(
+        daily_symbols,
+        dated_history,
+        starting_cash=10_000.0,
+        qty_per_trade=100,
+    )
+
+    assert result["total_trades"] == 2
+    assert result["total_pnl"] == 400.0
+    assert result["period_start"] == "2026-09-06"
+    assert result["period_end"] == "2026-09-07"
 
 
 def test_simulate_backtest_does_not_use_current_price_for_signal_baseline():

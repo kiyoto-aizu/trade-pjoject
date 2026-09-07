@@ -225,6 +225,30 @@ Windowsの計画実行では、スクリーニング・フィルタリングと�
 
 `register_trading_task.ps1`で登録した取引タスクは常にペーパー固定です。本番モードで実注文を行う場合は、設定を確認したうえで `python -m src.entrypoints.run_trading` を直接起動してください。
 
+### 4. バックテスト
+
+日付ごとのフィルタリング結果を時系列に再生し、その日に選ばれた銘柄だけを対象にバックテストします。過去の銘柄を未来の日付へ持ち越さないため、実運用に近い評価になります。価格データはYahoo Financeから取得し、直近90日分のフィルタリング結果を対象にします。
+
+```powershell
+.\scripts\run_backtest.ps1
+```
+
+結果は `data/backtest/latest_timeseries.json` に保存されます。LINE設定がある場合は、対象期間・総損益・勝率・取引数・最大ドローダウン・最終保有数のサマリーも通知します。詳細な取引履歴はJSONで確認できます。平日16:30に自動実行するタスクは、初回のみ次で登録します。
+
+```powershell
+.\scripts\register_backtest_task.ps1
+```
+
+登録内容の確認、手動起動、削除は次のとおりです。
+
+```powershell
+Get-ScheduledTask -TaskName trade-pjoject-backtest
+Start-ScheduledTask -TaskName trade-pjoject-backtest
+.\scripts\register_backtest_task.ps1 -Remove
+```
+
+従来の固定銘柄による検証を行う場合は、`run_backtest.py` に `--symbols` と `--history` を指定します。
+
 ## 取引フロー
 
 ```text
@@ -239,6 +263,9 @@ Windowsの計画実行では、スクリーニング・フィルタリングと�
        |
 15:30
   取引終了 -> 最終状態を通知
+                      |
+平日16:30
+       直近90日の日次フィルタリング結果 -> 時系列バックテスト
 ```
 
 ## 設計書

@@ -25,8 +25,10 @@ kabuステーションAPIの `GET /ranking` は「kabuステーションが保�
 ## 2. 処理フロー
 
 ```
-① ランキング取得（2種別を組み合わせ）
+① ランキング取得（2種別 × 市場区分ごとに取得して結合）
   → GET /ranking （Type=4:売買代金, Type=1:値上がり率 の2種類を取得）
+  → ExchangeDivision=ALLは1回の呼び出しにつき上位50件しか返らず値がさ株に偏るため、
+    config.SCREENING_EXCHANGE_DIVISIONS（既定: TP/TS/TG）で市場区分ごとに個別取得し母集団を拡大する
 ② 統合候補のランキング内株価で高額銘柄を除外
   → GET /ranking 応答の `CurrentPrice`（当日終値相当の株価）
   → 1株あたり1,000円を超える銘柄は候補から除外（運用資金に対して単元取得額が大きくなりすぎるため）
@@ -58,9 +60,10 @@ kabuステーションAPIの `GET /ranking` は「kabuステーションが保�
 - **通知用サマリの組み立てもここで行う**（`ExclusionResult`の除外件数、`limit_candidates`前の統合済みランキングから上位数銘柄のrank/valueを抜き出して`Notifier`に渡す）。永続化する`ScreeningResult`自体には持たせない（3.5節参照）
 
 ### infrastructure/kabu/ranking_repository.py（新規）
-- `get_ranking(ranking_type: RankingType) -> list[RankingEntry]`
+- `get_ranking(ranking_type: RankingType, exchange_division: str = "ALL") -> list[RankingEntry]`
 - API: `GET /ranking`（`Type`パラメータをEnum化。coding-guidelines.md 2.3節「マジックストリングはEnum化」に準拠）
 - `RankingType.TURNOVER`（Type=4: 売買代金）と `RankingType.PRICE_GAIN`（Type=1: 値上がり率）の2種類を取得し、`ScreeningUseCase`側で結合する
+- `exchange_division` は `/ranking` の `ExchangeDivision`（市場区分）にそのまま渡す。`ScreeningUseCase._collect_ranking` が `config.SCREENING_EXCHANGE_DIVISIONS` の各市場区分ごとに呼び出し、同一銘柄は順位の良い方を採用して結合する
 - 応答の `CurrentPrice` を `RankingEntry` に保持し、②の高額銘柄除外に使用する
 
 ### infrastructure/kabu/regulation_repository.py（新規）

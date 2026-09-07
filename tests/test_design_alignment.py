@@ -13,7 +13,7 @@ from pathlib import Path
 
 
 class RankingStub:
-    def get_ranking(self, ranking_type):
+    def get_ranking(self, ranking_type, exchange_division="ALL"):
         return [
             RankingEntry("7203", 1, 100.0, ranking_type, 100.0),
             RankingEntry("8306", 2, 90.0, ranking_type, 100.0),

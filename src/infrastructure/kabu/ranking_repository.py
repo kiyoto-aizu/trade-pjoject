@@ -8,10 +8,10 @@ class RankingRepository:
     def __init__(self, token: str):
         self.token = token
 
-    def get_ranking(self, ranking_type: RankingType) -> list[RankingEntry]:
+    def get_ranking(self, ranking_type: RankingType, exchange_division: str = "ALL") -> list[RankingEntry]:
         response = request_handler.send_get(
             f"{config.BASE_URL}/ranking",
-            params={"Type": ranking_type.value},
+            params={"Type": ranking_type.value, "ExchangeDivision": exchange_division},
             headers={"X-API-KEY": self.token},
         )
         if not response:

@@ -64,8 +64,8 @@ class ScreeningUseCase:
         Raises:
             RuntimeError: ランキングが空の場合
         """
-        turnover = self.ranking_repository.get_ranking(RankingType.TURNOVER)
-        price_gain = self.ranking_repository.get_ranking(RankingType.PRICE_GAIN)
+        turnover = self._collect_ranking(RankingType.TURNOVER)
+        price_gain = self._collect_ranking(RankingType.PRICE_GAIN)
         if not turnover or not price_gain:
             if self.notifier:
                 self.notifier("ランキングが空のためスクリーニングを中止しました")
@@ -134,6 +134,24 @@ class ScreeningUseCase:
                 price_gain_by_symbol,
             )
         return result
+
+    def _collect_ranking(self, ranking_type: RankingType):
+        """
+        市場区分ごとにランキングを取得して結合します。
+
+        全市場(ALL)一括取得だと上位50件が値がさ株に占められやすいため、
+        config.SCREENING_EXCHANGE_DIVISIONSで指定した市場区分ごとに個別取得し、
+        母集団を拡大します（銘柄が重複した場合は順位の良い方を採用）。
+        """
+        divisions = config.SCREENING_EXCHANGE_DIVISIONS or ["ALL"]
+        by_symbol = {}
+        for division in divisions:
+            entries = self.ranking_repository.get_ranking(ranking_type, exchange_division=division)
+            for entry in entries:
+                existing = by_symbol.get(entry.symbol)
+                if existing is None or entry.rank < existing.rank:
+                    by_symbol[entry.symbol] = entry
+        return list(by_symbol.values())
 
     def _notify_completion(
         self,

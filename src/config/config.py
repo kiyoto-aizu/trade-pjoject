@@ -132,6 +132,15 @@ OPERATING_CAPITAL = float(os.getenv("OPERATING_CAPITAL", "1000000"))
 # スクリーニング対象とする1株あたりの株価上限
 MAX_SHARE_PRICE = float(os.getenv("MAX_SHARE_PRICE", "300"))
 
+# スクリーニングのランキング取得対象とする市場区分（/rankingのExchangeDivision）
+# 全市場(ALL)は1回の呼び出しにつき上位50件しか返らず、値がさ株に偏りやすいため
+# 市場区分ごとに個別取得して母集団を拡大する（福証・札証は取引対象外のため含めない）
+SCREENING_EXCHANGE_DIVISIONS = [
+    division.strip()
+    for division in os.getenv("SCREENING_EXCHANGE_DIVISIONS", "TP,TS,TG").split(",")
+    if division.strip()
+]
+
 # フィルタリングで候補として残す出来高急増率の下限（この倍率未満は対象外）
 MIN_VOLUME_SURGE_RATIO = float(os.getenv("MIN_VOLUME_SURGE_RATIO", "1.0"))
 

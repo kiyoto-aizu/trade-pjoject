@@ -34,6 +34,7 @@ def process_notification(process_name: str):
     try:
         yield
     except BaseException:
+        logger.exception("%s処理が予期しないエラーで終了しました", process_name)
         notify_process_end(process_name, success=False)
         raise
     else:

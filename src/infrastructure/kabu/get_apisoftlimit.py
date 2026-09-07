@@ -1,5 +1,9 @@
+import logging
+
 from src.api import request_handler
 from src.config import config
+
+logger = logging.getLogger(__name__)
 
 
 def get_api_soft_limit(token: str) -> float | None:
@@ -13,4 +17,5 @@ def get_api_soft_limit(token: str) -> float | None:
     try:
         return float(value) * 10000 if value is not None else None
     except (TypeError, ValueError):
+        logger.warning("apisoftlimitの値の解析に失敗しました: %s", value)
         return None

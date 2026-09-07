@@ -1,6 +1,7 @@
 import argparse
 import csv
 import json
+import logging
 import urllib.request
 from pathlib import Path
 
@@ -8,6 +9,8 @@ import requests
 
 from src.application.backtest_usecase import simulate_backtest
 from src.infrastructure.notification.line_notify import process_notification
+
+logger = logging.getLogger(__name__)
 
 
 def fetch_yahoo_history(symbols: list[str], days: int = 30) -> dict[str, list[float]]:
@@ -34,7 +37,8 @@ def fetch_yahoo_history(symbols: list[str], days: int = 30) -> dict[str, list[fl
                 payload = json.loads(raw.decode("utf-8") if isinstance(raw, bytes) else raw)
             else:
                 raise ValueError("unsupported response type")
-        except Exception:
+        except Exception as exc:
+            logger.warning("%s の価格取得(requests)に失敗しました: %s", symbol_text, exc)
             try:
                 request = urllib.request.Request(
                     url + f"?interval=1d&range={days}d",
@@ -43,7 +47,8 @@ def fetch_yahoo_history(symbols: list[str], days: int = 30) -> dict[str, list[fl
                 )
                 with urllib.request.urlopen(request, timeout=20) as response:
                     payload = json.loads(response.read().decode("utf-8"))
-            except Exception:
+            except Exception as fallback_exc:
+                logger.warning("%s の価格取得(urllib)に失敗しました: %s", symbol_text, fallback_exc)
                 continue
 
         result = payload.get("chart", {}).get("result", [])

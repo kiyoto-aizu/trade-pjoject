@@ -236,55 +236,60 @@ class TradingUseCase:
         use_preflight_market_data = bool(preflight_market_data)
         while not kill_switch_triggered and not is_market_closed(now_provider().time(), config.MARKET_CLOSE_HOUR, config.MARKET_CLOSE_MINUTE):
             for symbol in symbols:
-                # 過去5日の終値を取得
-                snapshot = preflight_market_data.get(symbol) if use_preflight_market_data else None
-                closes = snapshot['closes'] if snapshot else (
-                    self.market_data_client.get_yahoo_5d_closes(symbol)
-                    if self.market_data_client else get_yahoo_5d_closes(symbol)
-                )
-                limit = calculate_price_limit(closes)
-                if limit is None:
+                try:
+                    # 過去5日の終値を取得
+                    snapshot = preflight_market_data.get(symbol) if use_preflight_market_data else None
+                    closes = snapshot['closes'] if snapshot else (
+                        self.market_data_client.get_yahoo_5d_closes(symbol)
+                        if self.market_data_client else get_yahoo_5d_closes(symbol)
+                    )
+                    limit = calculate_price_limit(closes)
+                    if limit is None:
+                        continue
+                    # リアルタイム株価を取得
+                    board = snapshot['board'] if snapshot else (
+                        self.board_client.get_current_board(self.token, symbol)
+                        if self.board_client else get_current_board(self.token, symbol)
+                    )
+                    if not board or board.get('current_price') is None:
+                        continue
+                    # 売買シグナルを生成
+                    signal = TradeSignal.evaluate(symbol, board['current_price'], limit)
+                    if not signal:
+                        continue
+                    # 口座状態を確認
+                    wallet_amount, positions = self._load_account_state()
+                    self.last_positions = positions
+                    api_limit = config.API_SOFT_LIMIT if config.IS_DEMO else get_api_soft_limit(self.token)
+                    if api_limit is None:
+                        logger.warning("API発注上限を取得できないため、発注を停止しました。")
+                        self.kill_switch_triggered = True
+                        kill_switch_triggered = True
+                        break
+                    self.api_soft_limit = api_limit
+                    # キルスイッチ判定
+                    daily_pnl = sum(float(position.get('ProfitLoss', 0) or 0) for position in positions)
+                    daily_orders = sum(
+                        1 for entry in self.order_history
+                        if entry.timestamp.startswith(now_provider().date().isoformat())
+                    )
+                    if not check_kill_switch(daily_orders, daily_pnl, config.OPERATING_CAPITAL, config, signal.price * signal.qty, api_soft_limit=self.api_soft_limit):
+                        logger.warning("キルスイッチにより発注を停止しました。")
+                        kill_switch_triggered = True
+                        break
+                    # 注文の安全性を確認
+                    if not is_safe_to_order(signal, wallet_amount, self._has_holdings(symbol, positions), self.order_history, config.ORDER_LOCK_SECONDS):
+                        continue
+                    # 注文を実行（成否はResultコードで判定。失敗時はNoneが返る）
+                    if self.order_sender and hasattr(self.order_sender, 'set_price'):
+                        self.order_sender.set_price(symbol, signal.price)
+                    order_result = self.order_sender.place_market_order(self.token, symbol, signal.side.value) if self.order_sender else place_market_order(self.token, symbol, signal.side.value)
+                    if order_result and order_result.get('Result') == 0:
+                        self._register_order(signal, limit, order_result)
+                except Exception:
+                    # 想定外の例外は当該銘柄のみスキップし、ループ全体を止めない
+                    logger.exception("%s の評価中に予期しないエラーが発生しました", symbol)
                     continue
-                # リアルタイム株価を取得
-                board = snapshot['board'] if snapshot else (
-                    self.board_client.get_current_board(self.token, symbol)
-                    if self.board_client else get_current_board(self.token, symbol)
-                )
-                if not board or board.get('current_price') is None:
-                    continue
-                # 売買シグナルを生成
-                signal = TradeSignal.evaluate(symbol, board['current_price'], limit)
-                if not signal:
-                    continue
-                # 口座状態を確認
-                wallet_amount, positions = self._load_account_state()
-                self.last_positions = positions
-                api_limit = config.API_SOFT_LIMIT if config.IS_DEMO else get_api_soft_limit(self.token)
-                if api_limit is None:
-                    logger.warning("API発注上限を取得できないため、発注を停止しました。")
-                    self.kill_switch_triggered = True
-                    kill_switch_triggered = True
-                    break
-                self.api_soft_limit = api_limit
-                # キルスイッチ判定
-                daily_pnl = sum(float(position.get('ProfitLoss', 0) or 0) for position in positions)
-                daily_orders = sum(
-                    1 for entry in self.order_history
-                    if entry.timestamp.startswith(now_provider().date().isoformat())
-                )
-                if not check_kill_switch(daily_orders, daily_pnl, config.OPERATING_CAPITAL, config, signal.price * signal.qty, api_soft_limit=self.api_soft_limit):
-                    logger.warning("キルスイッチにより発注を停止しました。")
-                    kill_switch_triggered = True
-                    break
-                # 注文の安全性を確認
-                if not is_safe_to_order(signal, wallet_amount, self._has_holdings(symbol, positions), self.order_history, config.ORDER_LOCK_SECONDS):
-                    continue
-                # 注文を実行（成否はResultコードで判定。失敗時はNoneが返る）
-                if self.order_sender and hasattr(self.order_sender, 'set_price'):
-                    self.order_sender.set_price(symbol, signal.price)
-                order_result = self.order_sender.place_market_order(self.token, symbol, signal.side.value) if self.order_sender else place_market_order(self.token, symbol, signal.side.value)
-                if order_result and order_result.get('Result') == 0:
-                    self._register_order(signal, limit, order_result)
             use_preflight_market_data = False
             sleep(config.LOOP_INTERVAL)
 

@@ -78,7 +78,8 @@ def main(now_provider=None) -> None:
     3. TradingBotを起動し、run()メソッドを実行
     """
     configure_logging()
-    with process_notification('取引'):
+    logging.getLogger(__name__).info('取引モード: %s', config.TRADING_MODE_LABEL)
+    with process_notification(f'取引（{config.TRADING_MODE_LABEL}）'):
         now = (now_provider or datetime.now)()
         if not is_trading_session(now):
             logging.getLogger(__name__).info('市場時間外または休場日のため、取引を開始しません。')

@@ -95,6 +95,20 @@ def test_trading_bot_rejects_live_mode_without_explicit_production_settings(monk
         TradingBot(token='dummy')
 
 
+def test_end_of_day_report_identifies_paper_trading(monkeypatch, tmp_path):
+    monkeypatch.setattr(config, 'TRADING_MODE_LABEL', 'ペーパートレード')
+    messages = []
+    use_case = TradingUseCase(
+        token='dummy',
+        order_history_path=tmp_path / 'order_history.json',
+        notifier=messages.append,
+    )
+
+    use_case._send_end_of_day_report()
+
+    assert messages[0].startswith('【ペーパートレード】')
+
+
 def test_trading_use_case_places_and_records_buy_order_without_live_api(monkeypatch, tmp_path):
     monkeypatch.setattr(config, 'IS_DEMO', True)
     symbols_path = tmp_path / 'top_symbols.json'

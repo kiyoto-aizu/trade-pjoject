@@ -195,6 +195,14 @@ Start-ScheduledTask -TaskName trade-pjoject-filtering
 python -m src.entrypoints.run_trading
 ```
 
+Windowsの計画実行では、スクリーニング・フィルタリングと同じ本番API設定を使用し、取引注文だけをペーパー約定に固定できます。初回のみ、次を実行してください。
+
+```powershell
+.\scripts\register_trading_task.ps1
+```
+
+このタスクは `TRADING_MODE=paper` と `ENABLE_LIVE_ORDERING=false` をプロセス内で設定するため、`.env` の本番API設定を変更せずにペーパートレードを実行します。kabuステーションは起動・ログイン済みにしてください。
+
 ## 取引フロー
 
 ```text

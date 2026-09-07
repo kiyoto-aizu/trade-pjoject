@@ -78,6 +78,7 @@ ENABLE_LIVE_ORDERING = os.getenv("ENABLE_LIVE_ORDERING", "false").strip().lower(
 TRADING_MODE = os.getenv("TRADING_MODE", "paper").strip().lower()
 if TRADING_MODE not in {"paper", "live"}:
     raise ValueError("TRADING_MODEはpaperまたはliveを指定してください。")
+TRADING_MODE_LABEL = "ペーパートレード" if TRADING_MODE == "paper" else "本番取引"
 _ALLOW_MISSING_ENV = _is_test_runtime()  # テスト中は環境変数がなくても許可
 
 
@@ -180,10 +181,9 @@ API_PORT = os.getenv("API_PORT_DEV", "18081") if IS_DEMO else os.getenv("API_POR
 API_PASSWORD = _load_required_env("API_PASSWORD_DEV" if IS_DEMO else "API_PASSWORD_PRD", allow_missing=_ALLOW_MISSING_ENV)
 
 # バリデーション: 本番モードは実取引が明示的に有効化されている必要がある
-if not IS_DEMO and not ENABLE_LIVE_ORDERING:
+if TRADING_MODE == "live" and (IS_DEMO or not ENABLE_LIVE_ORDERING):
     raise ValueError(
-        "本番モードでは ENABLE_LIVE_ORDERING=true が必須です。 "
-        "実取引を許可するには IS_DEMO=false と ENABLE_LIVE_ORDERING=true を設定してください。"
+        "ライブ注文には IS_DEMO=false と ENABLE_LIVE_ORDERING=true が必要です。"
     )
 
 # Kabu.com Station APIのベースURL

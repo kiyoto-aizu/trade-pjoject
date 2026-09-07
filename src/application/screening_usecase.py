@@ -162,10 +162,13 @@ class ScreeningUseCase:
         price_gain_by_symbol,
     ) -> None:
         message = (
-            f"スクリーニング完了: {len(symbols)}銘柄（候補{len(candidates)}件中、"
-            f"高額({config.MAX_SHARE_PRICE:g}円超){exclusion_result.excluded_by_price_count}件・"
-            f"規制{exclusion_result.excluded_by_regulation_count}件・"
-            f"地方取引所{exclusion_result.excluded_by_exchange_count}件を除外）"
+            "【スクリーニング結果】\n"
+            f"採用銘柄: {len(symbols)}銘柄\n"
+            f"候補: {len(candidates)}件\n"
+            "除外:\n"
+            f"  高額({config.MAX_SHARE_PRICE:g}円超): {exclusion_result.excluded_by_price_count}件\n"
+            f"  規制: {exclusion_result.excluded_by_regulation_count}件\n"
+            f"  地方取引所: {exclusion_result.excluded_by_exchange_count}件"
         )
         top_entries = []
         for symbol in exclusion_result.remaining[:3]:
@@ -176,7 +179,7 @@ class ScreeningUseCase:
             elif turnover_entry:
                 top_entries.append(f"{symbol}(売買代金{turnover_entry.value / 100_000_000:g}億)")
         if top_entries:
-            message += "\n上位: " + " / ".join(top_entries)
+            message += "\n上位銘柄:\n" + "\n".join(f"- {entry}" for entry in top_entries)
         try:
             self.notifier(message)
         except Exception:

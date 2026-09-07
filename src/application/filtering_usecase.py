@@ -87,15 +87,22 @@ class FilteringUseCase:
 
     def _notify_completion(self, screening, symbols, scored, excluded_by_surge_count: int = 0) -> None:
         if not screening:
-            message = "前日のスクリーニング結果がないため、フィルタ結果は0件です"
+            message = "【フィルタリング結果】\n前日のスクリーニング結果がないため、0銘柄です"
         else:
             ratios_by_symbol = {candidate.symbol: candidate.surge_ratio for candidate in scored}
             top_symbols = " / ".join(
                 f"{symbol}(20日平均の{ratios_by_symbol[symbol]:.1f}倍)" for symbol in symbols[:5]
             )
-            message = f"フィルタリング完了: {len(symbols)}銘柄（スクリーニング{len(screening.symbols)}件中、出来高減少{excluded_by_surge_count}件除外）"
+            message = (
+                "【フィルタリング結果】\n"
+                f"採用銘柄: {len(symbols)}銘柄\n"
+                f"スクリーニング対象: {len(screening.symbols)}件\n"
+                f"出来高条件で除外: {excluded_by_surge_count}件"
+            )
             if top_symbols:
-                message += f"\n上位: {top_symbols}"
+                message += "\n上位銘柄:\n" + "\n".join(
+                    f"- {symbol}(20日平均の{ratios_by_symbol[symbol]:.1f}倍)" for symbol in symbols[:5]
+                )
         try:
             self.notifier(message)
         except Exception:

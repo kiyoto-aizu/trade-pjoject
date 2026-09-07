@@ -117,8 +117,16 @@ def test_screening_usecase_persists_date_result(tmp_path):
     ).execute()
     assert result.symbols == ["7203", "8306"]
     assert notifications == [
-        f"スクリーニング完了: 2銘柄（候補2件中、高額({config.MAX_SHARE_PRICE:g}円超)0件・規制0件・地方取引所0件を除外）\n"
-        "上位: 7203(値上がり率+100%) / 8306(値上がり率+90%)"
+        "【スクリーニング結果】\n"
+        "採用銘柄: 2銘柄\n"
+        "候補: 2件\n"
+        "除外:\n"
+        f"  高額({config.MAX_SHARE_PRICE:g}円超): 0件\n"
+        "  規制: 0件\n"
+        "  地方取引所: 0件\n"
+        "上位銘柄:\n"
+        "- 7203(値上がり率+100%)\n"
+        "- 8306(値上がり率+90%)"
     ]
     saved_result = repository.load_latest()
     assert saved_result.symbols == result.symbols
@@ -144,9 +152,16 @@ def test_filtering_usecase_reads_previous_screening_result(tmp_path):
     ).execute()
     assert len(result.symbols) == 10
     assert notifications == [
-        "フィルタリング完了: 10銘柄（スクリーニング12件中、出来高減少0件除外）\n"
-        "上位: 0(20日平均の2.0倍) / 1(20日平均の2.0倍) / "
-        "10(20日平均の2.0倍) / 11(20日平均の2.0倍) / 2(20日平均の2.0倍)"
+        "【フィルタリング結果】\n"
+        "採用銘柄: 10銘柄\n"
+        "スクリーニング対象: 12件\n"
+        "出来高条件で除外: 0件\n"
+        "上位銘柄:\n"
+        "- 0(20日平均の2.0倍)\n"
+        "- 1(20日平均の2.0倍)\n"
+        "- 10(20日平均の2.0倍)\n"
+        "- 11(20日平均の2.0倍)\n"
+        "- 2(20日平均の2.0倍)"
     ]
     assert result_repository.load_latest().symbols == result.symbols
 
@@ -176,8 +191,12 @@ def test_filtering_usecase_excludes_symbols_below_min_surge_ratio(tmp_path, monk
     # 出来高減少銘柄(6619, 0.9倍)は閾値未満のため候補から除外される
     assert result.symbols == ["7689"]
     assert notifications == [
-        "フィルタリング完了: 1銘柄（スクリーニング2件中、出来高減少1件除外）\n"
-        "上位: 7689(20日平均の11.5倍)"
+        "【フィルタリング結果】\n"
+        "採用銘柄: 1銘柄\n"
+        "スクリーニング対象: 2件\n"
+        "出来高条件で除外: 1件\n"
+        "上位銘柄:\n"
+        "- 7689(20日平均の11.5倍)"
     ]
 
 

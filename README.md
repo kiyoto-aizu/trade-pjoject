@@ -100,12 +100,31 @@ pip install -r requirements.txt
 
 `.env` またはシステム環境変数に設定してください。パスワードなどの秘密情報はコミットしないでください。
 
+#### 運用モード
+
+次の3つの組み合わせを使い分けます。
+
+| モード | `IS_DEMO` | `TRADING_MODE` | `ENABLE_LIVE_ORDERING` | API接続 | 注文 |
+| --- | --- | --- | --- | --- | --- |
+| デモモード | `true` | `paper` | `false` | デモ | 仮想注文 |
+| ペーパートレード | `false` | `paper` | `false` | 本番 | 仮想注文 |
+| 本番モード | `false` | `live` | `true` | 本番 | 実注文 |
+
+各設定の役割は次のとおりです。
+
+- `IS_DEMO`: kabuステーションAPIの接続先と認証情報を選択します。
+- `TRADING_MODE`: 取引監視の注文方法を選択します。`paper`なら仮想注文、`live`なら実注文です。
+- `ENABLE_LIVE_ORDERING`: 実注文を許可する最終スイッチです。`TRADING_MODE=live`の場合に`true`が必要です。
+
+デモモードは、現在の実装ではデモAPIを使った仮想注文です。デモAPIへ実注文を送る構成にはしていません。
+
 ```env
 IS_DEMO=true
 API_PASSWORD_DEV=<デモ環境のAPIパスワード>
 API_PASSWORD_PRD=<本番環境のAPIパスワード>
 API_PORT_DEV=18081
 API_PORT_PRD=18080
+TRADING_MODE=paper
 ENABLE_LIVE_ORDERING=false
 
 LINE_MESSAGE_CHANNEL_TOKEN=<チャネルアクセストークン>
@@ -119,7 +138,8 @@ API_SOFT_LIMIT=1000000
 MAX_SHARE_PRICE=300
 ```
 
-`IS_DEMO=false` の場合でも、実注文を有効にするには `ENABLE_LIVE_ORDERING=true` を明示的に設定する必要があります。
+本番APIを使うペーパートレードでは、`IS_DEMO=false`、`TRADING_MODE=paper`、`ENABLE_LIVE_ORDERING=false`にします。
+実注文を行う場合だけ、`TRADING_MODE=live`と`ENABLE_LIVE_ORDERING=true`に変更してください。
 
 ## 実行方法
 
@@ -202,6 +222,8 @@ Windowsの計画実行では、スクリーニング・フィルタリングと�
 ```
 
 このタスクは `TRADING_MODE=paper` と `ENABLE_LIVE_ORDERING=false` をプロセス内で設定するため、`.env` の本番API設定を変更せずにペーパートレードを実行します。kabuステーションは起動・ログイン済みにしてください。
+
+`register_trading_task.ps1`で登録した取引タスクは常にペーパー固定です。本番モードで実注文を行う場合は、設定を確認したうえで `python -m src.entrypoints.run_trading` を直接起動してください。
 
 ## 取引フロー
 

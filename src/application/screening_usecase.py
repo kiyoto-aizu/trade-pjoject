@@ -46,6 +46,8 @@ class ScreeningUseCase:
         self.exchange_repository = exchange_repository
         self.result_repository = result_repository
         self.notifier = notifier
+        self.batch_started = None
+        self.batch_finished = None
 
     def execute(self) -> ScreeningResult:
         """
@@ -82,20 +84,33 @@ class ScreeningUseCase:
         )
 
         regulations = {}
-        for symbol in price_exclusion_result.remaining:
-            exchange = self.exchange_repository.get_primary_exchange(symbol)
-            sleep(config.API_REQUEST_INTERVAL_SECONDS)
-            if exchange is None:
-                regulations[symbol] = Regulation(symbol, True, "優先市場情報取得失敗", 0)
-                continue
-            regulation = self.regulation_repository.get_regulation(symbol, exchange)
-            sleep(config.API_REQUEST_INTERVAL_SECONDS)
-            regulations[symbol] = Regulation(
-                symbol=symbol,
-                is_restricted=regulation.is_restricted,
-                reason=regulation.reason,
-                primary_exchange=exchange,
-            )
+        remaining = price_exclusion_result.remaining
+        batch_size = config.SCREENING_BATCH_SIZE
+        for batch_start in range(0, len(remaining), batch_size):
+            batch = remaining[batch_start:batch_start + batch_size]
+            batch_number = batch_start // batch_size + 1
+            logger.info("スクリーニングバッチ開始: 番号=%d | 銘柄数=%d", batch_number, len(batch))
+            if self.batch_started and not self.batch_started(batch, batch_number):
+                raise RuntimeError(f"スクリーニングバッチ{batch_number}の銘柄登録に失敗しました")
+            try:
+                for symbol in batch:
+                    exchange = self.exchange_repository.get_primary_exchange(symbol)
+                    sleep(config.API_REQUEST_INTERVAL_SECONDS)
+                    if exchange is None:
+                        regulations[symbol] = Regulation(symbol, True, "優先市場情報取得失敗", 0)
+                        continue
+                    regulation = self.regulation_repository.get_regulation(symbol, exchange)
+                    sleep(config.API_REQUEST_INTERVAL_SECONDS)
+                    regulations[symbol] = Regulation(
+                        symbol=symbol,
+                        is_restricted=regulation.is_restricted,
+                        reason=regulation.reason,
+                        primary_exchange=exchange,
+                    )
+            finally:
+                if self.batch_finished and not self.batch_finished(batch, batch_number):
+                    raise RuntimeError(f"スクリーニングバッチ{batch_number}の銘柄解除に失敗しました")
+                logger.info("スクリーニングバッチ終了: 番号=%d | 銘柄数=%d", batch_number, len(batch))
         exclusion_result = exclude_by_regulation(price_exclusion_result.remaining, regulations)
         exclusion_result.excluded_by_price_count = price_exclusion_result.excluded_by_price_count
         symbols = limit_candidates(exclusion_result.remaining)

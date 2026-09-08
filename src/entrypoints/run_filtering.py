@@ -14,6 +14,7 @@ from src.application.filtering_usecase import FilteringUseCase
 from src.infrastructure.kabu.get_board import get_current_board
 from src.infrastructure.kabu.get_token import get_api_token
 from src.infrastructure.kabu.unregister import unregister_all
+from src.infrastructure.execution_lock import market_workflow_lock
 from src.infrastructure.market_data.yahoo_finance_client import YahooFinanceClient
 from src.infrastructure.notification.line_notify import process_notification, send_line_notify
 from src.infrastructure.persistence.filtering_result_repository import FilteringResultRepository
@@ -82,21 +83,25 @@ def main() -> None:
     5. 結果を保存・通知
     """
     configure_logging()
-    with process_notification('フィルタリング', notify_lifecycle=False):
-        token = get_api_token()
-        if not token:
-            raise SystemExit('トークン取得に失敗しました。')
-        if unregister_all(token) is None:
-            raise SystemExit('銘柄登録の全解除に失敗しました。')
-        root = Path(__file__).resolve().parents[2] / 'data'
-        usecase = FilteringUseCase(
-            ScreeningResultRepository(root / 'screening'),
-            BoardClient(token),
-            YahooFinanceClient(),
-            FilteringResultRepository(root / 'filtering'),
-            send_line_notify,
-        )
-        filtering_run(usecase)
+    with market_workflow_lock() as acquired:
+        if not acquired:
+            logging.getLogger(__name__).warning("他の市場処理が実行中のため、フィルタリングを中止します。")
+            return
+        with process_notification('フィルタリング', notify_lifecycle=False):
+            token = get_api_token()
+            if not token:
+                raise SystemExit('トークン取得に失敗しました。')
+            if unregister_all(token) is None:
+                raise SystemExit('銘柄登録の全解除に失敗しました。')
+            root = Path(__file__).resolve().parents[2] / 'data'
+            usecase = FilteringUseCase(
+                ScreeningResultRepository(root / 'screening'),
+                BoardClient(token),
+                YahooFinanceClient(),
+                FilteringResultRepository(root / 'filtering'),
+                send_line_notify,
+            )
+            filtering_run(usecase)
 
 
 if __name__ == '__main__':

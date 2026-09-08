@@ -16,6 +16,7 @@ from src.infrastructure.kabu.get_board import get_current_board
 from src.infrastructure.market_data.get_5d_closes import get_yahoo_5d_closes
 from src.infrastructure.notification.line_notify import process_notification
 from src.infrastructure.persistence.filtering_result_repository import FilteringResultRepository
+from src.infrastructure.execution_lock import market_workflow_lock
 
 
 def is_trading_session(now: datetime) -> bool:
@@ -79,29 +80,33 @@ def main(now_provider=None) -> None:
     """
     configure_logging()
     logging.getLogger(__name__).info('取引モード: %s', config.TRADING_MODE_LABEL)
-    with process_notification(f'取引（{config.TRADING_MODE_LABEL}）'):
-        now = (now_provider or datetime.now)()
-        if not is_trading_session(now):
-            logging.getLogger(__name__).info('市場時間外または休場日のため、取引を開始しません。')
+    with market_workflow_lock() as acquired:
+        if not acquired:
+            logging.getLogger(__name__).warning("他の市場処理が実行中のため、トレーディングを中止します。")
             return
+        with process_notification(f'取引（{config.TRADING_MODE_LABEL}）'):
+            now = (now_provider or datetime.now)()
+            if not is_trading_session(now):
+                logging.getLogger(__name__).info('市場時間外または休場日のため、取引を開始しません。')
+                return
 
-        filtering_repository = FilteringResultRepository(Path(__file__).resolve().parents[2] / 'data' / 'filtering')
-        filtering_result = filtering_repository.load_for_date(now.date())
-        if not filtering_result or not filtering_result.symbols:
-            logging.getLogger(__name__).info('当日のフィルタ結果がないため、取引を開始しません。')
-            return
+            filtering_repository = FilteringResultRepository(Path(__file__).resolve().parents[2] / 'data' / 'filtering')
+            filtering_result = filtering_repository.load_for_date(now.date())
+            if not filtering_result or not filtering_result.symbols:
+                logging.getLogger(__name__).info('当日のフィルタ結果がないため、取引を開始しません。')
+                return
 
-        token = get_api_token()
-        if not token:
-            raise SystemExit('トークン取得に失敗しました。')
+            token = get_api_token()
+            if not token:
+                raise SystemExit('トークン取得に失敗しました。')
 
-        market_data = collect_market_data_sources(token, filtering_result.symbols)
-        if market_data is None:
-            logging.getLogger(__name__).error('市場データまたは板情報を取得できないため、取引を開始しません。')
-            return
+            market_data = collect_market_data_sources(token, filtering_result.symbols)
+            if market_data is None:
+                logging.getLogger(__name__).error('市場データまたは板情報を取得できないため、取引を開始しません。')
+                return
 
-        bot = TradingBot(token)
-        bot.run(preflight_market_data=market_data)
+            bot = TradingBot(token)
+            bot.run(preflight_market_data=market_data)
 
 
 if __name__ == '__main__':

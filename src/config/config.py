@@ -142,6 +142,9 @@ SCREENING_EXCHANGE_DIVISIONS = [
     if division.strip()
 ]
 
+# Kabu Station APIの登録銘柄上限に合わせたスクリーニング処理単位
+SCREENING_BATCH_SIZE = 50
+
 # フィルタリングで候補として残す出来高急増率の下限（この倍率未満は対象外）
 MIN_VOLUME_SURGE_RATIO = float(os.getenv("MIN_VOLUME_SURGE_RATIO", "1.0"))
 

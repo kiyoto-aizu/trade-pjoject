@@ -112,8 +112,8 @@ DEFAULT_ORDER_QTY = 100
 # 同じ銘柄の重複注文を防ぐためのロック期間（秒）
 ORDER_LOCK_SECONDS = 60
 
-# 1回の取引あたりの最大注文金額
-MAX_ORDER_AMOUNT_PER_TRADE = float(os.getenv("MAX_ORDER_AMOUNT_PER_TRADE", "100000"))
+# 1回の取引あたりの最大注文金額（運用資金10万円の10%）
+MAX_ORDER_AMOUNT_PER_TRADE = float(os.getenv("MAX_ORDER_AMOUNT_PER_TRADE", "10000"))
 
 # 1日あたりの最大注文数
 MAX_ORDER_COUNT_PER_DAY = int(os.getenv("MAX_ORDER_COUNT_PER_DAY", "10"))
@@ -128,7 +128,7 @@ API_SOFT_LIMIT = float(os.getenv("API_SOFT_LIMIT", "1000000"))
 API_REQUEST_INTERVAL_SECONDS = float(os.getenv("API_REQUEST_INTERVAL_SECONDS", "0.12"))
 
 # 取引に利用可能な運用資本
-OPERATING_CAPITAL = float(os.getenv("OPERATING_CAPITAL", "1000000"))
+OPERATING_CAPITAL = float(os.getenv("OPERATING_CAPITAL", "100000"))
 
 # スクリーニング対象とする1株あたりの株価上限
 MAX_SHARE_PRICE = float(os.getenv("MAX_SHARE_PRICE", "300"))

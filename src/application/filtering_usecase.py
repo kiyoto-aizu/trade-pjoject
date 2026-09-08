@@ -65,10 +65,18 @@ class FilteringUseCase:
             for symbol in screening.symbols:
                 board = self.board_client.get_current_board(symbol)
                 average = self.volume_client.get_average_volume(symbol, 20)
-                if not board or board.get("current_price") is None or average is None:
+                if not board:
+                    logger.warning("フィルタリングスキップ: 銘柄=%s 理由=板情報なし", symbol)
+                    continue
+                if board.get("current_price") is None:
+                    logger.warning("フィルタリングスキップ: 銘柄=%s 理由=現在値なし", symbol)
+                    continue
+                if average is None:
+                    logger.warning("フィルタリングスキップ: 銘柄=%s 理由=平均出来高なし", symbol)
                     continue
                 today_volume = board.get("trading_volume")
                 if today_volume is None:
+                    logger.warning("フィルタリングスキップ: 銘柄=%s 理由=当日出来高なし", symbol)
                     continue
                 try:
                     surge_ratio = calculate_volume_surge_ratio(float(today_volume), average)

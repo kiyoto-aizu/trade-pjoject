@@ -20,6 +20,7 @@ class BoardRepository:
             "symbol_name": response.get("SymbolName", f"銘柄:{symbol}"),
             "current_price": response.get("CurrentPrice"),
             "trading_volume": response.get("TradingVolume"),
+            "response_keys": sorted(response.keys()),
         }
 
     def get_current_price(self, symbol: str) -> float | None:

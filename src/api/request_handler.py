@@ -92,3 +92,21 @@ def send_get(url, params=None, headers=None, timeout=10):
         else:
             logger.error("❌ [GET通信エラー] URL: %s | 理由: %s", url, e)
         return None
+
+
+def send_put(url, data=None, headers=None, timeout=10):
+    """PUTリクエストを送信し、JSON応答を返します。"""
+    try:
+        _wait_for_request_slot()
+        response = requests.put(url, json=data, headers=headers, timeout=timeout)
+        response.raise_for_status()
+        return response.json()
+    except requests.RequestException as e:
+        response_text = None
+        if hasattr(e, 'response') and getattr(e, 'response') is not None:
+            response_text = getattr(e.response, 'text', None)
+        if response_text:
+            logger.error("❌ [PUT通信エラー] URL: %s | 理由: %s | レスポンス: %s", url, e, response_text)
+        else:
+            logger.error("❌ [PUT通信エラー] URL: %s | 理由: %s", url, e)
+        return None

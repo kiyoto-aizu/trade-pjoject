@@ -14,6 +14,7 @@ from src.infrastructure.kabu.get_token import get_api_token
 from src.infrastructure.kabu.ranking_repository import RankingRepository
 from src.infrastructure.kabu.regulation_repository import RegulationRepository
 from src.infrastructure.kabu.primaryexchange_repository import PrimaryExchangeRepository
+from src.infrastructure.kabu.unregister import unregister_all
 from src.infrastructure.notification.line_notify import process_notification, send_line_notify
 from src.infrastructure.persistence.screening_result_repository import ScreeningResultRepository
 from src.application.screening_usecase import ScreeningUseCase
@@ -55,6 +56,8 @@ def main() -> None:
         token = get_api_token()
         if not token:
             raise SystemExit('トークン取得に失敗しました。')
+        if unregister_all(token) is None:
+            raise SystemExit('銘柄登録の全解除に失敗しました。')
         data_dir = Path(__file__).resolve().parents[2] / 'data' / 'screening'
         usecase = ScreeningUseCase(
             RankingRepository(token),

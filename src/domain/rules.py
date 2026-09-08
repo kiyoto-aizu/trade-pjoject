@@ -137,6 +137,7 @@ def is_safe_to_order(
     has_holdings: bool,
     order_history: List[OrderHistoryEntry],
     lock_seconds: int,
+    warn_on_missing_holdings: bool = True,
 ) -> bool:
     """
     取引シグナルに基づいて注文を実行しても安全かどうかを総合的に判定します。
@@ -168,7 +169,8 @@ def is_safe_to_order(
             return False
 
     if signal.side == OrderSide.SELL and not has_holdings:
-        logger.warning("保有株が確認できないため、売り注文を見送ります。")
+        if warn_on_missing_holdings:
+            logger.warning("保有株が確認できないため、売り注文を見送ります。")
         return False
 
     if is_duplicate_order(signal, order_history):

@@ -79,6 +79,7 @@ class TradingUseCase:
         self.last_positions = []
         self.kill_switch_triggered = False
         self.api_soft_limit: Optional[float] = None
+        self._missing_holding_warning_symbols: set[str] = set()
 
     # ================================================================================
     # 注文履歴の管理
@@ -215,6 +216,7 @@ class TradingUseCase:
             sleep: スリープ関数（テスト用、デフォルト：time.sleep）
         """
         self._load_order_history()
+        self._missing_holding_warning_symbols.clear()
         now_provider = now_provider or datetime.now
         sleep = sleep or time.sleep
         if self.filtering_result_repository:
@@ -278,7 +280,22 @@ class TradingUseCase:
                         kill_switch_triggered = True
                         break
                     # 注文の安全性を確認
-                    if not is_safe_to_order(signal, wallet_amount, self._has_holdings(symbol, positions), self.order_history, config.ORDER_LOCK_SECONDS):
+                    has_holdings = self._has_holdings(symbol, positions)
+                    should_warn_missing_holdings = (
+                        signal.side == config.OrderSide.SELL
+                        and not has_holdings
+                        and symbol not in self._missing_holding_warning_symbols
+                    )
+                    if not is_safe_to_order(
+                        signal,
+                        wallet_amount,
+                        has_holdings,
+                        self.order_history,
+                        config.ORDER_LOCK_SECONDS,
+                        warn_on_missing_holdings=should_warn_missing_holdings,
+                    ):
+                        if signal.side == config.OrderSide.SELL and not has_holdings:
+                            self._missing_holding_warning_symbols.add(symbol)
                         continue
                     # 注文を実行（成否はResultコードで判定。失敗時はNoneが返る）
                     if self.order_sender and hasattr(self.order_sender, 'set_price'):

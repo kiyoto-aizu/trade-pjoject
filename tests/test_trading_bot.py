@@ -202,3 +202,56 @@ def test_trading_use_case_does_not_record_rejected_order(monkeypatch, tmp_path):
 
     assert order_calls == [('7203', config.OrderSide.BUY.value)]
     assert use_case.order_history == []
+
+
+def test_trading_use_case_warns_once_for_repeated_sell_signal_without_holdings(monkeypatch, tmp_path, caplog):
+    symbols_path = tmp_path / 'top_symbols.json'
+    symbols_path.write_text(json.dumps(['7203']), encoding='utf-8')
+    current_times = iter([
+        datetime(2026, 9, 4, 10, 0),
+        datetime(2026, 9, 4, 10, 0),
+        datetime(2026, 9, 4, 10, 1),
+        datetime(2026, 9, 4, 10, 1),
+        datetime(2026, 9, 4, 15, 30),
+    ])
+
+    class MarketDataClient:
+        def get_yahoo_5d_closes(self, symbol):
+            return [100.0] * 5
+
+    class BoardClient:
+        def get_current_board(self, token, symbol):
+            return {'current_price': 101.0}
+
+    class WalletClient:
+        def get_wallet_cash(self, token):
+            return {'StockAccountWallet': 100_000.0}
+
+    class PositionsClient:
+        def get_positions(self, token):
+            return []
+
+    monkeypatch.setattr(config, 'IS_DEMO', True)
+    monkeypatch.setattr(config, 'API_SOFT_LIMIT', 100_000.0)
+    use_case = TradingUseCase(
+        token='dummy',
+        order_history_path=tmp_path / 'order_history.json',
+        market_data_client=MarketDataClient(),
+        board_client=BoardClient(),
+        wallet_client=WalletClient(),
+        positions_client=PositionsClient(),
+        notifier=lambda message: None,
+    )
+
+    with caplog.at_level('WARNING', logger='src.domain.rules'):
+        use_case.run(
+            top_symbols_path=symbols_path,
+            now_provider=lambda: next(current_times),
+            sleep=lambda seconds: None,
+        )
+
+    warnings = [
+        record for record in caplog.records
+        if record.message == '保有株が確認できないため、売り注文を見送ります。'
+    ]
+    assert len(warnings) == 1

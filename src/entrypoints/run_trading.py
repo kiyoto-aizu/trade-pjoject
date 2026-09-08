@@ -33,7 +33,7 @@ def collect_market_data_sources(token: str, symbols: list[str]) -> dict[str, dic
     market_data = {}
     for symbol in symbols:
         closes = get_yahoo_5d_closes(symbol)
-        if not closes or len(closes) < 5:
+        if not closes or len(closes) < config.RSI_MINIMUM_CLOSES:
             return None
         board = get_current_board(token, symbol)
         if not board or board.get('current_price') is None:

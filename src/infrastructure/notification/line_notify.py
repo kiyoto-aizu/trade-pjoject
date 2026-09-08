@@ -34,7 +34,9 @@ def process_notification(process_name: str, notify_lifecycle: bool = True):
         notify_process_start(process_name)
     try:
         yield
-    except BaseException:
+    except KeyboardInterrupt:
+        raise
+    except (Exception, SystemExit):
         logger.exception("%s処理が予期しないエラーで終了しました", process_name)
         if notify_lifecycle:
             notify_process_end(process_name, success=False)

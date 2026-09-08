@@ -94,19 +94,26 @@ class ScreeningUseCase:
                 raise RuntimeError(f"スクリーニングバッチ{batch_number}の銘柄登録に失敗しました")
             try:
                 for symbol in batch:
-                    exchange = self.exchange_repository.get_primary_exchange(symbol)
-                    sleep(config.API_REQUEST_INTERVAL_SECONDS)
-                    if exchange is None:
-                        regulations[symbol] = Regulation(symbol, True, "優先市場情報取得失敗", 0)
+                    try:
+                        exchange = self.exchange_repository.get_primary_exchange(symbol)
+                        sleep(config.API_REQUEST_INTERVAL_SECONDS)
+                        if exchange is None:
+                            regulations[symbol] = Regulation(symbol, True, "優先市場情報取得失敗", 0)
+                            continue
+                        regulation = self.regulation_repository.get_regulation(symbol, exchange)
+                        sleep(config.API_REQUEST_INTERVAL_SECONDS)
+                        regulations[symbol] = Regulation(
+                            symbol=symbol,
+                            is_restricted=regulation.is_restricted,
+                            reason=regulation.reason,
+                            primary_exchange=exchange,
+                        )
+                    except Exception:
+                        logger.exception("%s の規制情報取得中にエラーが発生しました", symbol)
+                        regulations[symbol] = Regulation(
+                            symbol, True, "規制情報取得時エラー", 0
+                        )
                         continue
-                    regulation = self.regulation_repository.get_regulation(symbol, exchange)
-                    sleep(config.API_REQUEST_INTERVAL_SECONDS)
-                    regulations[symbol] = Regulation(
-                        symbol=symbol,
-                        is_restricted=regulation.is_restricted,
-                        reason=regulation.reason,
-                        primary_exchange=exchange,
-                    )
             finally:
                 if self.batch_finished and not self.batch_finished(batch, batch_number):
                     raise RuntimeError(f"スクリーニングバッチ{batch_number}の銘柄解除に失敗しました")

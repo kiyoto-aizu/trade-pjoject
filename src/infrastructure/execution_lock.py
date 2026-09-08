@@ -1,9 +1,36 @@
 from contextlib import contextmanager
 from pathlib import Path
-import msvcrt
+
+try:
+    import msvcrt
+except ImportError:
+    msvcrt = None
+
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
 
 
 LOCK_FILE = Path(__file__).resolve().parents[2] / ".market_workflow.lock"
+
+
+def _lock(handle) -> None:
+    if msvcrt is not None:
+        handle.seek(0)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+    elif fcntl is not None:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    else:
+        raise OSError("この環境ではファイルロックを利用できません。")
+
+
+def _unlock(handle) -> None:
+    if msvcrt is not None:
+        handle.seek(0)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+    elif fcntl is not None:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 @contextmanager
@@ -13,8 +40,7 @@ def market_workflow_lock():
     acquired = False
     try:
         try:
-            handle.seek(0)
-            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            _lock(handle)
             acquired = True
         except OSError:
             yield False
@@ -22,6 +48,5 @@ def market_workflow_lock():
         yield True
     finally:
         if acquired:
-            handle.seek(0)
-            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            _unlock(handle)
         handle.close()

@@ -14,13 +14,16 @@ from typing import List, Optional
 
 from src.config import config
 from src.domain.models import OrderHistoryEntry, PriceLimit, TradeSignal
-from src.domain.rules import calculate_price_limit, check_kill_switch, is_market_closed, is_safe_to_order
+from src.domain.rules import calculate_price_limit, calculate_rsi, check_kill_switch, is_market_closed, is_safe_to_order
 from src.infrastructure.kabu.get_board import get_current_board
 from src.infrastructure.kabu.get_positions import get_positions
 from src.infrastructure.kabu.get_wallet import get_wallet_cash
 from src.infrastructure.kabu.get_apisoftlimit import get_api_soft_limit
 from src.infrastructure.kabu.send_order import place_market_order
-from src.infrastructure.market_data.get_5d_closes import get_yahoo_5d_closes
+from src.infrastructure.market_data.get_daily_closes import get_yahoo_daily_closes
+
+# 既存のテスト・注入コードとの互換性を保つための旧API名
+get_yahoo_5d_closes = get_yahoo_daily_closes
 from src.infrastructure.notification.line_notify import send_line_notify
 from src.infrastructure.persistence.storage import read_json, write_json
 
@@ -241,12 +244,18 @@ class TradingUseCase:
                 try:
                     # 過去5日の終値を取得
                     snapshot = preflight_market_data.get(symbol) if use_preflight_market_data else None
-                    closes = snapshot['closes'] if snapshot else (
-                        self.market_data_client.get_yahoo_5d_closes(symbol)
-                        if self.market_data_client else get_yahoo_5d_closes(symbol)
-                    )
+                    if snapshot:
+                        closes = snapshot['closes']
+                    elif self.market_data_client:
+                        get_closes = getattr(self.market_data_client, 'get_yahoo_daily_closes', None)
+                        if get_closes is None:
+                            get_closes = self.market_data_client.get_yahoo_5d_closes
+                        closes = get_closes(symbol)
+                    else:
+                        closes = get_yahoo_5d_closes(symbol)
                     limit = calculate_price_limit(closes)
-                    if limit is None:
+                    rsi = calculate_rsi(closes, config.RSI_PERIOD, config.RSI_MINIMUM_CLOSES)
+                    if limit is None or rsi is None:
                         continue
                     # リアルタイム株価を取得
                     board = snapshot['board'] if snapshot else (
@@ -256,7 +265,14 @@ class TradingUseCase:
                     if not board or board.get('current_price') is None:
                         continue
                     # 売買シグナルを生成
-                    signal = TradeSignal.evaluate(symbol, board['current_price'], limit)
+                    signal = TradeSignal.evaluate(
+                        symbol,
+                        board['current_price'],
+                        limit,
+                        rsi,
+                        config.RSI_BUY_THRESHOLD,
+                        config.RSI_SELL_THRESHOLD,
+                    )
                     logger.info(
                         "売買判定: 銘柄=%s | 現在値=%.1f | 買い基準=%.1f | 売り基準=%.1f | 判定=%s",
                         symbol,

@@ -148,6 +148,12 @@ SCREENING_BATCH_SIZE = 50
 # フィルタリングで候補として残す出来高急増率の下限（この倍率未満は対象外）
 MIN_VOLUME_SURGE_RATIO = float(os.getenv("MIN_VOLUME_SURGE_RATIO", "1.0"))
 
+# 売買シグナルの行き過ぎ判定（Wilder方式のRSI）
+RSI_PERIOD = int(os.getenv("RSI_PERIOD", "14"))
+RSI_BUY_THRESHOLD = float(os.getenv("RSI_BUY_THRESHOLD", "30"))
+RSI_SELL_THRESHOLD = float(os.getenv("RSI_SELL_THRESHOLD", "70"))
+RSI_MINIMUM_CLOSES = int(os.getenv("RSI_MINIMUM_CLOSES", "30"))
+
 # ================================================================================
 # 注文履歴・市場設定
 # ================================================================================

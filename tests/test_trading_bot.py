@@ -16,6 +16,10 @@ from src.trading.trading import TradingBot
 def set_env(monkeypatch):
     monkeypatch.setenv('API_PASSWORD_DEV', 'dummy')
     monkeypatch.setenv('IS_DEMO', 'true')
+    monkeypatch.setattr(config, "RSI_PERIOD", 2)
+    monkeypatch.setattr(config, "RSI_MINIMUM_CLOSES", 5)
+    monkeypatch.setattr(config, "RSI_BUY_THRESHOLD", 50.0)
+    monkeypatch.setattr(config, "RSI_SELL_THRESHOLD", 0.0)
     return monkeypatch
 
 

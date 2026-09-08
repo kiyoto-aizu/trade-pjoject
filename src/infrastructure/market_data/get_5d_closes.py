@@ -1,4 +1,10 @@
-"""infrastructure/market_data/get_5d_closes.py"""
+"""後方互換用の価格履歴取得モジュール。"""
+from src.infrastructure.market_data.get_daily_closes import get_yahoo_daily_closes
+
+
+def get_yahoo_5d_closes(symbol):
+    """旧API名を維持しつつ、RSI用の確定終値履歴を返します。"""
+    return get_yahoo_daily_closes(symbol)
 import logging
 from datetime import datetime, timedelta, timezone
 

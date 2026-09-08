@@ -3,9 +3,10 @@ from __future__ import annotations
 from datetime import date
 from typing import Dict, List
 
+from src.config import config
 from src.domain.enums import OrderSide
 from src.domain.models import TradeSignal
-from src.domain.rules import calculate_price_limit
+from src.domain.rules import calculate_price_limit, calculate_rsi
 
 
 def _calculate_metrics(trade_results: List[float], starting_cash: float) -> dict:
@@ -145,11 +146,12 @@ def simulate_backtest(
                     })
                     continue
 
-            window = closes[max(0, index - 5): index]
-            if len(window) < 5:
+            window = closes[max(0, index - config.RSI_MINIMUM_CLOSES): index]
+            if len(window) < config.RSI_MINIMUM_CLOSES:
                 continue
             limit = calculate_price_limit(window)
-            if limit is None:
+            rsi = calculate_rsi(window, config.RSI_PERIOD, config.RSI_MINIMUM_CLOSES)
+            if limit is None or rsi is None:
                 continue
 
             if noise_band_ratio > 0:
@@ -167,12 +169,19 @@ def simulate_backtest(
             base_sell = limit.sell
             buy_threshold = base_buy * buy_threshold_ratio
             sell_threshold = base_sell * sell_threshold_ratio
-            if price <= buy_threshold:
-                signal = TradeSignal(symbol=symbol, side=OrderSide.BUY, price=price, qty=qty_per_trade)
-            elif price >= sell_threshold:
-                signal = TradeSignal(symbol=symbol, side=OrderSide.SELL, price=price, qty=qty_per_trade)
-            else:
+            adjusted_limit = type(limit)(buy=buy_threshold, sell=sell_threshold)
+            signal = TradeSignal.evaluate(
+                symbol,
+                price,
+                adjusted_limit,
+                rsi,
+                config.RSI_BUY_THRESHOLD,
+                config.RSI_SELL_THRESHOLD,
+            )
+            if signal is None:
                 signal = None
+            else:
+                signal.qty = qty_per_trade
             if signal is None:
                 continue
 
@@ -392,11 +401,12 @@ def simulate_timeseries_backtest(
                 price_value
                 for history_date, price_value in sorted(dated_history_by_symbol.get(symbol, {}).items())
                 if history_date < date_text
-            ][-5:]
-            if len(previous_prices) < 5:
+            ][-config.RSI_MINIMUM_CLOSES:]
+            if len(previous_prices) < config.RSI_MINIMUM_CLOSES:
                 continue
             limit = calculate_price_limit(previous_prices)
-            if limit is None:
+            rsi = calculate_rsi(previous_prices, config.RSI_PERIOD, config.RSI_MINIMUM_CLOSES)
+            if limit is None or rsi is None:
                 continue
 
             base_mean = (limit.buy + limit.sell) / 2.0
@@ -405,7 +415,19 @@ def simulate_timeseries_backtest(
             if trend_strength_ratio > 0 and abs(price - base_mean) / base_mean < trend_strength_ratio:
                 continue
 
-            if price <= limit.buy * buy_threshold_ratio:
+            adjusted_limit = type(limit)(
+                buy=limit.buy * buy_threshold_ratio,
+                sell=limit.sell * sell_threshold_ratio,
+            )
+            signal = TradeSignal.evaluate(
+                symbol,
+                price,
+                adjusted_limit,
+                rsi,
+                config.RSI_BUY_THRESHOLD,
+                config.RSI_SELL_THRESHOLD,
+            )
+            if signal is not None and signal.side == OrderSide.BUY:
                 if holdings.get(symbol, 0) == 0 and cash >= price * qty_per_trade:
                     fee = price * qty_per_trade * fee_rate
                     cash -= price * qty_per_trade + fee
@@ -420,7 +442,7 @@ def simulate_timeseries_backtest(
                         "fee": fee,
                         "date": date_text,
                     })
-            elif price >= limit.sell * sell_threshold_ratio and holdings.get(symbol, 0) > 0:
+            elif signal is not None and signal.side == OrderSide.SELL and holdings.get(symbol, 0) > 0:
                 close_position(symbol, date_text, price)
 
     last_date = max(daily_symbols) if daily_symbols else ""

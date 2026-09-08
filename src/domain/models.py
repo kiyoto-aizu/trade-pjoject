@@ -123,7 +123,15 @@ class TradeSignal:
     qty: int
 
     @classmethod
-    def evaluate(cls, symbol: str, current_price: float, limit: PriceLimit) -> Optional['TradeSignal']:
+    def evaluate(
+        cls,
+        symbol: str,
+        current_price: float,
+        limit: PriceLimit,
+        rsi: Optional[float],
+        rsi_buy_threshold: float = 30.0,
+        rsi_sell_threshold: float = 70.0,
+    ) -> Optional['TradeSignal']:
         """
         現在価格と基準値を比較して、取引シグナルを生成します。
         
@@ -135,9 +143,11 @@ class TradeSignal:
         Returns:
             TradeSignalインスタンス（シグナルがない場合はNone）
         """
-        if current_price <= limit.buy:
+        if rsi is None:
+            return None
+        if current_price <= limit.buy and rsi <= rsi_buy_threshold:
             return cls(symbol=symbol, side=OrderSide.BUY, price=current_price, qty=100)
-        if current_price >= limit.sell:
+        if current_price >= limit.sell and rsi >= rsi_sell_threshold:
             return cls(symbol=symbol, side=OrderSide.SELL, price=current_price, qty=100)
         return None
 

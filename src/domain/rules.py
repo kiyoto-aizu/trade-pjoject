@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 # 価格基準値の計算
 # ================================================================================
 
-def calculate_price_limit(closes: List[float]) -> Optional[PriceLimit]:
+def calculate_price_limit(closes: List[float], period: int = 5) -> Optional[PriceLimit]:
     """
     過去の終値から移動平均を計算し、買い/売り基準値を決定します。
     
@@ -29,14 +29,38 @@ def calculate_price_limit(closes: List[float]) -> Optional[PriceLimit]:
         買い基準値（移動平均の99%）と売り基準値（移動平均の101%）を含むPriceLimitオブジェクト
         データ不足の場合はNone
     """
-    if not closes or len(closes) < 5:
+    if not closes or len(closes) < period:
         return None
 
-    moving_average = sum(closes) / len(closes)
+    moving_average = sum(closes[-period:]) / period
     return PriceLimit(
         buy=round(moving_average * 0.99, 1),
         sell=round(moving_average * 1.01, 1),
     )
+
+
+def calculate_rsi(closes: List[float], period: int = 14, minimum_closes: int = 30) -> Optional[float]:
+    """確定終値からWilder方式のRSIを計算します。"""
+    if len(closes) < minimum_closes or len(closes) < period + 1:
+        return None
+    if any(price <= 0 for price in closes):
+        return None
+
+    changes = [current - previous for previous, current in zip(closes, closes[1:])]
+    gains = [max(change, 0.0) for change in changes]
+    losses = [max(-change, 0.0) for change in changes]
+    average_gain = sum(gains[:period]) / period
+    average_loss = sum(losses[:period]) / period
+    for gain, loss in zip(gains[period:], losses[period:]):
+        average_gain = (average_gain * (period - 1) + gain) / period
+        average_loss = (average_loss * (period - 1) + loss) / period
+
+    if average_loss == 0:
+        return 50.0 if average_gain == 0 else 100.0
+    if average_gain == 0:
+        return 0.0
+    relative_strength = average_gain / average_loss
+    return 100.0 - (100.0 / (1.0 + relative_strength))
 
 
 # ================================================================================

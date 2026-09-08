@@ -1,5 +1,26 @@
+import pytest
+
 from src.application.backtest_usecase import simulate_backtest, simulate_timeseries_backtest
+from src.config import config
+from src.domain.rules import calculate_rsi
 from src.entrypoints.run_backtest import fetch_yahoo_history, load_history
+
+
+@pytest.fixture(autouse=True)
+def legacy_backtest_signal_parameters(monkeypatch):
+    monkeypatch.setattr(config, "RSI_PERIOD", 2)
+    monkeypatch.setattr(config, "RSI_MINIMUM_CLOSES", 5)
+    monkeypatch.setattr(config, "RSI_BUY_THRESHOLD", 50.0)
+    monkeypatch.setattr(config, "RSI_SELL_THRESHOLD", 0.0)
+
+
+def test_calculate_rsi_uses_wilder_smoothing():
+    closes = [100.0] * 16 + [101.0, 100.0, 102.0, 101.0, 103.0, 102.0, 104.0, 103.0, 105.0, 104.0, 106.0, 105.0, 107.0, 106.0]
+
+    rsi = calculate_rsi(closes, period=14, minimum_closes=30)
+
+    assert rsi is not None
+    assert 50.0 < rsi < 70.0
 
 
 def test_fetch_yahoo_history_reads_live_response(monkeypatch):
@@ -142,8 +163,8 @@ def test_simulate_backtest_tracks_trade_history_with_holding_days():
 
 def test_simulate_backtest_summarizes_symbol_and_holding_period_results():
     history = {
-        "7203": [100.0, 100.0, 100.0, 100.0, 100.0, 110.0, 90.0, 120.0],
-        "7204": [100.0, 100.0, 100.0, 100.0, 100.0, 98.0, 102.0],
+        "7203": [100.0, 100.0, 100.0, 100.0, 100.0, 110.0, 90.0, 90.0, 90.0, 120.0, 120.0],
+        "7204": [100.0, 100.0, 100.0, 100.0, 100.0, 98.0, 98.0, 102.0],
     }
 
     result = simulate_backtest(["7203", "7204"], history, starting_cash=10_000.0, qty_per_trade=100)

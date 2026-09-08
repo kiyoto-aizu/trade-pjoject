@@ -200,10 +200,7 @@ BASE_URL = f"http://localhost:{API_PORT}/kabusapi"
 # アプリケーションログのファイルパス
 LOG_FILE_PATH = str(_repo_root / "trade_project.log")
 
-# ログファイルのローテーション前の最大サイズ（バイト）
-LOG_MAX_BYTES = int(os.getenv("LOG_MAX_BYTES", str(10 * 1024 * 1024)))
-
-# 保持するバックアップログファイルの数
+# 保持する日次ログの世代数
 LOG_BACKUP_COUNT = int(os.getenv("LOG_BACKUP_COUNT", str(5)))
 
 # ログレベル (DEBUG, INFO, WARNING, ERROR, CRITICAL)

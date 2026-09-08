@@ -5,7 +5,7 @@
 ================================================================================
 """
 import logging
-from logging.handlers import RotatingFileHandler
+from logging.handlers import TimedRotatingFileHandler
 from datetime import datetime, time
 from pathlib import Path
 
@@ -59,9 +59,10 @@ def configure_logging() -> None:
     stream_handler.setFormatter(formatter)
     logging.root.addHandler(stream_handler)
 
-    file_handler = RotatingFileHandler(
+    file_handler = TimedRotatingFileHandler(
         config.LOG_FILE_PATH,
-        maxBytes=config.LOG_MAX_BYTES,
+        when='midnight',
+        interval=1,
         backupCount=config.LOG_BACKUP_COUNT,
         encoding='utf-8',
     )

@@ -257,6 +257,14 @@ class TradingUseCase:
                         continue
                     # 売買シグナルを生成
                     signal = TradeSignal.evaluate(symbol, board['current_price'], limit)
+                    logger.info(
+                        "売買判定: 銘柄=%s | 現在値=%.1f | 買い基準=%.1f | 売り基準=%.1f | 判定=%s",
+                        symbol,
+                        board['current_price'],
+                        limit.buy,
+                        limit.sell,
+                        signal.side.name if signal else "なし",
+                    )
                     if not signal:
                         continue
                     # 口座状態を確認

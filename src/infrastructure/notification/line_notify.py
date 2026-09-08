@@ -45,6 +45,10 @@ def process_notification(process_name: str, notify_lifecycle: bool = True):
 
 
 def send_line_notify(message: str) -> bool:
+    if config._is_test_runtime():
+        logger.info("テスト実行中のためLINE通知を抑止しました: %s", message)
+        return False
+
     token = config.LINE_MESSAGE_CHANNEL_TOKEN
     to_user = config.LINE_MESSAGE_TO
     if not token:

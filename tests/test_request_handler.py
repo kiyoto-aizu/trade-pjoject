@@ -1,6 +1,15 @@
 from types import SimpleNamespace
 
 from src.api import request_handler
+from src.infrastructure.notification import line_notify
+
+
+def test_line_notification_is_suppressed_during_tests(monkeypatch):
+    calls = []
+    monkeypatch.setattr(line_notify.requests, 'post', lambda *args, **kwargs: calls.append(args))
+
+    assert not line_notify.send_line_notify('test message')
+    assert calls == []
 
 
 def test_request_handler_applies_interval_between_get_and_post(monkeypatch):

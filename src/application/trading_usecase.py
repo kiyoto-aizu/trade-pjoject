@@ -25,6 +25,7 @@ from src.infrastructure.kabu.send_order import place_market_order
 from src.infrastructure.market_data.get_daily_closes import get_yahoo_daily_closes
 from src.infrastructure.notification.line_notify import send_line_notify
 from src.infrastructure.persistence.storage import read_json, write_json
+from src.infrastructure.analysis.daily_analyzer import create_daily_analyzer
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +53,7 @@ class TradingUseCase:
         order_sender=None,
         filtering_result_repository=None,
         notifier=None,
+        daily_analyzer=None,
     ):
         """
         TradingUseCaseを初期化します。
@@ -78,6 +80,7 @@ class TradingUseCase:
         self.order_sender = order_sender
         self.filtering_result_repository = filtering_result_repository
         self.notifier = notifier or send_line_notify
+        self.daily_analyzer = daily_analyzer if daily_analyzer is not None else create_daily_analyzer()
         self.last_positions = []
         self.kill_switch_triggered = False
         self.api_soft_limit: Optional[float] = None
@@ -208,6 +211,36 @@ class TradingUseCase:
                 )
             total_pnl = sum(float(position.get('ProfitLoss', 0) or 0) for position in self.last_positions)
             lines.append(f"合計損益: {total_pnl}円")
+
+        daily_summary = {
+            "date": today,
+            "trading_mode": config.TRADING_MODE_LABEL,
+            "order_count": len(daily_orders),
+            "orders": [
+                {
+                    "symbol": entry.symbol,
+                    "side": entry.side.value,
+                    "price": entry.price,
+                    "qty": entry.qty,
+                    "result_code": entry.result_code,
+                }
+                for entry in daily_orders
+            ],
+            "positions": [
+                {
+                    "symbol": position.get("Symbol", ""),
+                    "profit_loss": float(position.get("ProfitLoss", 0) or 0),
+                    "profit_loss_rate": float(position.get("ProfitLossRate", 0) or 0),
+                }
+                for position in self.last_positions
+            ],
+            "total_profit_loss": sum(float(position.get("ProfitLoss", 0) or 0) for position in self.last_positions),
+            "kill_switch_triggered": self.kill_switch_triggered,
+        }
+        if self.daily_analyzer:
+            analysis = self.daily_analyzer.analyze(daily_summary)
+            if analysis:
+                lines.extend(["--- LLM日次評価（参考） ---", analysis])
 
         self.notifier("\n".join(lines))
 

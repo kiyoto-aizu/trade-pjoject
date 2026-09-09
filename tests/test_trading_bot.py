@@ -113,6 +113,29 @@ def test_end_of_day_report_identifies_paper_trading(monkeypatch, tmp_path):
     assert messages[0].startswith('【ペーパートレード】')
 
 
+def test_end_of_day_report_appends_daily_llm_analysis(tmp_path):
+    messages = []
+    summaries = []
+
+    class DailyAnalyzer:
+        def analyze(self, summary):
+            summaries.append(summary)
+            return '今日の評価\n- 参考評価です。'
+
+    use_case = TradingUseCase(
+        token='dummy',
+        order_history_path=tmp_path / 'order_history.json',
+        notifier=messages.append,
+        daily_analyzer=DailyAnalyzer(),
+    )
+    use_case._send_end_of_day_report()
+
+    assert summaries[0]['order_count'] == 0
+    assert summaries[0]['positions'] == []
+    assert 'LLM日次評価（参考）' in messages[0]
+    assert '参考評価です。' in messages[0]
+
+
 def test_trading_use_case_places_and_records_buy_order_without_live_api(monkeypatch, tmp_path):
     monkeypatch.setattr(config, 'IS_DEMO', True)
     symbols_path = tmp_path / 'top_symbols.json'

@@ -175,6 +175,12 @@ LINE_MESSAGE_CHANNEL_TOKEN = os.getenv("LINE_MESSAGE_CHANNEL_TOKEN", "")
 LINE_MESSAGE_TO = os.getenv("LINE_MESSAGE_TO", "")
 LINE_MESSAGE_API = "https://api.line.me/v2/bot/message/push"
 
+# 日次LLM分析設定（明示的に有効化した場合のみ利用）
+LLM_DAILY_ANALYSIS_ENABLED = os.getenv("LLM_DAILY_ANALYSIS_ENABLED", "false").strip().lower() in ("1", "true", "yes")
+LLM_API_KEY = os.getenv("OPENAI_API_KEY", os.getenv("LLM_API_KEY", ""))
+LLM_MODEL = os.getenv("LLM_MODEL", "gpt-4o-mini")
+LLM_API_URL = os.getenv("LLM_API_URL", "https://api.openai.com/v1/chat/completions")
+
 
 # ================================================================================
 # API設定

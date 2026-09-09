@@ -13,7 +13,7 @@ from src.config import config
 from src.trading.trading import TradingBot
 from src.infrastructure.kabu.get_token import get_api_token
 from src.infrastructure.kabu.get_board import get_current_board
-from src.infrastructure.market_data.get_5d_closes import get_yahoo_5d_closes
+from src.infrastructure.market_data.get_daily_closes import get_yahoo_daily_closes
 from src.infrastructure.notification.line_notify import process_notification
 from src.infrastructure.persistence.filtering_result_repository import FilteringResultRepository
 from src.infrastructure.execution_lock import market_workflow_lock
@@ -32,7 +32,7 @@ def collect_market_data_sources(token: str, symbols: list[str]) -> dict[str, dic
     """対象銘柄の過去終値と現在の板価格を取得し、初回判定用に返します。"""
     market_data = {}
     for symbol in symbols:
-        closes = get_yahoo_5d_closes(symbol)
+        closes = get_yahoo_daily_closes(symbol)
         if not closes or len(closes) < config.RSI_MINIMUM_CLOSES:
             return None
         board = get_current_board(token, symbol)

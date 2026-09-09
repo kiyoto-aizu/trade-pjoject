@@ -11,7 +11,7 @@ JST = timezone(timedelta(hours=9))
 def get_yahoo_daily_closes(symbol: str) -> list[float]:
     yf_symbol = f"{symbol}.T"
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{yf_symbol}"
-    params = {"interval": "1d", "range": "30d"}
+    params = {"interval": "1d", "range": "60d"}
     response = request_handler.send_get(
         url,
         params=params,

@@ -5,7 +5,7 @@ import requests
 logger = logging.getLogger(__name__)
 
 
-def get_yahoo_5d_closes(symbol):
+def get_yahoo_daily_closes(symbol):
     yf_symbol = f"{symbol}.T"
     url = "https://query1.finance.yahoo.com/v8/finance/chart/" + yf_symbol
     headers = {"User-Agent": "Mozilla/5.0"}
@@ -35,7 +35,7 @@ def get_yahoo_5d_closes(symbol):
 def sample_yfinance_analysis(symbol):
     logger.info("📡 Yahoo Financeから %s の本物の過去データを取得中...", symbol)
 
-    closes = get_yahoo_5d_closes(symbol)
+    closes = get_yahoo_daily_closes(symbol)
     logger.info("📊 【取得したデータ（直近5日分）】")
     logger.info("終値: %s", closes)
     logger.info("%s", "-" * 50)

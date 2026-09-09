@@ -29,7 +29,7 @@ def test_main_does_not_request_token_outside_trading_session(monkeypatch):
 def test_check_market_data_sources_accepts_complete_market_data(monkeypatch):
     monkeypatch.setattr(
         run_trading,
-        'get_yahoo_5d_closes',
+        'get_yahoo_daily_closes',
         lambda symbol: [100.0] * config.RSI_MINIMUM_CLOSES,
     )
     monkeypatch.setattr(run_trading, 'get_current_board', lambda token, symbol: {'current_price': 101.0})
@@ -40,7 +40,7 @@ def test_check_market_data_sources_accepts_complete_market_data(monkeypatch):
 def test_check_market_data_sources_rejects_incomplete_market_data(monkeypatch):
     monkeypatch.setattr(
         run_trading,
-        'get_yahoo_5d_closes',
+        'get_yahoo_daily_closes',
         lambda symbol: [100.0] * (config.RSI_MINIMUM_CLOSES - 1),
     )
     monkeypatch.setattr(
@@ -55,7 +55,7 @@ def test_check_market_data_sources_rejects_incomplete_market_data(monkeypatch):
 def test_check_market_data_sources_rejects_missing_board_price(monkeypatch):
     monkeypatch.setattr(
         run_trading,
-        'get_yahoo_5d_closes',
+        'get_yahoo_daily_closes',
         lambda symbol: [100.0] * config.RSI_MINIMUM_CLOSES,
     )
     monkeypatch.setattr(run_trading, 'get_current_board', lambda token, symbol: {})

@@ -121,7 +121,7 @@ def test_trading_use_case_places_and_records_buy_order_without_live_api(monkeypa
     calls = []
 
     class MarketDataClient:
-        def get_yahoo_5d_closes(self, symbol):
+        def get_yahoo_daily_closes(self, symbol):
             return [100.0] * 5
 
     class BoardClient:
@@ -177,7 +177,7 @@ def test_trading_use_case_does_not_record_rejected_order(monkeypatch, tmp_path):
     order_calls = []
     current_times = iter([datetime(2026, 9, 4, 10, 0), datetime(2026, 9, 4, 15, 30)])
 
-    monkeypatch.setattr('src.application.trading_usecase.get_yahoo_5d_closes', lambda symbol: [100.0] * 5)
+    monkeypatch.setattr('src.application.trading_usecase.get_yahoo_daily_closes', lambda symbol: [100.0] * 5)
     monkeypatch.setattr(
         'src.application.trading_usecase.get_current_board',
         lambda token, symbol: {'current_price': 90.0},
@@ -220,7 +220,7 @@ def test_trading_use_case_warns_once_for_repeated_sell_signal_without_holdings(m
     ])
 
     class MarketDataClient:
-        def get_yahoo_5d_closes(self, symbol):
+        def get_yahoo_daily_closes(self, symbol):
             return [100.0] * 5
 
     class BoardClient:

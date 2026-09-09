@@ -45,7 +45,7 @@ flow.mdの③〜⑨に相当。担当ユースケース: `application/trading_us
 
 #### ④-1 価格履歴の取得と指標入力
 - **担当**: `infrastructure/market_data/get_daily_closes.py`
-- 現在の`get_5d_closes.py`を`get_daily_closes.py`へ改名し、関数も`get_yahoo_daily_closes`へ改名する。
+- `get_daily_closes.py`の`get_yahoo_daily_closes`で、Yahoo Financeから確定日足終値を取得する。
 - Yahoo Financeの取得範囲は`30d`とし、祝日・休場日を考慮してRSI14のWilder平滑化に必要な確定終値30本以上を確保する。
 - Yahoo FinanceのタイムスタンプをJSTへ変換し、本日の日付と一致するバーを除外する。
 - 戻り値は本日を除く確定終値の時系列とし、SMA5・RSI14の計算に必要な本数を保持する（末尾5本だけに切り詰めない）。30本未満の場合は④で使用しない。

@@ -21,9 +21,6 @@ from src.infrastructure.kabu.get_wallet import get_wallet_cash
 from src.infrastructure.kabu.get_apisoftlimit import get_api_soft_limit
 from src.infrastructure.kabu.send_order import place_market_order
 from src.infrastructure.market_data.get_daily_closes import get_yahoo_daily_closes
-
-# 既存のテスト・注入コードとの互換性を保つための旧API名
-get_yahoo_5d_closes = get_yahoo_daily_closes
 from src.infrastructure.notification.line_notify import send_line_notify
 from src.infrastructure.persistence.storage import read_json, write_json
 
@@ -242,17 +239,14 @@ class TradingUseCase:
         while not kill_switch_triggered and not is_market_closed(now_provider().time(), config.MARKET_CLOSE_HOUR, config.MARKET_CLOSE_MINUTE):
             for symbol in symbols:
                 try:
-                    # 過去5日の終値を取得
+                    # RSI計算用の確定日足終値を取得
                     snapshot = preflight_market_data.get(symbol) if use_preflight_market_data else None
                     if snapshot:
                         closes = snapshot['closes']
                     elif self.market_data_client:
-                        get_closes = getattr(self.market_data_client, 'get_yahoo_daily_closes', None)
-                        if get_closes is None:
-                            get_closes = self.market_data_client.get_yahoo_5d_closes
-                        closes = get_closes(symbol)
+                        closes = self.market_data_client.get_yahoo_daily_closes(symbol)
                     else:
-                        closes = get_yahoo_5d_closes(symbol)
+                        closes = get_yahoo_daily_closes(symbol)
                     limit = calculate_price_limit(closes)
                     rsi = calculate_rsi(closes, config.RSI_PERIOD, config.RSI_MINIMUM_CLOSES)
                     if limit is None or rsi is None:

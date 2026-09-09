@@ -16,6 +16,7 @@ instance/
 
 # Logs
 *.log
+*.log.*
 
 # Runtime data
 data/

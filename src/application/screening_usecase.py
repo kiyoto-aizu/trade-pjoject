@@ -208,7 +208,31 @@ class ScreeningUseCase:
             )
         if top_entries:
             message += "\n上位銘柄:\n" + "\n".join(f"- {entry}" for entry in top_entries)
+        anomaly = self._analyze_anomaly_if_needed(candidates, exclusion_result, symbols)
+        if anomaly:
+            message += f"\n--- LLM異常検知（参考） ---\n{anomaly}"
         try:
             self.notifier(message)
         except Exception:
             logger.exception("スクリーニング完了通知に失敗しました。")
+
+    def _analyze_anomaly_if_needed(self, candidates, exclusion_result, symbols) -> str | None:
+        """採用件数が閾値を下回るなど普段と異なる可能性がある時だけLLMを呼び出し、クレジットを節約する。"""
+        if len(symbols) >= config.SCREENING_ANOMALY_MIN_SYMBOLS:
+            return None
+        try:
+            from src.infrastructure.analysis.anomaly_analyzer import create_anomaly_analyzer
+
+            analyzer = create_anomaly_analyzer()
+            if not analyzer:
+                return None
+            summary = {
+                "候補件数": len(candidates),
+                "規制で除外した件数": exclusion_result.excluded_by_regulation_count,
+                "地方取引所で除外した件数": exclusion_result.excluded_by_exchange_count,
+                "採用件数": len(symbols),
+            }
+            return analyzer.analyze_screening(summary)
+        except Exception:
+            logger.exception("スクリーニング異常検知のLLM呼び出しに失敗しました。")
+            return None

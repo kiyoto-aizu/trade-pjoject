@@ -133,7 +133,32 @@ class FilteringUseCase:
                 message += "\n上位銘柄:\n" + "\n".join(
                     f"- {symbol}(20日平均売買代金の{ratios_by_symbol[symbol]:.1f}倍)" for symbol in symbols[:5]
                 )
+            anomaly = self._analyze_anomaly_if_needed(screening, symbols, scored, excluded_by_surge_count)
+            if anomaly:
+                message += f"\n--- LLM異常検知（参考） ---\n{anomaly}"
         try:
             self.notifier(message)
         except Exception:
             logger.exception("フィルタリング完了通知に失敗しました。")
+
+    def _analyze_anomaly_if_needed(self, screening, symbols, scored, excluded_by_surge_count: int) -> str | None:
+        """採用件数が閾値を下回るなど普段と異なる可能性がある時だけLLMを呼び出し、クレジットを節約する。"""
+        candidate_count = len(screening.symbols)
+        if candidate_count > 0 and len(symbols) >= config.FILTERING_ANOMALY_MIN_SYMBOLS:
+            return None
+        try:
+            from src.infrastructure.analysis.anomaly_analyzer import create_anomaly_analyzer
+
+            analyzer = create_anomaly_analyzer()
+            if not analyzer:
+                return None
+            summary = {
+                "スクリーニング対象件数": candidate_count,
+                "出来高条件クリア件数": len(scored),
+                "採用件数": len(symbols),
+                "出来高条件で除外した件数": excluded_by_surge_count,
+            }
+            return analyzer.analyze_filtering(summary)
+        except Exception:
+            logger.exception("フィルタリング異常検知のLLM呼び出しに失敗しました。")
+            return None

@@ -181,6 +181,25 @@ LLM_API_KEY = os.getenv("OPENAI_API_KEY", os.getenv("LLM_API_KEY", ""))
 LLM_MODEL = os.getenv("LLM_MODEL", "gpt-4o-mini")
 LLM_API_URL = os.getenv("LLM_API_URL", "https://api.openai.com/v1/chat/completions")
 
+# 例外原因分析用LLM設定（明示的に有効化した場合のみ利用。同一原因のエラーはキャッシュを再利用し、クールダウン間隔でのみ再分析）
+LLM_ERROR_ANALYSIS_ENABLED = os.getenv("LLM_ERROR_ANALYSIS_ENABLED", "false").strip().lower() in ("1", "true", "yes")
+LLM_ERROR_ANALYSIS_COOLDOWN_MINUTES = int(os.getenv("LLM_ERROR_ANALYSIS_COOLDOWN_MINUTES", "60"))
+LLM_ERROR_ANALYSIS_MODEL = os.getenv("LLM_ERROR_ANALYSIS_MODEL", LLM_MODEL)
+# リトライで解決しうる想定内の例外はLLM分析の対象外とする（クラス名でMRO照合）
+LLM_ERROR_ANALYSIS_SKIP_EXCEPTION_TYPES = tuple(
+    name.strip()
+    for name in os.getenv(
+        "LLM_ERROR_ANALYSIS_SKIP_EXCEPTION_TYPES",
+        "ConnectionError,Timeout,ConnectTimeout,ReadTimeout,JSONDecodeError",
+    ).split(",")
+    if name.strip()
+)
+
+# スクリーニング/フィルタリング異常検知用LLM設定（明示的に有効化した場合のみ利用。閾値を下回った時のみLLMを呼び出す）
+LLM_ANOMALY_ANALYSIS_ENABLED = os.getenv("LLM_ANOMALY_ANALYSIS_ENABLED", "false").strip().lower() in ("1", "true", "yes")
+SCREENING_ANOMALY_MIN_SYMBOLS = int(os.getenv("SCREENING_ANOMALY_MIN_SYMBOLS", "5"))
+FILTERING_ANOMALY_MIN_SYMBOLS = int(os.getenv("FILTERING_ANOMALY_MIN_SYMBOLS", "3"))
+
 
 # ================================================================================
 # API設定

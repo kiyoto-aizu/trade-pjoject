@@ -27,6 +27,26 @@ def _send_process_message(message: str) -> None:
         logger.exception("処理状態通知に失敗しました。")
 
 
+def _analyze_exception_safely(process_name: str, exc: BaseException):
+    try:
+        from src.infrastructure.analysis.error_analyzer import create_error_analyzer
+
+        analyzer = create_error_analyzer()
+        if not analyzer:
+            return None
+        return analyzer.analyze_exception(process_name, exc)
+    except Exception:
+        logger.exception("LLM例外分析の呼び出し自体に失敗しました。")
+        return None
+
+
+def _short_summary(summary: str, limit: int = 200) -> str:
+    """LINE通知向けに、深夜のエラー洪水でも一目で判断できる短い要約に切り詰める。"""
+    lines = [line for line in summary.strip().splitlines() if line.strip()]
+    short = "\n".join(lines[:2])
+    return short if len(short) <= limit else short[:limit] + "…"
+
+
 @contextmanager
 def process_notification(process_name: str, notify_lifecycle: bool = True):
     """処理の開始と終了を通知します。例外は呼び出し元へ再送出します。"""
@@ -36,10 +56,18 @@ def process_notification(process_name: str, notify_lifecycle: bool = True):
         yield
     except KeyboardInterrupt:
         raise
-    except (Exception, SystemExit):
+    except (Exception, SystemExit) as exc:
         logger.exception("%s処理が予期しないエラーで終了しました", process_name)
+        analysis = _analyze_exception_safely(process_name, exc)
+        detail = ""
+        if analysis:
+            logger.info(
+                "LLM例外原因分析(参考・%d回目):\n%s", analysis.occurrence_count, analysis.summary,
+            )
+            headline = f"【{type(exc).__name__}】{analysis.occurrence_count}回目"
+            detail = f"{headline}\n--- LLM原因分析（参考） ---\n{_short_summary(analysis.summary)}"
         if notify_lifecycle:
-            notify_process_end(process_name, success=False)
+            notify_process_end(process_name, success=False, detail=detail)
         raise
     else:
         if notify_lifecycle:

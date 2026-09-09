@@ -271,13 +271,13 @@ Windowsの計画実行では、スクリーニング・フィルタリングと�
 
 ### 4. バックテスト
 
-日付ごとのフィルタリング結果を時系列に再生し、その日に選ばれた銘柄だけを対象にバックテストします。過去の銘柄を未来の日付へ持ち越さないため、実運用に近い評価になります。価格データはYahoo Financeから取得し、直近90日分のフィルタリング結果を対象にします。
+日付ごとのフィルタリング結果を時系列に再生し、その日に選ばれた銘柄だけを対象にバックテストします。過去の銘柄を未来の日付へ持ち越さないため、実運用に近い評価になります。価格データはYahoo Financeから取得し、直近730日（約2年）分のフィルタリング結果を対象にします。通常の週次確認は2年、売買ルールや設定を変更したときは3〜5年を再検証の目安にします。
 
 ```powershell
 .\scripts\run_backtest.ps1
 ```
 
-結果は最新結果として `data/backtest/latest_timeseries.json` に保存され、同じ内容が `data/backtest/latest_timeseries_YYYYMMDD_HHMMSS_ffffff.json` の形式で履歴保存されます。LINE設定がある場合は、対象期間・総損益・勝率・取引数・最大ドローダウン・最終保有数のサマリーも通知します。詳細な取引履歴はJSONで確認できます。平日16:30に自動実行するタスクは、初回のみ次で登録します。
+結果は最新結果として `data/backtest/latest_timeseries.json` に保存され、同じ内容が `data/backtest/latest_timeseries_YYYYMMDD_HHMMSS_ffffff.json` の形式で履歴保存されます。LINE設定がある場合は、対象期間・総損益・勝率・取引数・最大ドローダウン・最終保有数のサマリーと、LLMによる参考評価（有効時）も通知します。LLM評価は投資判断やロジック変更の指示ではなく、統計の解釈・不確実性・追加確認事項を扱います。詳細な取引履歴はJSONで確認できます。毎週月曜16:30に自動実行するタスクは、初回のみ次で登録します。
 
 ```powershell
 .\scripts\register_backtest_task.ps1
@@ -289,6 +289,23 @@ Windowsの計画実行では、スクリーニング・フィルタリングと�
 Get-ScheduledTask -TaskName trade-pjoject-backtest
 Start-ScheduledTask -TaskName trade-pjoject-backtest
 .\scripts\register_backtest_task.ps1 -Remove
+```
+
+### 5. 月次総合分析
+
+対象月の日次ペーパートレードレポートと、月内に実行した週次バックテスト結果を集約します。LLM設定が有効な場合は、「観測事実」「差分」「仮説」「次に確認するデータ」の観点で参考評価を作成し、`data/reports/monthly/YYYY-MM.json` に保存してLINEへ通知します。LLMの評価は投資判断や自動的なロジック変更には使用しません。
+
+初回のみ、毎日17:00に起動し、Python側のガードで月末だけ実行するタスクを登録します。Windows PowerShellの標準タスク登録では月末指定に制約があるため、この方式を採用しています。
+
+```powershell
+.\scripts\register_monthly_analysis_task.ps1
+```
+
+手動で前月分を実行する場合は次のコマンドを使います。月末以外に当月分を確認する場合は `--force` を追加します。
+
+```powershell
+python -m src.entrypoints.run_monthly_analysis --month 2026-08
+python -m src.entrypoints.run_monthly_analysis --month 2026-09 --force
 ```
 
 従来の固定銘柄による検証を行う場合は、`run_backtest.py` に `--symbols` と `--history` を指定します。

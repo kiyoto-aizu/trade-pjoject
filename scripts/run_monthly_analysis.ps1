@@ -12,11 +12,7 @@ if (-not (Test-Path $python)) {
 
 Push-Location $projectRoot
 try {
-    & $python -m src.entrypoints.run_backtest `
-        --filtering-dir data/filtering `
-        --live `
-        --days 730 `
-        --output data/backtest/latest_timeseries.json
+    & $python -m src.entrypoints.run_monthly_analysis
     exit $LASTEXITCODE
 }
 finally {

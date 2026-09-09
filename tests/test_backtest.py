@@ -1,9 +1,13 @@
+import json
+
 import pytest
 
 from src.application.backtest_usecase import simulate_backtest, simulate_timeseries_backtest
 from src.config import config
 from src.domain.rules import calculate_rsi
 from src.entrypoints.run_backtest import fetch_yahoo_history, load_history, save_backtest_result
+from src.infrastructure.analysis.daily_analyzer import OpenAIDailyAnalyzer
+from src.entrypoints.run_monthly_analysis import build_monthly_summary
 
 
 @pytest.fixture(autouse=True)
@@ -64,6 +68,57 @@ def test_save_backtest_result_keeps_latest_and_timestamped_archive(tmp_path):
     assert archive_path != output_path
     assert archive_path.stem.startswith("latest_timeseries_")
     assert output_path.read_text(encoding="utf-8") == archive_path.read_text(encoding="utf-8")
+
+
+def test_backtest_analyzer_uses_backtest_specific_review_prompt(monkeypatch):
+    captured = {}
+
+    class DummyResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"choices": [{"message": {"content": "結果の評価\n- 参考評価です。"}}]}
+
+    def post(url, **kwargs):
+        captured["url"] = url
+        captured["payload"] = kwargs["json"]
+        return DummyResponse()
+
+    monkeypatch.setattr("src.infrastructure.analysis.daily_analyzer.requests.post", post)
+    analyzer = OpenAIDailyAnalyzer("key", "model", "https://example.test")
+
+    result = analyzer.analyze_backtest({"総損益": 100.0, "最大ドローダウン": 50.0})
+
+    assert result.startswith("結果の評価")
+    assert "バックテスト集計" in captured["payload"]["messages"][1]["content"]
+
+
+def test_build_monthly_summary_aggregates_daily_reports_and_backtests(tmp_path):
+    reports = tmp_path / "reports"
+    backtests = tmp_path / "backtests"
+    reports.mkdir()
+    backtests.mkdir()
+    (reports / "2026-09-01.json").write_text(
+        json.dumps({"date": "2026-09-01", "trading_mode": "ペーパートレード", "order_count": 2, "total_profit_loss": 100, "kill_switch_triggered": False}),
+        encoding="utf-8",
+    )
+    (reports / "2026-09-02.json").write_text(
+        json.dumps({"date": "2026-09-02", "trading_mode": "ペーパートレード", "order_count": 1, "total_profit_loss": -20, "kill_switch_triggered": True}),
+        encoding="utf-8",
+    )
+    (backtests / "latest_timeseries_20260902.json").write_text(
+        json.dumps({"generated_at": "2026-09-02T17:00:00", "total_pnl": 250, "total_trades": 4}),
+        encoding="utf-8",
+    )
+
+    summary = build_monthly_summary("2026-09", reports, backtests)
+
+    assert summary["daily"]["order_count"] == 3
+    assert summary["daily"]["total_profit_loss"] == 80
+    assert summary["daily"]["kill_switch_days"] == 1
+    assert summary["backtest"]["total_pnl"] == 250
+    assert summary["backtest"]["total_trades"] == 4
 
 
 def test_simulate_backtest_buys_then_sells_on_signal():

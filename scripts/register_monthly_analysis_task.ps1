@@ -1,12 +1,12 @@
 [CmdletBinding(SupportsShouldProcess)]
 param(
-    [string]$TaskName = 'trade-pjoject-backtest',
-    [datetime]$At = [datetime]'16:30',
+    [string]$TaskName = 'trade-pjoject-monthly-analysis',
+    [datetime]$At = [datetime]'17:00',
     [switch]$Remove
 )
 
 $ErrorActionPreference = 'Stop'
-$runner = Join-Path $PSScriptRoot 'run_backtest.ps1'
+$runner = Join-Path $PSScriptRoot 'run_monthly_analysis.ps1'
 
 if ($Remove) {
     if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
@@ -18,19 +18,19 @@ if ($Remove) {
 }
 
 if (-not (Test-Path $runner)) {
-    throw "Backtest runner was not found: $runner"
+    throw "Monthly analysis runner was not found: $runner"
 }
 
-$trigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday -At $At
+$trigger = New-ScheduledTaskTrigger -Daily -At $At
 $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$runner`""
 $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -MultipleInstances IgnoreNew
 
-if ($PSCmdlet.ShouldProcess($TaskName, "Register weekly backtest task on Monday at $($At.ToString('HH:mm'))")) {
+if ($PSCmdlet.ShouldProcess($TaskName, "Register monthly analysis task at $($At.ToString('HH:mm'))")) {
     Register-ScheduledTask `
         -TaskName $TaskName `
         -Action $action `
         -Trigger $trigger `
         -Settings $settings `
-        -Description 'Runs the weekly trade-pjoject time-series backtest from daily filtering results.' `
+        -Description 'Runs monthly analysis at month end; the Python runner skips non-month-end days.' `
         -Force | Out-Null
 }

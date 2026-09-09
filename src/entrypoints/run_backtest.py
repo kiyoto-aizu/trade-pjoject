@@ -10,6 +10,7 @@ from pathlib import Path
 import requests
 
 from src.application.backtest_usecase import simulate_backtest, simulate_timeseries_backtest
+from src.infrastructure.analysis.daily_analyzer import create_daily_analyzer
 from src.infrastructure.notification.line_notify import process_notification, send_line_notify
 
 logger = logging.getLogger(__name__)
@@ -194,7 +195,7 @@ def main() -> None:
         parser.add_argument("--qty", type=int, default=100, help="1回の売買数量")
         parser.add_argument("--fee", type=float, default=0.0, help="売買手数料率 (例: 0.001 = 0.1%%)")
         parser.add_argument("--live", action="store_true", help="Yahoo Finance から実データを取得してバックテストを実行")
-        parser.add_argument("--days", type=int, default=30, help="Yahoo Finance から取得する日数")
+        parser.add_argument("--days", type=int, default=730, help="Yahoo Finance から取得する日数（既定: 約2年）")
         parser.add_argument("--day-trade", action="store_true", help="デイトレードとして実行し、当日の終値で保有を強制的に決済する")
         parser.add_argument("--output", type=Path, default=None, help="結果JSONの保存先")
         args = parser.parse_args()
@@ -235,10 +236,6 @@ def main() -> None:
                 close_at_eod=args.day_trade,
             )
 
-        archive_path = None
-        if args.output:
-            archive_path = save_backtest_result(args.output, result)
-
         # CLI 出力は日本語ラベルを優先して見やすくする
         display_result = {
             "総損益": result.get("総損益", result.get("total_pnl", 0.0)),
@@ -254,6 +251,16 @@ def main() -> None:
             "保有期間別要約": result.get("保有期間別要約", result.get("holding_bucket_summary", [])),
             "対象期間": f"{result['period_start']} - {result['period_end']}" if result.get("period_start") else None,
         }
+        analyzer = create_daily_analyzer()
+        llm_analysis = analyzer.analyze_backtest(display_result) if analyzer else None
+        result["generated_at"] = datetime.now().isoformat(timespec="seconds")
+        if llm_analysis:
+            result["llm_analysis"] = llm_analysis
+
+        archive_path = None
+        if args.output:
+            archive_path = save_backtest_result(args.output, result)
+
         print(json.dumps(display_result, ensure_ascii=False, indent=2))
         report_lines = [
             "【バックテスト結果】",
@@ -268,6 +275,8 @@ def main() -> None:
             report_lines.append(f"詳細: {args.output}")
         if archive_path:
             report_lines.append(f"履歴: {archive_path}")
+        if llm_analysis:
+            report_lines.extend(["--- LLMバックテスト評価（参考） ---", llm_analysis])
         send_line_notify("\n".join(report_lines))
 
 

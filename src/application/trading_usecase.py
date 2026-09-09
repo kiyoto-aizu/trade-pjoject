@@ -295,17 +295,6 @@ class TradingUseCase:
                         config.RSI_BUY_THRESHOLD,
                         config.RSI_SELL_THRESHOLD,
                     )
-                    logger.info(
-                        "売買判定: 銘柄=%s | 現在値=%.1f | 買い基準=%.1f | 売り基準=%.1f | RSI=%.1f | 買いRSI基準=%.1f | 売りRSI基準=%.1f | 判定=%s",
-                        symbol,
-                        board['current_price'],
-                        limit.buy,
-                        limit.sell,
-                        rsi,
-                        config.RSI_BUY_THRESHOLD,
-                        config.RSI_SELL_THRESHOLD,
-                        signal.side.name if signal else "なし",
-                    )
                     if not signal:
                         continue
                     # 口座状態を確認
@@ -397,6 +386,14 @@ class TradingUseCase:
                     order_result = order_method(*order_args)
                     if order_result and order_result.get('Result') == 0:
                         self._register_order(signal, limit, order_result)
+                        logger.info(
+                            "%s成立: 銘柄=%s | 約定価格=%.1f | 数量=%s | 注文受付番号=%s",
+                            "買い" if signal.side == config.OrderSide.BUY else "売り",
+                            symbol,
+                            signal.price,
+                            signal.qty,
+                            order_result.get('OrderId'),
+                        )
                 except Exception:
                     # 想定外の例外は当該銘柄のみスキップし、ループ全体を止めない
                     logger.exception("%s の評価中に予期しないエラーが発生しました", symbol)

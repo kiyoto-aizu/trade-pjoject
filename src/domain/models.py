@@ -317,6 +317,22 @@ class ScoredCandidate:
     surge_ratio: float
 
 
+@dataclass(frozen=True)
+class Candidate:
+    """順位付きの発注候補。"""
+    symbol: str
+    current_price: float
+    rank: int
+
+
+@dataclass(frozen=True)
+class Allocation:
+    """候補銘柄に割り当てる予算と購入予定数量。"""
+    symbol: str
+    budget: float
+    quantity: int
+
+
 # ================================================================================
 # フィルタリング結果
 # ================================================================================

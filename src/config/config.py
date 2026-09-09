@@ -115,6 +115,9 @@ ORDER_LOCK_SECONDS = 60
 # 1回の取引あたりの最大注文金額（運用資金10万円の10%）
 MAX_ORDER_AMOUNT_PER_TRADE = float(os.getenv("MAX_ORDER_AMOUNT_PER_TRADE", "10000"))
 
+# フィルタリング候補から目指す分散ポジション数
+TARGET_POSITIONS = int(os.getenv("TARGET_POSITIONS", "3"))
+
 # 1日あたりの最大注文数
 MAX_ORDER_COUNT_PER_DAY = int(os.getenv("MAX_ORDER_COUNT_PER_DAY", "10"))
 

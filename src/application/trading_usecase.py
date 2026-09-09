@@ -14,7 +14,8 @@ from pathlib import Path
 from typing import List, Optional
 
 from src.config import config
-from src.domain.models import OrderHistoryEntry, PriceLimit, TradeSignal
+from src.application.allocate_budget import allocate_budget
+from src.domain.models import Candidate, OrderHistoryEntry, PriceLimit, TradeSignal
 from src.domain.rules import calculate_buy_quantity, calculate_price_limit, calculate_rsi, check_kill_switch, is_buy_order_amount_allowed, is_market_closed, is_safe_to_order
 from src.infrastructure.kabu.get_board import get_current_board
 from src.infrastructure.kabu.get_positions import get_positions
@@ -159,6 +160,24 @@ class TradingUseCase:
             for pos in positions
         )
 
+    def _allocate_filtering_candidates(self, symbols: list[str], market_data: dict) -> dict[str, int]:
+        """フィルタ順位を保ったまま、購入可能な候補へ単元数量を割り当てます。"""
+        wallet_amount, _ = self._load_account_state()
+        if wallet_amount is None:
+            return {}
+        candidates = [
+            Candidate(symbol, float(market_data[symbol]['board']['current_price']), rank)
+            for rank, symbol in enumerate(symbols, 1)
+            if symbol in market_data
+        ]
+        allocations = allocate_budget(
+            candidates,
+            float(wallet_amount),
+            config.TARGET_POSITIONS,
+            config.ORDER_UNIT,
+        )
+        return {allocation.symbol: allocation.quantity for allocation in allocations}
+
     # ================================================================================
     # レポート送信
     # ================================================================================
@@ -234,6 +253,14 @@ class TradingUseCase:
             logger.info("上位銘柄リストが空です。取引を行いません。")
             return
 
+        allocated_quantities = {}
+        if self.filtering_result_repository and preflight_market_data:
+            allocated_quantities = self._allocate_filtering_candidates(symbols, preflight_market_data)
+            symbols = [symbol for symbol in symbols if symbol in allocated_quantities]
+            if not symbols:
+                self.notifier("資金制約により発注可能な銘柄がないため、取引を開始しません")
+                return
+
         kill_switch_triggered = False
         # 市場終了時刻まで取引ループを実行
         use_preflight_market_data = bool(preflight_market_data)
@@ -289,11 +316,11 @@ class TradingUseCase:
                         break
                     self.api_soft_limit = api_limit
                     if signal.side == config.OrderSide.BUY:
-                        signal.qty = calculate_buy_quantity(
+                        signal.qty = allocated_quantities.get(symbol, calculate_buy_quantity(
                             signal.price,
                             min(config.MAX_ORDER_AMOUNT_PER_TRADE, self.api_soft_limit),
                             config.ORDER_UNIT,
-                        )
+                        ))
                     else:
                         held_quantity = next(
                             (

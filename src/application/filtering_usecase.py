@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 import logging
 
 from src.domain.models import FilteringResult, ScoredCandidate
-from src.domain.rules import calculate_volume_surge_ratio, filter_by_min_surge_ratio, select_top_n_by_surge_ratio
+from src.domain.rules import calculate_volume_surge_ratio, select_top_n_by_surge_ratio
 from src.config import config
 
 logger = logging.getLogger(__name__)
@@ -61,30 +61,38 @@ class FilteringUseCase:
             previous_business_day -= timedelta(days=1)
         screening = self.screening_repository.load_for_date(previous_business_day)
         scored = []
+        candidates = []
         if screening:
             for symbol in screening.symbols:
                 board = self.board_client.get_current_board(symbol)
-                average = self.volume_client.get_average_volume(symbol, 20)
                 if not board:
                     logger.warning("フィルタリングスキップ: 銘柄=%s 理由=板情報なし", symbol)
                     continue
                 if board.get("current_price") is None:
                     logger.warning("フィルタリングスキップ: 銘柄=%s 理由=現在値なし", symbol)
                     continue
-                if average is None:
-                    logger.warning("フィルタリングスキップ: 銘柄=%s 理由=平均出来高なし", symbol)
+                today_value = board.get("trading_value")
+                if today_value is None and board.get("trading_volume") is not None:
+                    today_value = float(board["current_price"]) * float(board["trading_volume"])
+                if today_value is None:
+                    logger.warning("フィルタリングスキップ: 銘柄=%s 理由=当日売買代金なし", symbol)
                     continue
-                today_volume = board.get("trading_volume")
-                if today_volume is None:
-                    logger.warning("フィルタリングスキップ: 銘柄=%s 理由=当日出来高なし", symbol)
+                if hasattr(self.volume_client, "get_average_turnover"):
+                    average = self.volume_client.get_average_turnover(symbol, 20)
+                else:
+                    average_volume = self.volume_client.get_average_volume(symbol, 20)
+                    average = average_volume * float(board["current_price"]) if average_volume is not None else None
+                if average is None:
+                    logger.warning("フィルタリングスキップ: 銘柄=%s 理由=平均売買代金なし", symbol)
                     continue
                 try:
-                    surge_ratio = calculate_volume_surge_ratio(float(today_volume), average)
+                    surge_ratio = calculate_volume_surge_ratio(float(today_value), average)
                 except ValueError:
                     logger.warning("平均出来高が0以下のため、%s をスキップします。", symbol)
                     continue
-                scored.append(ScoredCandidate(symbol, float(today_volume), average, surge_ratio))
-        candidates = filter_by_min_surge_ratio(scored, config.MIN_VOLUME_SURGE_RATIO)
+                scored.append(ScoredCandidate(symbol, float(today_value), average, surge_ratio))
+            # 同時刻帯の過去分足が取得できないため、絶対倍率の足切りは行わず相対順位で選ぶ。
+            candidates = scored
         symbols = select_top_n_by_surge_ratio(candidates, 10)
         result = FilteringResult(today.isoformat(), symbols, datetime.now().isoformat())
         self.result_repository.save(result)
@@ -99,7 +107,7 @@ class FilteringUseCase:
         else:
             ratios_by_symbol = {candidate.symbol: candidate.surge_ratio for candidate in scored}
             top_symbols = " / ".join(
-                f"{symbol}(20日平均の{ratios_by_symbol[symbol]:.1f}倍)" for symbol in symbols[:5]
+                f"{symbol}(20日平均売買代金の{ratios_by_symbol[symbol]:.1f}倍)" for symbol in symbols[:5]
             )
             message = (
                 "【フィルタリング結果】\n"
@@ -109,7 +117,7 @@ class FilteringUseCase:
             )
             if top_symbols:
                 message += "\n上位銘柄:\n" + "\n".join(
-                    f"- {symbol}(20日平均の{ratios_by_symbol[symbol]:.1f}倍)" for symbol in symbols[:5]
+                    f"- {symbol}(20日平均売買代金の{ratios_by_symbol[symbol]:.1f}倍)" for symbol in symbols[:5]
                 )
         try:
             self.notifier(message)

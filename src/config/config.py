@@ -106,8 +106,8 @@ TARGET_SYMBOLS = list(PRICE_LIMITS.keys())
 # メイン取引ループの実行間隔（秒）
 LOOP_INTERVAL = 60
 
-# 1回の注文あたりのデフォルト数量
-DEFAULT_ORDER_QTY = 100
+# 日本株の売買単位。買い数量はこの単位の整数倍で動的に決める。
+ORDER_UNIT = 100
 
 # 同じ銘柄の重複注文を防ぐためのロック期間（秒）
 ORDER_LOCK_SECONDS = 60
@@ -130,9 +130,6 @@ API_REQUEST_INTERVAL_SECONDS = float(os.getenv("API_REQUEST_INTERVAL_SECONDS", "
 # 取引に利用可能な運用資本
 OPERATING_CAPITAL = float(os.getenv("OPERATING_CAPITAL", "100000"))
 
-# スクリーニング対象とする1株あたりの株価上限
-MAX_SHARE_PRICE = float(os.getenv("MAX_SHARE_PRICE", "300"))
-
 # スクリーニングのランキング取得対象とする市場区分（/rankingのExchangeDivision）
 # 全市場(ALL)は1回の呼び出しにつき上位50件しか返らず、値がさ株に偏りやすいため
 # 市場区分ごとに個別取得して母集団を拡大する（福証・札証は取引対象外のため含めない）
@@ -144,9 +141,6 @@ SCREENING_EXCHANGE_DIVISIONS = [
 
 # Kabu Station APIの登録銘柄上限に合わせたスクリーニング処理単位
 SCREENING_BATCH_SIZE = 50
-
-# フィルタリングで候補として残す出来高急増率の下限（この倍率未満は対象外）
-MIN_VOLUME_SURGE_RATIO = float(os.getenv("MIN_VOLUME_SURGE_RATIO", "1.0"))
 
 # 売買シグナルの行き過ぎ判定（Wilder方式のRSI）
 RSI_PERIOD = int(os.getenv("RSI_PERIOD", "14"))

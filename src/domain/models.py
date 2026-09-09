@@ -146,9 +146,9 @@ class TradeSignal:
         if rsi is None:
             return None
         if current_price <= limit.buy and rsi <= rsi_buy_threshold:
-            return cls(symbol=symbol, side=OrderSide.BUY, price=current_price, qty=100)
+            return cls(symbol=symbol, side=OrderSide.BUY, price=current_price, qty=0)
         if current_price >= limit.sell and rsi >= rsi_sell_threshold:
-            return cls(symbol=symbol, side=OrderSide.SELL, price=current_price, qty=100)
+            return cls(symbol=symbol, side=OrderSide.SELL, price=current_price, qty=0)
         return None
 
     def to_order_history_entry(self, limit: 'PriceLimit', order_response: Optional[Dict] = None) -> 'OrderHistoryEntry':
@@ -223,7 +223,6 @@ class Regulation:
 class ExclusionResult:
     """候補除外の結果。"""
     remaining: list[str]
-    excluded_by_price_count: int = 0
     excluded_by_regulation_count: int = 0
     excluded_by_exchange_count: int = 0
 

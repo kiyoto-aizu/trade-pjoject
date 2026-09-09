@@ -11,7 +11,7 @@ from src.api import request_handler
 logger = logging.getLogger(__name__)
 
 
-def place_market_order(token, symbol, side):
+def place_market_order(token, symbol, side, quantity=None):
     """
     Kabu.com Station APIを使用して成行注文を実行します。
     
@@ -40,7 +40,7 @@ def place_market_order(token, symbol, side):
     deliv_type = 2 if side == "2" else 0
     fund_type = "AA" if side == "2" else "  "
 
-    qty = getattr(config, 'DEFAULT_ORDER_QTY', 100)
+    qty = quantity if quantity is not None else config.ORDER_UNIT
     order_data = {
         "Password": config.API_PASSWORD,  # APIパスワード
         "Symbol": symbol,                  # 銘柄コード

@@ -15,7 +15,7 @@ class PaperOrderExecutor:
 
     prices: Dict[str, float]
     cash: float = 1_000_000.0
-    order_qty: int = field(default_factory=lambda: config.DEFAULT_ORDER_QTY)
+    order_qty: int = field(default_factory=lambda: config.ORDER_UNIT)
     holdings: Dict[str, int] = field(default_factory=dict)
     orders: List[dict] = field(default_factory=list)
     state_path: Optional[Path] = None
@@ -46,14 +46,14 @@ class PaperOrderExecutor:
     def set_price(self, symbol: str, price: float) -> None:
         self.prices[symbol] = price
 
-    def place_market_order(self, token: str, symbol: str, side: str) -> Optional[dict]:
+    def place_market_order(self, token: str, symbol: str, side: str, quantity: Optional[int] = None) -> Optional[dict]:
         """成行注文を現在価格で仮想約定し、実注文と同じ形式の結果を返す。"""
         del token
         price = self.prices.get(symbol)
         if price is None:
             return None
 
-        quantity = self.order_qty
+        quantity = quantity if quantity is not None else self.order_qty
         held_quantity = self.holdings.get(symbol, 0)
         if side == config.OrderSide.BUY.value:
             required_cash = price * quantity

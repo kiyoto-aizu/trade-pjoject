@@ -237,22 +237,6 @@ def merge_ranking_candidates(turnover_ranking, price_gain_ranking):
 # 規制・制限チェック
 # ================================================================================
 
-def exclude_by_price_ceiling(candidates, prices, max_price):
-    """株価が上限を超える、または取得できない銘柄を除外します。"""
-    remaining = []
-    excluded_by_price_count = 0
-    for symbol in candidates:
-        price = prices.get(symbol)
-        if price is None or price > max_price:
-            excluded_by_price_count += 1
-        else:
-            remaining.append(symbol)
-    return ExclusionResult(
-        remaining=remaining,
-        excluded_by_price_count=excluded_by_price_count,
-    )
-
-
 def exclude_by_regulation(candidates, regulations):
     """
     規制対象外の銘柄のみをフィルタリングして返します。
@@ -298,20 +282,27 @@ def calculate_volume_surge_ratio(today_volume: float, average_volume: float) -> 
     return today_volume / average_volume
 
 
-def filter_by_min_surge_ratio(scored: List[ScoredCandidate], min_ratio: float) -> List[ScoredCandidate]:
-    """出来高急増率が閾値未満の候補を除外する（出来高が減少している銘柄の混入を防ぐ）。"""
-    return [candidate for candidate in scored if candidate.surge_ratio >= min_ratio]
-
-
 def select_top_n_by_surge_ratio(scored: List[ScoredCandidate], n: int = 10):
     return [candidate.symbol for candidate in sorted(scored, key=lambda item: (-item.surge_ratio, item.symbol))[:n]]
 
 
 def check_kill_switch(daily_orders, daily_pnl, capital, settings, order_amount, api_soft_limit=None):
-    effective_soft_limit = api_soft_limit if api_soft_limit is not None else settings.API_SOFT_LIMIT
-    max_amount = min(settings.MAX_ORDER_AMOUNT_PER_TRADE, effective_soft_limit)
-    if order_amount > max_amount or daily_orders >= settings.MAX_ORDER_COUNT_PER_DAY:
+    if daily_orders >= settings.MAX_ORDER_COUNT_PER_DAY:
         return False
     if capital > 0 and daily_pnl <= -(capital * settings.DAILY_LOSS_LIMIT_RATIO):
         return False
     return True
+
+
+def is_buy_order_amount_allowed(order_amount, settings, api_soft_limit=None):
+    """買い注文の金額上限を判定します。売り注文には適用しません。"""
+    effective_soft_limit = api_soft_limit if api_soft_limit is not None else settings.API_SOFT_LIMIT
+    max_amount = min(settings.MAX_ORDER_AMOUNT_PER_TRADE, effective_soft_limit)
+    return order_amount <= max_amount
+
+
+def calculate_buy_quantity(price, max_amount, order_unit):
+    """上限額内で購入できる最大の売買単位数を返します。"""
+    if price <= 0 or max_amount <= 0 or order_unit <= 0:
+        return 0
+    return int(max_amount // (price * order_unit)) * order_unit

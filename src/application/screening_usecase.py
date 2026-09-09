@@ -13,7 +13,6 @@ from src.config import config
 from src.domain.enums import RankingType
 from src.domain.models import Regulation, ScreeningAuditEntry, ScreeningResult
 from src.domain.rules import (
-    exclude_by_price_ceiling,
     exclude_by_regulation,
     limit_candidates,
     merge_ranking_candidates,
@@ -75,16 +74,9 @@ class ScreeningUseCase:
         candidates = merge_ranking_candidates(turnover, price_gain)
         turnover_by_symbol = {entry.symbol: entry for entry in turnover}
         price_gain_by_symbol = {entry.symbol: entry for entry in price_gain}
-        prices = {
-            symbol: (turnover_by_symbol.get(symbol) or price_gain_by_symbol.get(symbol)).current_price
-            for symbol in candidates
-        }
-        price_exclusion_result = exclude_by_price_ceiling(
-            candidates, prices, config.MAX_SHARE_PRICE
-        )
 
         regulations = {}
-        remaining = price_exclusion_result.remaining
+        remaining = candidates
         batch_size = config.SCREENING_BATCH_SIZE
         for batch_start in range(0, len(remaining), batch_size):
             batch = remaining[batch_start:batch_start + batch_size]
@@ -118,14 +110,13 @@ class ScreeningUseCase:
                 if self.batch_finished and not self.batch_finished(batch, batch_number):
                     raise RuntimeError(f"スクリーニングバッチ{batch_number}の銘柄解除に失敗しました")
                 logger.info("スクリーニングバッチ終了: 番号=%d | 銘柄数=%d", batch_number, len(batch))
-        exclusion_result = exclude_by_regulation(price_exclusion_result.remaining, regulations)
-        exclusion_result.excluded_by_price_count = price_exclusion_result.excluded_by_price_count
+        exclusion_result = exclude_by_regulation(remaining, regulations)
         symbols = limit_candidates(exclusion_result.remaining)
         selected_symbols = set(symbols)
         default_turnover_rank = len(turnover) + 1
         default_price_gain_rank = len(price_gain) + 1
         audit_entries = []
-        for symbol in price_exclusion_result.remaining:
+        for symbol in remaining:
             turnover_entry = turnover_by_symbol.get(symbol)
             price_gain_entry = price_gain_by_symbol.get(symbol)
             turnover_rank = turnover_entry.rank if turnover_entry else default_turnover_rank
@@ -188,7 +179,7 @@ class ScreeningUseCase:
             f"採用銘柄: {len(symbols)}銘柄\n"
             f"候補: {len(candidates)}件\n"
             "除外:\n"
-            f"  高額({config.MAX_SHARE_PRICE:g}円超): {exclusion_result.excluded_by_price_count}件\n"
+            "  株価上限: 0件（銘柄選定では価格制限なし）\n"
             f"  規制: {exclusion_result.excluded_by_regulation_count}件\n"
             f"  地方取引所: {exclusion_result.excluded_by_exchange_count}件"
         )

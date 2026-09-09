@@ -4,7 +4,7 @@ from src.application.filtering_usecase import FilteringUseCase
 from src.application.screening_usecase import ScreeningUseCase
 from src.domain.enums import RankingType
 from src.domain.models import FilteringResult, RankingEntry, Regulation, ScreeningResult
-from src.domain.rules import calculate_volume_surge_ratio, check_kill_switch, exclude_by_price_ceiling, exclude_by_regulation, limit_candidates, merge_ranking_candidates
+from src.domain.rules import calculate_buy_quantity, calculate_volume_surge_ratio, check_kill_switch, exclude_by_regulation, is_buy_order_amount_allowed, limit_candidates, merge_ranking_candidates
 from src.infrastructure.persistence.filtering_result_repository import FilteringResultRepository
 from src.infrastructure.persistence.screening_result_repository import ScreeningResultRepository
 from src.infrastructure.kabu.ranking_repository import RankingRepository
@@ -65,14 +65,6 @@ def test_exclude_by_regulation_counts_each_reason():
     assert result.excluded_by_exchange_count == 1
 
 
-def test_exclude_by_price_ceiling_excludes_expensive_and_unavailable_prices():
-    result = exclude_by_price_ceiling(
-        ["7203", "1234", "5678"], {"7203": 300, "1234": 301}, 300
-    )
-    assert result.remaining == ["7203"]
-    assert result.excluded_by_price_count == 2
-
-
 def test_limit_candidates_caps_the_result_at_fifty():
     candidates = [str(index) for index in range(51)]
     assert limit_candidates(candidates) == candidates[:50]
@@ -80,7 +72,19 @@ def test_limit_candidates_caps_the_result_at_fifty():
 
 def test_volume_ratio_and_kill_switch():
     assert calculate_volume_surge_ratio(300, 100) == 3
-    assert not check_kill_switch(10, 0, 1_000_000, config, 1)
+    assert not check_kill_switch(10, 0, 100_000, config, 1)
+
+
+def test_order_amount_limit_applies_only_to_buy_orders():
+    assert is_buy_order_amount_allowed(10_000, config, api_soft_limit=1_000_000)
+    assert not is_buy_order_amount_allowed(10_001, config, api_soft_limit=1_000_000)
+    # 売り注文は保有株の決済であり、金額上限では止めない。
+    assert check_kill_switch(0, 0, 100_000, config, 100_000, api_soft_limit=1_000_000)
+
+
+def test_buy_quantity_uses_maximum_affordable_order_units():
+    assert calculate_buy_quantity(40, 10_000, 100) == 200
+    assert calculate_buy_quantity(101, 10_000, 100) == 0
 
 
 def test_config_loads_env_from_repository_root():
@@ -121,7 +125,7 @@ def test_screening_usecase_persists_date_result(tmp_path):
         "採用銘柄: 2銘柄\n"
         "候補: 2件\n"
         "除外:\n"
-        f"  高額({config.MAX_SHARE_PRICE:g}円超): 0件\n"
+        "  株価上限: 0件（銘柄選定では価格制限なし）\n"
         "  規制: 0件\n"
         "  地方取引所: 0件\n"
         "上位銘柄:\n"
@@ -157,17 +161,16 @@ def test_filtering_usecase_reads_previous_screening_result(tmp_path):
         "スクリーニング対象: 12件\n"
         "出来高条件で除外: 0件\n"
         "上位銘柄:\n"
-        "- 0(20日平均の2.0倍)\n"
-        "- 1(20日平均の2.0倍)\n"
-        "- 10(20日平均の2.0倍)\n"
-        "- 11(20日平均の2.0倍)\n"
-        "- 2(20日平均の2.0倍)"
+        "- 0(20日平均売買代金の2.0倍)\n"
+        "- 1(20日平均売買代金の2.0倍)\n"
+        "- 10(20日平均売買代金の2.0倍)\n"
+        "- 11(20日平均売買代金の2.0倍)\n"
+        "- 2(20日平均売買代金の2.0倍)"
     ]
     assert result_repository.load_latest().symbols == result.symbols
 
 
-def test_filtering_usecase_excludes_symbols_below_min_surge_ratio(tmp_path, monkeypatch):
-    monkeypatch.setattr(config, "MIN_VOLUME_SURGE_RATIO", 1.0)
+def test_filtering_usecase_selects_by_relative_turnover_ratio(tmp_path):
     today = datetime.now().date()
     previous_business_day = today - timedelta(days=1)
     while previous_business_day.weekday() >= 5:
@@ -188,15 +191,16 @@ def test_filtering_usecase_excludes_symbols_below_min_surge_ratio(tmp_path, monk
         screening_repository, MixedBoardStub(), VolumeStub(), result_repository, notifications.append
     ).execute()
 
-    # 出来高減少銘柄(6619, 0.9倍)は閾値未満のため候補から除外される
-    assert result.symbols == ["7689"]
+    # 同時刻帯の日足比較は行わず、取得できた候補を相対順位で選ぶ
+    assert result.symbols == ["7689", "6619"]
     assert notifications == [
         "【フィルタリング結果】\n"
-        "採用銘柄: 1銘柄\n"
+        "採用銘柄: 2銘柄\n"
         "スクリーニング対象: 2件\n"
-        "出来高条件で除外: 1件\n"
+        "出来高条件で除外: 0件\n"
         "上位銘柄:\n"
-        "- 7689(20日平均の11.5倍)"
+        "- 7689(20日平均売買代金の11.5倍)\n"
+        "- 6619(20日平均売買代金の0.9倍)"
     ]
 
 

@@ -237,6 +237,7 @@ def test_trading_use_case_warns_once_for_repeated_sell_signal_without_holdings(m
 
     monkeypatch.setattr(config, 'IS_DEMO', True)
     monkeypatch.setattr(config, 'API_SOFT_LIMIT', 100_000.0)
+    monkeypatch.setattr(config, 'MAX_ORDER_AMOUNT_PER_TRADE', 100_000.0)
     use_case = TradingUseCase(
         token='dummy',
         order_history_path=tmp_path / 'order_history.json',

@@ -29,25 +29,21 @@ kabuステーションAPIの `GET /ranking` は「kabuステーションが保�
   → GET /ranking （Type=4:売買代金, Type=1:値上がり率 の2種類を取得）
   → ExchangeDivision=ALLは1回の呼び出しにつき上位50件しか返らず値がさ株に偏るため、
     config.SCREENING_EXCHANGE_DIVISIONS（既定: TP/TS/TG）で市場区分ごとに個別取得し母集団を拡大する
-② 統合候補のランキング内株価で高額銘柄を除外
-  → GET /ranking 応答の `CurrentPrice`（当日終値相当の株価）
-  → 1株あたり1,000円を超える銘柄は候補から除外（運用資金に対して単元取得額が大きくなりすぎるため）
-③ 規制・除外条件の確認
+② 規制・除外条件の確認
   → GET /regulations/{symbol}（値幅制限・信用規制など）
   → GET /primaryexchange/{symbol}（取引所確認、対象外市場の除外）
-④ ドメインルールでスコアリング・絞り込み
+③ ドメインルールでスコアリング・絞り込み
   → domain/rules.py の純粋関数でランキング結果を統合評価
-⑤ 30〜50銘柄に絞って永続化
+④ 30〜50銘柄に絞って永続化
   → infrastructure/persistence/screening_result_repository.py
-⑥ 結果を通知（監視も兼ねる。1〜2行に要約）
+⑤ 結果を通知（監視も兼ねる。1〜2行に要約）
   → infrastructure/notification/line_notify_client.py
   → 内容: 最終件数 / 除外内訳（規制・地方取引所・高額） / 上位銘柄（代表値付き）
      詳細はセクション3.5参照
 ```
 
-> **株価判定のタイミングについて**: ②の株価除外は規制・取引所確認(③)より先に行う。
-> 高額で最初から対象外になる銘柄について③の規制・取引所APIコールを無駄に発生させないため。
-> `/board` は未登録銘柄の照会時にAPI登録銘柄枠を消費し、最大50件の制限に抵触するため、スクリーニングでは使用しない。
+> 銘柄選定では株価による除外を行わない。発注額・数量の制限は取引ユースケースのキルスイッチで管理する。
+> `/board` は未登録銘柄の照会時にAPI登録銘柄枠を消費するため、スクリーニングでは使用しない。
 
 ---
 
@@ -64,7 +60,7 @@ kabuステーションAPIの `GET /ranking` は「kabuステーションが保�
 - API: `GET /ranking`（`Type`パラメータをEnum化。coding-guidelines.md 2.3節「マジックストリングはEnum化」に準拠）
 - `RankingType.TURNOVER`（Type=4: 売買代金）と `RankingType.PRICE_GAIN`（Type=1: 値上がり率）の2種類を取得し、`ScreeningUseCase`側で結合する
 - `exchange_division` は `/ranking` の `ExchangeDivision`（市場区分）にそのまま渡す。`ScreeningUseCase._collect_ranking` が `config.SCREENING_EXCHANGE_DIVISIONS` の各市場区分ごとに呼び出し、同一銘柄は順位の良い方を採用して結合する
-- 応答の `CurrentPrice` を `RankingEntry` に保持し、②の高額銘柄除外に使用する
+- 応答の `CurrentPrice` は監査・将来のサイジング用途として保持する
 
 ### infrastructure/kabu/regulation_repository.py（新規）
 - `get_regulation(symbol: str) -> Regulation`
@@ -81,15 +77,10 @@ kabuステーションAPIの `GET /ranking` は「kabuステーションが保�
 - `merge_ranking_candidates(turnover_ranking: list[RankingEntry], price_gain_ranking: list[RankingEntry]) -> list[str]`
   - **順位合算方式**: 各銘柄について「売買代金ランキングの順位＋値上がり率ランキングの順位」を合計し、合計順位が小さい順に採用する
   - 片方のランキングにしか出ていない銘柄は、出ていない側の順位を「ランキング対象外の下限値（例: 取得件数+1）」として計算し、著しく不利な扱いにする
-- `exclude_by_price_ceiling(candidates: list[str], prices: dict[str, float], max_price: float) -> ExclusionResult`
-  - 1株あたりの株価が`max_price`（運用値1,000円）を超える銘柄を除外する純粋関数
-  - `ExclusionResult.excluded_by_price_count`に件数を記録
-  - `max_price`は`config/config.py`の`MAX_SHARE_PRICE`から注入。コードのフォールバックは300円、運用値は`.env`で1,000円とし、運用資金に応じて調整する
 - `exclude_by_regulation(candidates: list[str], regulations: dict[str, Regulation]) -> ExclusionResult`
   - 規制銘柄・対象外取引所（地方取引所単独上場銘柄）の銘柄を除外
   - **通知の除外内訳表示のため、単なる`list[str]`ではなく `ExclusionResult`（残った銘柄 + 理由別の除外件数）を返す**（下記モデル参照）
   - 理由の切り分け: 信用規制・値幅制限による除外は`reason="regulation"`、地方取引所単独上場による除外は`reason="exchange"`としてカウントを分ける
-  - **`exclude_by_price_ceiling`の結果を受けて、既に高額除外された銘柄数と合算した`ExclusionResult`を`ScreeningUseCase`側で保持し、通知の除外内訳（規制/地方取引所/高額）を組み立てる**
 - `limit_candidates(candidates: list[str], min_count: int = 30, max_count: int = 50) -> list[str]`
   - 最終的に30〜50件に丸める（多すぎる場合はスコア上位から、少なすぎる場合は警告ログ）
 
@@ -102,12 +93,11 @@ kabuステーションAPIの `GET /ranking` は「kabuステーションが保�
 |---|---|---|
 | `RankingEntry` | symbol, rank, value, ranking_type, current_price | ①の取得結果・②の判定材料 |
 | `Regulation` | symbol, is_restricted, reason | ②の判定材料 |
-| `ExclusionResult` | remaining(list[str]), excluded_by_price_count, excluded_by_regulation_count, excluded_by_exchange_count | ②`exclude_by_price_ceiling()`・③`exclude_by_regulation()`の出力・⑥通知の除外内訳の元データ |
+| `ExclusionResult` | remaining(list[str]), excluded_by_regulation_count, excluded_by_exchange_count | `exclude_by_regulation()`の出力・通知の除外内訳の元データ |
 | `ScreeningResult` | date, symbols(list[str]), generated_at, audit_entries(list[`ScreeningAuditEntry`]) | ⑤の永続化対象・②の入力。`audit_entries`は監査目的で追加した実装差分（2026-09-04追記、5節参照）で、全候補のランキング・規制・採用判定情報を保持する |
 | `ScreeningAuditEntry` | symbol, turnover_rank, turnover_value, price_gain_rank, price_gain_value, total_rank, primary_exchange, is_restricted, restriction_reason, selected | 監査ログ用。なぜその銘柄が採用/除外されたかを後から再現するための全候補分の記録 |
 
 `config/settings.py`に以下の設定項目を追加する:
-- `MAX_SHARE_PRICE`（1株あたりの株価上限。コードのフォールバックは300円、現行運用値は1,000円。運用資金の増減に応じて調整できるよう設定値化）
 
 ### infrastructure/persistence/screening_result_repository.py（新規）
 - `save(result: ScreeningResult) -> None`
@@ -120,14 +110,14 @@ kabuステーションAPIの `GET /ranking` は「kabuステーションが保�
 **方針**: 監視も兼ねる。1〜2行に収め、銘柄コードの羅列はしない。
 
 ```
-スクリーニング完了: 42銘柄（候補70件中、高額(1000円超)8件・規制3件・地方取引所2件を除外）
+スクリーニング完了: 42銘柄（候補70件中、規制3件・地方取引所2件を除外）
 上位: 285A(値上がり率+18.2%) / 593A(売買代金12.4億) / 1234(値上がり率+15.1%)
 ```
 
 - **1行目: 件数 + 除外内訳**
   - 最終件数（`limit_candidates`後の件数、`ScreeningResult.symbols`の件数と一致）
   - `候補◯件中` = `merge_ranking_candidates()`直後（除外・丸め込み前）の件数
-  - `高額(1000円超)◯件` = `ExclusionResult.excluded_by_price_count`（現行の`MAX_SHARE_PRICE`超過分）
+  - 株価による除外は行わない。発注額・数量は取引側のキルスイッチで制限する
   - `規制◯件` = `ExclusionResult.excluded_by_regulation_count`
   - `地方取引所◯件` = `ExclusionResult.excluded_by_exchange_count`
   - 用途: 除外件数が普段と桁違いに多い/少ない日に気づける（監視目的）
@@ -158,8 +148,7 @@ kabuステーションAPIの `GET /ranking` は「kabuステーションが保�
 - 実行タイミング: 前日大引け直後（15:35頃）
 - 銘柄統合ロジック: 順位合算方式（両ランキングの合計順位が小さい順）
 - 除外する対象外市場: `PrimaryExchange` が `3(名証)` `5(福証)` `6(札証)` の地方取引所単独上場銘柄のみ（東証はすべて対象内）
-- 高額銘柄フィルタ: 1株あたりの株価が1,000円（運用時の`MAX_SHARE_PRICE`）を超える銘柄は候補から除外。判定は1株あたりの株価ベース（単元購入金額ベースではない）
-  - **根拠**: 運用資金100万円を前提に、単元(100株)コストを最大100,000円に抑える。複数銘柄への分散余力を残しつつ、ランキング由来の候補数を確保するため、1,000円を上限に設定
+- 株価上限: 銘柄選定では設けない。運用資金100,000円に対する発注額上限10,000円と注文数量の制御で管理する
 - 通知内容: 監視も兼ねる方針で確定。1行目「最終件数＋候補件数＋除外内訳（高額/規制/地方取引所）」、2行目「上位3〜5銘柄＋代表値（順位で勝った方のランキング種別と値）」の2行構成（3.5節参照）
 - 永続化モデル(`ScreeningResult`)は変更しない。通知用の詳細情報（順位・値・除外内訳）は`ScreeningUseCase`内で都度組み立てて`Notifier`に渡す
 - **（2026-09-04追記）実装レビューを踏まえ、監査目的で`ScreeningResult.audit_entries`（`ScreeningAuditEntry`のリスト）を例外的に追加した。上記の「永続化モデルは変更しない」方針からの逸脱だが、後から採用判定の根拠を追えるようにするための意図的な差分として本節に記録する**
@@ -181,4 +170,3 @@ kabuステーションAPIの `GET /ranking` は「kabuステーションが保�
 1. cron実行時刻を15:35のまま運用するか、余裕を見て数分ずらすか（§6参照、実運用データを見て判断）
 2. 休場日の扱い（祝日カレンダーとの連携要否）
 3. 通知の上位銘柄件数（3件か5件か）の最終決定、および除外内訳の具体的な文言（§3.5参照、運用しながら調整）
-4. `MAX_SHARE_PRICE`（現行運用値1,000円）は運用資金100万円を前提にした値のため、資金額や希望する分散銘柄数が変わった場合は再計算して見直す

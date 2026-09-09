@@ -7,6 +7,7 @@
 """
 import logging
 import json
+import inspect
 import time
 from datetime import datetime
 from pathlib import Path
@@ -14,7 +15,7 @@ from typing import List, Optional
 
 from src.config import config
 from src.domain.models import OrderHistoryEntry, PriceLimit, TradeSignal
-from src.domain.rules import calculate_price_limit, calculate_rsi, check_kill_switch, is_market_closed, is_safe_to_order
+from src.domain.rules import calculate_buy_quantity, calculate_price_limit, calculate_rsi, check_kill_switch, is_buy_order_amount_allowed, is_market_closed, is_safe_to_order
 from src.infrastructure.kabu.get_board import get_current_board
 from src.infrastructure.kabu.get_positions import get_positions
 from src.infrastructure.kabu.get_wallet import get_wallet_cash
@@ -287,16 +288,51 @@ class TradingUseCase:
                         kill_switch_triggered = True
                         break
                     self.api_soft_limit = api_limit
+                    if signal.side == config.OrderSide.BUY:
+                        signal.qty = calculate_buy_quantity(
+                            signal.price,
+                            min(config.MAX_ORDER_AMOUNT_PER_TRADE, self.api_soft_limit),
+                            config.ORDER_UNIT,
+                        )
+                    else:
+                        held_quantity = next(
+                            (
+                                int(position.get('HoldQty', 0) or 0)
+                                for position in positions
+                                if position.get('Symbol') == symbol
+                                and position.get('Side') == config.OrderSide.SELL.value
+                            ),
+                            0,
+                        )
+                        signal.qty = held_quantity if held_quantity > 0 else config.ORDER_UNIT
+                    if signal.qty <= 0:
+                        logger.info("注文数量が0のため見送ります: 銘柄=%s", symbol)
+                        continue
                     # キルスイッチ判定
                     daily_pnl = sum(float(position.get('ProfitLoss', 0) or 0) for position in positions)
                     daily_orders = sum(
                         1 for entry in self.order_history
                         if entry.timestamp.startswith(now_provider().date().isoformat())
                     )
-                    if not check_kill_switch(daily_orders, daily_pnl, config.OPERATING_CAPITAL, config, signal.price * signal.qty, api_soft_limit=self.api_soft_limit):
+                    if not check_kill_switch(daily_orders, daily_pnl, config.OPERATING_CAPITAL, config, 0, api_soft_limit=self.api_soft_limit):
                         logger.warning("キルスイッチにより発注を停止しました。")
                         kill_switch_triggered = True
                         break
+                    if (
+                        signal.side == config.OrderSide.BUY
+                        and not is_buy_order_amount_allowed(
+                            signal.price * signal.qty,
+                            config,
+                            api_soft_limit=self.api_soft_limit,
+                        )
+                    ):
+                        logger.warning(
+                            "買い注文を見送ります: 銘柄=%s | 注文金額=%.1f円 | 上限=%.1f円",
+                            symbol,
+                            signal.price * signal.qty,
+                            min(config.MAX_ORDER_AMOUNT_PER_TRADE, self.api_soft_limit),
+                        )
+                        continue
                     # 注文の安全性を確認
                     has_holdings = self._has_holdings(symbol, positions)
                     should_warn_missing_holdings = (
@@ -318,7 +354,17 @@ class TradingUseCase:
                     # 注文を実行（成否はResultコードで判定。失敗時はNoneが返る）
                     if self.order_sender and hasattr(self.order_sender, 'set_price'):
                         self.order_sender.set_price(symbol, signal.price)
-                    order_result = self.order_sender.place_market_order(self.token, symbol, signal.side.value) if self.order_sender else place_market_order(self.token, symbol, signal.side.value)
+                    order_method = (
+                        self.order_sender.place_market_order
+                        if self.order_sender
+                        else place_market_order
+                    )
+                    order_args = (self.token, symbol, signal.side.value, signal.qty)
+                    try:
+                        inspect.signature(order_method).bind(*order_args)
+                    except TypeError:
+                        order_args = order_args[:3]
+                    order_result = order_method(*order_args)
                     if order_result and order_result.get('Result') == 0:
                         self._register_order(signal, limit, order_result)
                 except Exception:

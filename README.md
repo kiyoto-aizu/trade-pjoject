@@ -267,6 +267,8 @@ Windowsの計画実行では、スクリーニング・フィルタリングと�
 
 `register_trading_task.ps1`で登録した取引タスクは常にペーパー固定です。本番モードで実注文を行う場合は、設定を確認したうえで `python -m src.entrypoints.run_trading` を直接起動してください。
 
+取引終了時のレポートはLINEへ通知されるほか、日付別に `data/reports/YYYY-MM-DD.json` へ保存されます。JSONには注文数、注文内容、保有銘柄の評価損益、キルスイッチ状態、LINE本文、LLM日次評価（有効時）が含まれます。注文履歴は `order_history.json`、ペーパー口座状態は `paper_account_state.json` に保存されます。
+
 ### 4. バックテスト
 
 日付ごとのフィルタリング結果を時系列に再生し、その日に選ばれた銘柄だけを対象にバックテストします。過去の銘柄を未来の日付へ持ち越さないため、実運用に近い評価になります。価格データはYahoo Financeから取得し、直近90日分のフィルタリング結果を対象にします。
@@ -275,7 +277,7 @@ Windowsの計画実行では、スクリーニング・フィルタリングと�
 .\scripts\run_backtest.ps1
 ```
 
-結果は `data/backtest/latest_timeseries.json` に保存されます。LINE設定がある場合は、対象期間・総損益・勝率・取引数・最大ドローダウン・最終保有数のサマリーも通知します。詳細な取引履歴はJSONで確認できます。平日16:30に自動実行するタスクは、初回のみ次で登録します。
+結果は最新結果として `data/backtest/latest_timeseries.json` に保存され、同じ内容が `data/backtest/latest_timeseries_YYYYMMDD_HHMMSS_ffffff.json` の形式で履歴保存されます。LINE設定がある場合は、対象期間・総損益・勝率・取引数・最大ドローダウン・最終保有数のサマリーも通知します。詳細な取引履歴はJSONで確認できます。平日16:30に自動実行するタスクは、初回のみ次で登録します。
 
 ```powershell
 .\scripts\register_backtest_task.ps1

@@ -3,7 +3,7 @@ import pytest
 from src.application.backtest_usecase import simulate_backtest, simulate_timeseries_backtest
 from src.config import config
 from src.domain.rules import calculate_rsi
-from src.entrypoints.run_backtest import fetch_yahoo_history, load_history
+from src.entrypoints.run_backtest import fetch_yahoo_history, load_history, save_backtest_result
 
 
 @pytest.fixture(autouse=True)
@@ -51,6 +51,19 @@ def test_load_history_from_csv(tmp_path):
     history = load_history(csv_path)
 
     assert history["7203"] == [100.0, 101.0, 102.0]
+
+
+def test_save_backtest_result_keeps_latest_and_timestamped_archive(tmp_path):
+    output_path = tmp_path / "latest_timeseries.json"
+    result = {"total_pnl": 123.45, "trade_history": []}
+
+    archive_path = save_backtest_result(output_path, result)
+
+    assert output_path.exists()
+    assert archive_path.exists()
+    assert archive_path != output_path
+    assert archive_path.stem.startswith("latest_timeseries_")
+    assert output_path.read_text(encoding="utf-8") == archive_path.read_text(encoding="utf-8")
 
 
 def test_simulate_backtest_buys_then_sells_on_signal():

@@ -169,6 +169,17 @@ def load_history(path: Path) -> dict[str, list[float]]:
     raise ValueError(f"対応していない履歴形式です: {path}")
 
 
+def save_backtest_result(output_path: Path, result: dict) -> Path:
+    """最新結果を保存し、同じ内容を実行時刻付きの履歴として保存します。"""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    serialized = json.dumps(result, ensure_ascii=False, indent=2)
+    output_path.write_text(serialized, encoding="utf-8")
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    archive_path = output_path.with_name(f"{output_path.stem}_{timestamp}{output_path.suffix}")
+    archive_path.write_text(serialized, encoding="utf-8")
+    return archive_path
+
+
 def main() -> None:
     with process_notification('バックテスト', notify_lifecycle=False):
         repo_root = Path(__file__).resolve().parents[2]
@@ -224,9 +235,9 @@ def main() -> None:
                 close_at_eod=args.day_trade,
             )
 
+        archive_path = None
         if args.output:
-            args.output.parent.mkdir(parents=True, exist_ok=True)
-            args.output.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+            archive_path = save_backtest_result(args.output, result)
 
         # CLI 出力は日本語ラベルを優先して見やすくする
         display_result = {
@@ -255,6 +266,8 @@ def main() -> None:
         ]
         if args.output:
             report_lines.append(f"詳細: {args.output}")
+        if archive_path:
+            report_lines.append(f"履歴: {archive_path}")
         send_line_notify("\n".join(report_lines))
 
 

@@ -106,11 +106,15 @@ def test_end_of_day_report_identifies_paper_trading(monkeypatch, tmp_path):
         token='dummy',
         order_history_path=tmp_path / 'order_history.json',
         notifier=messages.append,
+        daily_report_directory=tmp_path / 'reports',
     )
 
     use_case._send_end_of_day_report()
 
     assert messages[0].startswith('【ペーパートレード】')
+    report = json.loads((tmp_path / 'reports' / f'{datetime.now().date().isoformat()}.json').read_text(encoding='utf-8'))
+    assert report['order_count'] == 0
+    assert report['report_text'] == messages[0]
 
 
 def test_end_of_day_report_appends_daily_llm_analysis(tmp_path):
@@ -127,6 +131,7 @@ def test_end_of_day_report_appends_daily_llm_analysis(tmp_path):
         order_history_path=tmp_path / 'order_history.json',
         notifier=messages.append,
         daily_analyzer=DailyAnalyzer(),
+        daily_report_directory=tmp_path / 'reports',
     )
     use_case._send_end_of_day_report()
 
@@ -134,6 +139,8 @@ def test_end_of_day_report_appends_daily_llm_analysis(tmp_path):
     assert summaries[0]['positions'] == []
     assert 'LLM日次評価（参考）' in messages[0]
     assert '参考評価です。' in messages[0]
+    report = json.loads((tmp_path / 'reports' / f'{datetime.now().date().isoformat()}.json').read_text(encoding='utf-8'))
+    assert report['llm_analysis'] == '今日の評価\n- 参考評価です。'
 
 
 def test_trading_use_case_places_and_records_buy_order_without_live_api(monkeypatch, tmp_path):

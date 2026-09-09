@@ -54,6 +54,7 @@ class TradingUseCase:
         filtering_result_repository=None,
         notifier=None,
         daily_analyzer=None,
+        daily_report_directory: Optional[Path] = None,
     ):
         """
         TradingUseCaseを初期化します。
@@ -81,6 +82,7 @@ class TradingUseCase:
         self.filtering_result_repository = filtering_result_repository
         self.notifier = notifier or send_line_notify
         self.daily_analyzer = daily_analyzer if daily_analyzer is not None else create_daily_analyzer()
+        self.daily_report_directory = daily_report_directory or Path(__file__).resolve().parents[2] / "data" / "reports"
         self.last_positions = []
         self.kill_switch_triggered = False
         self.api_soft_limit: Optional[float] = None
@@ -242,7 +244,16 @@ class TradingUseCase:
             if analysis:
                 lines.extend(["--- LLM日次評価（参考） ---", analysis])
 
-        self.notifier("\n".join(lines))
+        report_text = "\n".join(lines)
+        report_data = {
+            **daily_summary,
+            "generated_at": datetime.now().isoformat(timespec="seconds"),
+            "report_text": report_text,
+            "llm_analysis": analysis if self.daily_analyzer else None,
+        }
+        self.daily_report_directory.mkdir(parents=True, exist_ok=True)
+        write_json(self.daily_report_directory / f"{today}.json", report_data)
+        self.notifier(report_text)
 
     # ================================================================================
     # メイン取引ループ

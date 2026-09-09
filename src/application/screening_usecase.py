@@ -188,7 +188,6 @@ class ScreeningUseCase:
             f"採用銘柄: {len(symbols)}銘柄\n"
             f"候補: {len(candidates)}件\n"
             "除外:\n"
-            "  株価上限: 0件（銘柄選定では価格制限なし）\n"
             f"  規制: {exclusion_result.excluded_by_regulation_count}件\n"
             f"  地方取引所: {exclusion_result.excluded_by_exchange_count}件"
         )
@@ -196,10 +195,17 @@ class ScreeningUseCase:
         for symbol in exclusion_result.remaining[:3]:
             turnover_entry = turnover_by_symbol.get(symbol)
             price_gain_entry = price_gain_by_symbol.get(symbol)
-            if price_gain_entry and (not turnover_entry or price_gain_entry.rank <= turnover_entry.rank):
-                top_entries.append(f"{symbol}(値上がり率+{price_gain_entry.value:g}%)")
-            elif turnover_entry:
-                top_entries.append(f"{symbol}(売買代金{turnover_entry.value / 100_000_000:g}億)")
+            price_gain = (
+                f"+{price_gain_entry.value:,.2f}%"
+                if price_gain_entry else "-"
+            )
+            turnover = (
+                f"{turnover_entry.value / 100_000_000:,.2f}億円"
+                if turnover_entry else "-"
+            )
+            top_entries.append(
+                f"{symbol}(値上がり率 {price_gain}, 売買代金 {turnover})"
+            )
         if top_entries:
             message += "\n上位銘柄:\n" + "\n".join(f"- {entry}" for entry in top_entries)
         try:

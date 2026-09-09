@@ -191,12 +191,11 @@ def test_screening_usecase_persists_date_result(tmp_path):
         "採用銘柄: 2銘柄\n"
         "候補: 2件\n"
         "除外:\n"
-        "  株価上限: 0件（銘柄選定では価格制限なし）\n"
         "  規制: 0件\n"
         "  地方取引所: 0件\n"
         "上位銘柄:\n"
-        "- 7203(値上がり率+100%)\n"
-        "- 8306(値上がり率+90%)"
+        "- 7203(値上がり率 +100.00%, 売買代金 0.00億円)\n"
+        "- 8306(値上がり率 +90.00%, 売買代金 0.00億円)"
     ]
     saved_result = repository.load_latest()
     assert saved_result.symbols == result.symbols

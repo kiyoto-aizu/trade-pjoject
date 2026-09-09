@@ -10,6 +10,20 @@ class HistoricalRankingRepository:
     def __init__(self, listed_security_repository, market_data_client):
         self.listed_security_repository = listed_security_repository
         self.market_data_client = market_data_client
+        self._metrics_by_date = {}
+
+    def _load_metrics(self, target_date: date):
+        cached = self._metrics_by_date.get(target_date)
+        if cached is not None:
+            return cached
+
+        metrics_by_symbol = {}
+        for security in self.listed_security_repository.load_for_date(target_date):
+            metrics_by_symbol[security.symbol] = self.market_data_client.get_daily_market_data(
+                security.symbol, target_date
+            )
+        self._metrics_by_date[target_date] = metrics_by_symbol
+        return metrics_by_symbol
 
     def get_ranking(
         self,
@@ -21,10 +35,11 @@ class HistoricalRankingRepository:
             raise ValueError("HistoricalRankingRepositoryにはtarget_dateが必要です")
 
         entries = []
+        metrics_by_symbol = self._load_metrics(target_date)
         for security in self.listed_security_repository.load_for_date(target_date):
             if exchange_division != "ALL" and security.exchange_division != exchange_division:
                 continue
-            metrics = self.market_data_client.get_daily_market_data(security.symbol, target_date)
+            metrics = metrics_by_symbol.get(security.symbol)
             if not metrics:
                 continue
             if ranking_type == RankingType.TURNOVER:

@@ -20,7 +20,7 @@ DATA_DIR = Path(__file__).resolve().parents[2] / 'data'
 DATA_DIR.mkdir(exist_ok=True)
 
 
-def run(usecase: ScreeningUseCase):
+def run(usecase: ScreeningUseCase, target_date=None):
     """
     スクリーニング処理を実行します。
     
@@ -30,6 +30,6 @@ def run(usecase: ScreeningUseCase):
     Returns:
         ScreeningResultオブジェクト
     """
-    result = usecase.execute()
+    result = usecase.execute(target_date=target_date)
     logger.info("screening finished: %d symbols", len(result.symbols))
     return result

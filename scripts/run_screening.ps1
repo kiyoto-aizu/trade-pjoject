@@ -1,5 +1,7 @@
 [CmdletBinding()]
-param()
+param(
+    [string]$Date
+)
 
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
@@ -12,7 +14,11 @@ if (-not (Test-Path $python)) {
 
 Push-Location $projectRoot
 try {
-    & $python -m src.entrypoints.run_screening
+    $arguments = @('-m', 'src.entrypoints.run_screening')
+    if ($Date) {
+        $arguments += @('--date', $Date)
+    }
+    & $python @arguments
     exit $LASTEXITCODE
 }
 finally {

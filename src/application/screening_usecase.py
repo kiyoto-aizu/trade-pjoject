@@ -48,7 +48,7 @@ class ScreeningUseCase:
         self.batch_started = None
         self.batch_finished = None
 
-    def execute(self) -> ScreeningResult:
+    def execute(self, target_date=None) -> ScreeningResult:
         """
         スクリーニング処理を実行します。
         
@@ -65,8 +65,8 @@ class ScreeningUseCase:
         Raises:
             RuntimeError: ランキングが空の場合
         """
-        turnover = self._collect_ranking(RankingType.TURNOVER)
-        price_gain = self._collect_ranking(RankingType.PRICE_GAIN)
+        turnover = self._collect_ranking(RankingType.TURNOVER, target_date)
+        price_gain = self._collect_ranking(RankingType.PRICE_GAIN, target_date)
         if not turnover or not price_gain:
             if self.notifier:
                 self.notifier("ランキングが空のためスクリーニングを中止しました")
@@ -92,7 +92,12 @@ class ScreeningUseCase:
                         if exchange is None:
                             regulations[symbol] = Regulation(symbol, True, "優先市場情報取得失敗", 0)
                             continue
-                        regulation = self.regulation_repository.get_regulation(symbol, exchange)
+                        if target_date is None:
+                            regulation = self.regulation_repository.get_regulation(symbol, exchange)
+                        else:
+                            regulation = self.regulation_repository.get_regulation(
+                                symbol, exchange, target_date=target_date
+                            )
                         sleep(config.API_REQUEST_INTERVAL_SECONDS)
                         regulations[symbol] = Regulation(
                             symbol=symbol,
@@ -134,9 +139,8 @@ class ScreeningUseCase:
                 restriction_reason=regulation.reason,
                 selected=symbol in selected_symbols,
             ))
-        result = ScreeningResult(
-            datetime.now().date().isoformat(), symbols, datetime.now().isoformat(), audit_entries
-        )
+        result_date = target_date.isoformat() if target_date else datetime.now().date().isoformat()
+        result = ScreeningResult(result_date, symbols, datetime.now().isoformat(), audit_entries)
         self.result_repository.save(result)
         if self.notifier:
             self._notify_completion(
@@ -148,7 +152,7 @@ class ScreeningUseCase:
             )
         return result
 
-    def _collect_ranking(self, ranking_type: RankingType):
+    def _collect_ranking(self, ranking_type: RankingType, target_date=None):
         """
         市場区分ごとにランキングを取得して結合します。
 
@@ -159,7 +163,12 @@ class ScreeningUseCase:
         divisions = config.SCREENING_EXCHANGE_DIVISIONS or ["ALL"]
         by_symbol = {}
         for division in divisions:
-            entries = self.ranking_repository.get_ranking(ranking_type, exchange_division=division)
+            if target_date is None:
+                entries = self.ranking_repository.get_ranking(ranking_type, exchange_division=division)
+            else:
+                entries = self.ranking_repository.get_ranking(
+                    ranking_type, exchange_division=division, target_date=target_date
+                )
             for entry in entries:
                 existing = by_symbol.get(entry.symbol)
                 if existing is None or entry.rank < existing.rank:

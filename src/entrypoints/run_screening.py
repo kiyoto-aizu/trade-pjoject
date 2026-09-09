@@ -4,7 +4,9 @@
 松元鉮ランキングから取引候補銀柄を技不的に選別します。
 ================================================================================
 """
+import argparse
 import logging
+from datetime import date
 from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
 
@@ -19,6 +21,10 @@ from src.infrastructure.kabu.register import register_symbols
 from src.infrastructure.execution_lock import market_workflow_lock
 from src.infrastructure.notification.line_notify import process_notification, send_line_notify
 from src.infrastructure.persistence.screening_result_repository import ScreeningResultRepository
+from src.infrastructure.persistence.listed_security_repository import ListedSecurityRepository
+from src.infrastructure.persistence.historical_regulation_repository import HistoricalRegulationRepository
+from src.infrastructure.market_data.historical_ranking_repository import HistoricalRankingRepository
+from src.infrastructure.market_data.yahoo_finance_client import YahooFinanceClient
 from src.application.screening_usecase import ScreeningUseCase
 
 
@@ -54,6 +60,10 @@ def main() -> None:
     2. 各リポジトリを害化
     3. ScreeningUseCaseを実行
     """
+    parser = argparse.ArgumentParser(description="スクリーニングを実行します")
+    parser.add_argument("--date", dest="target_date", type=date.fromisoformat, help="対象日 (YYYY-MM-DD)。指定時は銘柄マスタと日足から再計算")
+    args = parser.parse_args()
+
     configure_logging()
     with market_workflow_lock() as acquired:
         if not acquired:
@@ -66,16 +76,27 @@ def main() -> None:
             if unregister_all(token) is None:
                 raise SystemExit('銘柄登録の全解除に失敗しました。')
             data_dir = Path(__file__).resolve().parents[2] / 'data' / 'screening'
+            root = Path(__file__).resolve().parents[2]
+            ranking_repository = RankingRepository(token)
+            regulation_repository = RegulationRepository(token)
+            if args.target_date:
+                ranking_repository = HistoricalRankingRepository(
+                    ListedSecurityRepository(root / 'data' / 'universe' / 'listed_securities.csv'),
+                    YahooFinanceClient(),
+                )
+                regulation_repository = HistoricalRegulationRepository(
+                    root / 'data' / 'regulation' / 'historical_regulations.csv'
+                )
             usecase = ScreeningUseCase(
-                RankingRepository(token),
-                RegulationRepository(token),
+                ranking_repository,
+                regulation_repository,
                 PrimaryExchangeRepository(token),
                 ScreeningResultRepository(data_dir),
                 send_line_notify,
             )
             usecase.batch_started = lambda batch, _: register_symbols(token, batch) is not None
             usecase.batch_finished = lambda _, __: unregister_all(token) is not None
-            screening_run(usecase)
+            screening_run(usecase, target_date=args.target_date)
 
 
 if __name__ == '__main__':

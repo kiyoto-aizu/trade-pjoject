@@ -182,6 +182,41 @@ Start-ScheduledTask -TaskName trade-pjoject-screening
 python -m src.entrypoints.run_filtering
 ```
 
+保存済みのスクリーニング結果に対して過去日を再計算する場合は、対象日を指定します。過去日モードではkabuステーションに接続せず、Yahoo Financeの日足から対象日の売買代金と直前20営業日の平均を計算します。
+
+```powershell
+python -m src.entrypoints.run_filtering --date 2026-09-08
+.\scripts\run_filtering.ps1 -Date '2026-09-08'
+```
+
+スクリーニングのランキングAPIには過去日を指定して取得する機能がないため、過去のランキングを後から完全に再現することはできません。スクリーニング結果は実行日に `data/screening/YYYY-MM-DD.json` として保存されるため、今後の条件変更に備えてこのファイルを履歴として保管してください。過去のスクリーニング条件自体を変更して再計算するには、ランキング取得元の履歴データを別途保存する必要があります。
+
+### 3. 過去日のスクリーニング
+
+日付付きの上場銘柄マスタを `data/universe/listed_securities.csv` に配置すると、kabu APIのランキング結果ではなく、その日時点で上場していた銘柄を母集団にして日足ランキングを計算できます。
+
+```csv
+symbol,exchange_division,listed_from,listed_to
+7203,TP,2020-01-01,
+8306,TS,2020-01-01,2026-09-07
+```
+
+`listed_to` は上場継続中なら空欄にします。JPX等から取得した日付付きマスタをこの形式に変換してから、次のコマンドを実行します。
+
+```powershell
+python -m src.entrypoints.run_screening --date 2026-09-08
+```
+
+このモードでは、売買代金と値上がり率をYahoo Financeの日足から計算します。規制情報は `data/regulation/historical_regulations.csv` を参照します。
+
+規制マスタは、規制期間ごとに次の形式で記録します。規制がない期間は行を作らず、`restricted_to` が空欄の場合は現在も継続中として扱います。
+
+```csv
+symbol,primary_exchange,restricted_from,restricted_to,reason
+7203,1,2026-09-01,2026-09-07,売買規制
+7203,1,2026-09-10,,監視措置
+```
+
 #### Windowsでの計画実行
 
 kabuステーションを起動・ログインしたWindowsユーザーで、平日9:30にフィルタリングを実行するタスクを登録します。初回のみ、PowerShellから次を実行してください。

@@ -5,7 +5,7 @@
 前日のスクリーニング結果に基づいて、本日の出来高変動を分析します。
 ================================================================================
 """
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 import logging
 
 from src.domain.models import FilteringResult, ScoredCandidate
@@ -40,7 +40,7 @@ class FilteringUseCase:
         self.result_repository = result_repository
         self.notifier = notifier
 
-    def execute(self) -> FilteringResult:
+    def execute(self, target_date: date | None = None) -> FilteringResult:
         """
         フィルタリング処理を実行します。
         
@@ -54,7 +54,7 @@ class FilteringUseCase:
         Returns:
             FilteringResultオブジェクト
         """
-        today = datetime.now().date()
+        today = target_date or datetime.now().date()
         previous_business_day = today - timedelta(days=1)
         # 土日を跨ぐ場合は前営業日に遡る
         while previous_business_day.weekday() >= 5:
@@ -64,6 +64,20 @@ class FilteringUseCase:
         candidates = []
         if screening:
             for symbol in screening.symbols:
+                if target_date and hasattr(self.volume_client, "get_turnover_for_date"):
+                    today_value = self.volume_client.get_turnover_for_date(symbol, today)
+                    average = self.volume_client.get_average_turnover_before(symbol, today, 20)
+                    if today_value is None or average is None:
+                        logger.warning("過去日フィルタリングスキップ: 銘柄=%s | 日付=%s", symbol, today)
+                        continue
+                    try:
+                        surge_ratio = calculate_volume_surge_ratio(float(today_value), average)
+                    except ValueError:
+                        logger.warning("平均出来高が0以下のため、%s をスキップします。", symbol)
+                        continue
+                    scored.append(ScoredCandidate(symbol, float(today_value), average, surge_ratio))
+                    continue
+
                 board = self.board_client.get_current_board(symbol)
                 if not board:
                     logger.warning("フィルタリングスキップ: 銘柄=%s 理由=板情報なし", symbol)

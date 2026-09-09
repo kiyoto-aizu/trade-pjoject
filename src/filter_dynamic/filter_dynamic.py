@@ -10,7 +10,7 @@ from src.application.filtering_usecase import FilteringUseCase
 logger = logging.getLogger(__name__)
 
 
-def run(usecase: FilteringUseCase):
+def run(usecase: FilteringUseCase, target_date=None):
     """
     フィルタリング処理を実行します。
     
@@ -20,6 +20,6 @@ def run(usecase: FilteringUseCase):
     Returns:
         FilteringResultオブジェクト
     """
-    result = usecase.execute()
+    result = usecase.execute(target_date=target_date)
     logger.info("filtering finished: %d symbols", len(result.symbols))
     return result

@@ -4,7 +4,9 @@
 スクリーニング結果から出来高急騰銘柄を抽出し、次の売買対象を決定します。
 ================================================================================
 """
+import argparse
 import logging
+from datetime import date
 from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
 
@@ -83,26 +85,36 @@ def main() -> None:
     4. 出来高急騰率でトップ10に絞り込み
     5. 結果を保存・通知
     """
+    parser = argparse.ArgumentParser(description="フィルタリングを実行します")
+    parser.add_argument("--date", dest="target_date", type=date.fromisoformat, help="対象日 (YYYY-MM-DD)。指定時は日足から過去結果を再計算")
+    args = parser.parse_args()
+
     configure_logging()
     with market_workflow_lock() as acquired:
         if not acquired:
             logging.getLogger(__name__).warning("他の市場処理が実行中のため、フィルタリングを中止します。")
             return
         with process_notification('フィルタリング', notify_lifecycle=False):
-            token = get_api_token()
-            if not token:
-                raise SystemExit('トークン取得に失敗しました。')
-            if unregister_all(token) is None:
-                raise SystemExit('銘柄登録の全解除に失敗しました。')
             root = Path(__file__).resolve().parents[2] / 'data'
+            token = None
+            board_client = None
+            notifier = None
+            if args.target_date is None:
+                token = get_api_token()
+                if not token:
+                    raise SystemExit('トークン取得に失敗しました。')
+                if unregister_all(token) is None:
+                    raise SystemExit('銘柄登録の全解除に失敗しました。')
+                board_client = BoardClient(token)
+                notifier = send_line_notify
             usecase = FilteringUseCase(
                 ScreeningResultRepository(root / 'screening'),
-                BoardClient(token),
+                board_client,
                 YahooFinanceClient(),
                 FilteringResultRepository(root / 'filtering'),
-                send_line_notify,
+                notifier,
             )
-            filtering_run(usecase)
+            filtering_run(usecase, target_date=args.target_date)
 
 
 if __name__ == '__main__':

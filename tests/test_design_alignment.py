@@ -1,9 +1,12 @@
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 from src.application.filtering_usecase import FilteringUseCase
 from src.application.screening_usecase import ScreeningUseCase
 from src.domain.enums import RankingType
 from src.domain.models import FilteringResult, RankingEntry, Regulation, ScreeningResult
+from src.infrastructure.market_data.historical_ranking_repository import HistoricalRankingRepository
+from src.infrastructure.persistence.listed_security_repository import ListedSecurityRepository
+from src.infrastructure.persistence.historical_regulation_repository import HistoricalRegulationRepository
 from src.domain.rules import calculate_buy_quantity, calculate_volume_surge_ratio, check_kill_switch, exclude_by_regulation, is_buy_order_amount_allowed, limit_candidates, merge_ranking_candidates
 from src.infrastructure.persistence.filtering_result_repository import FilteringResultRepository
 from src.infrastructure.persistence.screening_result_repository import ScreeningResultRepository
@@ -113,6 +116,69 @@ def test_ranking_repository_uses_api_rank_and_type_specific_value(monkeypatch):
     assert (turnover.rank, turnover.value, turnover.current_price) == (4, 125000.5, 1000)
 
 
+def test_listed_security_repository_builds_a_date_specific_universe(tmp_path):
+    master_path = tmp_path / "listed_securities.csv"
+    master_path.write_text(
+        "symbol,exchange_division,listed_from,listed_to\n"
+        "7203,TP,2020-01-01,\n"
+        "8306,TS,2020-01-01,2026-09-07\n"
+        "6758,TP,2026-09-08,\n",
+        encoding="utf-8",
+    )
+
+    securities = ListedSecurityRepository(master_path).load_for_date(date(2026, 9, 8))
+
+    assert [(security.symbol, security.exchange_division) for security in securities] == [
+        ("7203", "TP"),
+        ("6758", "TP"),
+    ]
+
+
+def test_historical_ranking_uses_master_universe_and_daily_values(tmp_path):
+    master_path = tmp_path / "listed_securities.csv"
+    master_path.write_text(
+        "symbol,exchange_division,listed_from,listed_to\n"
+        "7203,TP,2020-01-01,\n"
+        "8306,TS,2020-01-01,\n",
+        encoding="utf-8",
+    )
+
+    class MarketDataStub:
+        def get_daily_market_data(self, symbol, target_date):
+            values = {
+                "7203": {"close": 110, "previous_close": 100, "volume": 2},
+                "8306": {"close": 90, "previous_close": 100, "volume": 5},
+            }
+            return values[symbol]
+
+    repository = HistoricalRankingRepository(
+        ListedSecurityRepository(master_path), MarketDataStub()
+    )
+
+    turnover = repository.get_ranking(RankingType.TURNOVER, "ALL", date(2026, 9, 8))
+    price_gain = repository.get_ranking(RankingType.PRICE_GAIN, "ALL", date(2026, 9, 8))
+
+    assert [entry.symbol for entry in turnover] == ["8306", "7203"]
+    assert [entry.symbol for entry in price_gain] == ["7203", "8306"]
+
+
+def test_historical_regulation_repository_reads_date_ranges(tmp_path):
+    master_path = tmp_path / "historical_regulations.csv"
+    master_path.write_text(
+        "symbol,primary_exchange,restricted_from,restricted_to,reason\n"
+        "7203,1,2026-09-01,2026-09-07,売買規制\n"
+        "7203,1,2026-09-10,,監視措置\n",
+        encoding="utf-8",
+    )
+    repository = HistoricalRegulationRepository(master_path)
+
+    restricted = repository.get_regulation("7203", 1, date(2026, 9, 5))
+    unrestricted = repository.get_regulation("7203", 1, date(2026, 9, 8))
+
+    assert (restricted.is_restricted, restricted.reason) == (True, "売買規制")
+    assert unrestricted.is_restricted is False
+
+
 def test_screening_usecase_persists_date_result(tmp_path):
     repository = ScreeningResultRepository(tmp_path)
     notifications = []
@@ -168,6 +234,34 @@ def test_filtering_usecase_reads_previous_screening_result(tmp_path):
         "- 2(20日平均売買代金の2.0倍)"
     ]
     assert result_repository.load_latest().symbols == result.symbols
+
+
+def test_filtering_usecase_replays_a_past_date_from_daily_turnover(tmp_path):
+    target_date = datetime(2026, 9, 8).date()
+    screening_repository = ScreeningResultRepository(tmp_path / "screening")
+    screening_repository.save(ScreeningResult(
+        "2026-09-07", ["7203"], datetime.now().isoformat()
+    ))
+
+    class HistoricalVolumeStub:
+        def get_turnover_for_date(self, symbol, requested_date):
+            assert requested_date == target_date
+            return 300.0
+
+        def get_average_turnover_before(self, symbol, requested_date, days):
+            assert requested_date == target_date
+            assert days == 20
+            return 100.0
+
+    result = FilteringUseCase(
+        screening_repository,
+        BoardStub(),
+        HistoricalVolumeStub(),
+        FilteringResultRepository(tmp_path / "filtering"),
+    ).execute(target_date=target_date)
+
+    assert result.date == "2026-09-08"
+    assert result.symbols == ["7203"]
 
 
 def test_filtering_usecase_selects_by_relative_turnover_ratio(tmp_path):

@@ -198,6 +198,20 @@ class RankingEntry:
     current_price: float | None = None
 
 
+@dataclass(frozen=True)
+class ListedSecurity:
+    """日付付き上場銘柄マスタの1レコード。"""
+    symbol: str
+    exchange_division: str
+    listed_from: str
+    listed_to: Optional[str] = None
+
+    def is_listed_on(self, target_date: str) -> bool:
+        return self.listed_from <= target_date and (
+            self.listed_to is None or target_date <= self.listed_to
+        )
+
+
 # ================================================================================
 # 規制情報
 # ================================================================================

@@ -350,3 +350,30 @@ class FilteringResult:
     date: str
     symbols: list[str]
     generated_at: str
+
+
+# ================================================================================
+# 分足データ（簡易収集）
+# ================================================================================
+
+@dataclass
+class MinuteBar:
+    """
+    分足1本分のデータ。
+
+    2種類の取得元を想定する:
+    - "yahoo": Yahoo Financeのintraday chart APIから取得した本物のOHLC由来の値（高精度）
+    - "poll": kabuステーション/boardの1分間隔ポーリングをそのまま1本の足とした値（簡易・低精度）
+
+    Attributes:
+        time: 記録時刻（ISO形式、分単位に丸め済み）
+        price: その分の価格（Yahoo由来なら終値、ポーリング由来ならCurrentPrice）
+        cumulative_volume: ポーリング時点の当日累積出来高（TradingVolume）。Yahoo由来はNone
+        volume: その分の出来高（Yahoo由来はAPIの値そのまま、ポーリング由来は累積出来高の差分）
+        source: データの取得元（"yahoo" または "poll"）
+    """
+    time: str
+    price: float
+    cumulative_volume: Optional[float]
+    volume: Optional[float]
+    source: str = "poll"

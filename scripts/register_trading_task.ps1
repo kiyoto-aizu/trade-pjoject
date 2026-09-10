@@ -23,7 +23,8 @@ if (-not (Test-Path $runner)) {
 
 $trigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday, Tuesday, Wednesday, Thursday, Friday -At $At
 $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$runner`""
-$settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -MultipleInstances IgnoreNew
+# -WakeToRun: PCがスリープしても市場時間中は目覚めさせて監視ループを継続させる
+$settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -MultipleInstances IgnoreNew -WakeToRun
 
 if ($PSCmdlet.ShouldProcess($TaskName, "Register weekday trading task at $($At.ToString('HH:mm'))")) {
     Register-ScheduledTask `

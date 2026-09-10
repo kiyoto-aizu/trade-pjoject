@@ -23,7 +23,8 @@ if (-not (Test-Path $runner)) {
 
 $trigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday -At $At
 $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$runner`""
-$settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -MultipleInstances IgnoreNew
+# -WakeToRun: PCがスリープしても目覚めさせて実行を継続する
+$settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -MultipleInstances IgnoreNew -WakeToRun
 
 if ($PSCmdlet.ShouldProcess($TaskName, "Register weekly backtest task on Monday at $($At.ToString('HH:mm'))")) {
     Register-ScheduledTask `

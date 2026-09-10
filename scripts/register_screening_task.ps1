@@ -24,7 +24,8 @@ if (-not (Test-Path $runner)) {
 
 $trigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday, Tuesday, Wednesday, Thursday, Friday -At $At
 $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$runner`""
-$settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -MultipleInstances IgnoreNew
+# -WakeToRun: PCがスリープしても目覚めさせて実行を継続する
+$settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -MultipleInstances IgnoreNew -WakeToRun
 $description = "Runs trade-pjoject screening from $projectRoot on business weekdays."
 
 if ($PSCmdlet.ShouldProcess($TaskName, "Register weekday screening task at $($At.ToString('HH:mm'))")) {

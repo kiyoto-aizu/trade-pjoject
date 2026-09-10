@@ -1,6 +1,6 @@
 # trade-pjoject 詳細設計書 ③トレードループ機能
 
-対象: ②のフィルタ結果（10銘柄固定）を対象として、場中に監視・判定・発注を繰り返すメインループ。
+対象: ②のフィルタ結果（最大10銘柄）を入力とし、資金配分で発注対象を最大3銘柄に決定したうえで、場中に監視・判定・発注を繰り返すメインループ。
 flow.mdの③〜⑨に相当。担当ユースケース: `application/trading_usecase.py`
 
 ※①スクリーニング設計書・②フィルタ設計書と対になる。①②で対象銘柄が確定している前提で本設計書はループ本体を扱う。
@@ -16,7 +16,9 @@ flow.mdの③〜⑨に相当。担当ユースケース: `application/trading_us
 ```
 
 - ①②③はすべて別プロセス・別cronジョブとして起動する（**cronで時刻をずらす方式に確定**。完了待ち合わせの仕組みは作らない）
-- `run_trading.py`は起動時に`FilteringResultRepository.load_latest()`で対象銘柄リスト（10件）を読み込む
+- `run_trading.py`は`FilteringResultRepository.load_for_date()`で当日の対象銘柄（最大10件）を読み込む
+- `run_trading.py`は対象銘柄全件の確定終値と板情報を事前取得し、取得失敗時はループを開始しない
+- `TradingUseCase`は`TARGET_POSITIONS`（既定3）と資金制約に基づき、実際に監視・発注する銘柄を最大3件に絞る
 - **時刻のマージンとして、②(9:30)と③(9:35)の間に5分の余裕**を持たせる。②の処理が9:35までに終わらない事態に備え、③側は「フィルタ結果の`generated_at`が当日日付でない場合は起動を中止し通知する」ガードを持つ（前日の古い結果のまま動き出さないための安全策）
 - 対象銘柄が0件（②が失敗・未実行）の場合も同様にループを開始せず通知して終了する
 
@@ -27,7 +29,7 @@ flow.mdの③〜⑨に相当。担当ユースケース: `application/trading_us
 ### ③ ターゲット銘柄の現在値を取得
 - **担当**: `infrastructure/kabu/board_repository.py`（`get_current_board(symbol)`）
 - **API**: `GET /board/{symbol}`
-- **対象**: ②の10銘柄（**1日を通して固定**。ループ中に再フィルタして差し替える運用はしない）
+- **対象**: 資金配分後の最大3銘柄（元のフィルタ結果は最大10銘柄）。場中に再フィルタして差し替える運用はしない
 - **異常系**: `board`が`None`または`current_price`取得不可の場合、当該銘柄のみ評価をスキップ（推測値フォールバック禁止）
 
 ### ④ 売買条件の判定
@@ -59,7 +61,7 @@ flow.mdの③〜⑨に相当。担当ユースケース: `application/trading_us
   - 保有がない銘柄への売り注文でないか（**発注のたびに`GET /positions`を再取得**し最新の保有状況で判定）
   - キルスイッチ条件（**発注上限額はapisoftlimitより厳しい固定額をアプリ側で設定**・**1日の最大発注回数は10回まで**・**1日の想定損失上限は運用資金の一定割合**で設定）を超えていないか
 - **NG時**: ⑦へ直行
-- **設計上の注意**: 予算・保有を毎回API取得するため、⑤の実行はAPIコールが2回（wallet/cash, positions）増える。ループ間隔（⑦の60秒スリープ）に対して十分許容範囲だが、実装時にレート制限（`/apisoftlimit`）に抵触しないか確認する
+- **設計上の注意**: 予算・保有をシグナル発生ごとにAPI取得する。`/apisoftlimit`はシグナル発生ごとに取得し、取得できない場合はキルスイッチを発動して停止する
 
 ### ⑥ 証券会社APIへ注文送信
 - **担当**: `infrastructure/kabu/order_repository.py`（`send_order(order: Order)`）
@@ -70,7 +72,7 @@ flow.mdの③〜⑨に相当。担当ユースケース: `application/trading_us
 
 ### ⑦ 指定時間スリープ
 - **担当**: `application/trading_usecase.py`（ループ制御。ビジネスロジックではないためdomainに置かない）
-- **処理**: 60秒スリープ（`config/settings.py`で設定値化）
+- **処理**: 60秒スリープ（`src/config/config.py`の`LOOP_INTERVAL`で設定）
 
 ### ⑧ 時刻チェック
 - **担当**: `domain/rules.py`（`is_market_closed(now: time) -> bool`）
@@ -91,7 +93,8 @@ flow.mdの③〜⑨に相当。担当ユースケース: `application/trading_us
 | 状態 | 保持場所 | 更新タイミング |
 |---|---|---|
 | トークン | `KabuClient`内部 | ①(run_trading起動時)で取得、以降使い回し |
-| 対象銘柄リスト（10件・固定） | `TradingUseCase`起動時状態 | 起動時に1回のみ`FilteringResultRepository`から取得。ループ中は不変 |
+| フィルタ候補（最大10件） | `run_trading.py`と`TradingUseCase` | 起動時に当日結果を取得。ループ中は不変 |
+| 発注対象（最大3件） | `TradingUseCase` | 起動時の資金配分で決定。ループ中は不変 |
 | 現金残高・保有株 | **都度取得（キャッシュしない）** | ⑤発注セーフティチェックのたびに`GET /wallet/cash`・`GET /positions`を呼び直す |
 | 当日注文履歴 | `OrderHistoryRepository` | ⑥成功時に追記 |
 | ループ継続フラグ | `TradingUseCase` | ⑧の判定結果で更新 |
@@ -127,7 +130,7 @@ flow.mdの③〜⑨に相当。担当ユースケース: `application/trading_us
 | 1日の最大発注回数 | **10回まで（対象銘柄数10件と同数）**。1銘柄あたり平均1回発注する想定を上限の目安とする | `OrderHistoryRepository`から当日の発注件数をカウントし、⑤で10件に達したら当日の新規発注を停止 |
 | 1日の想定損失上限 | **2,000円（運用資金100,000円の2%）**。設定値は比率で保持する | 当日の評価損益合計（`/positions`の`ProfitLoss`集計）が、`100,000円 × DAILY_LOSS_LIMIT_RATIO(0.02)`を下回った場合に新規発注を停止 |
 
-- `config/settings.py`に以下の設定項目を追加する:
+- `src/config/config.py`に以下の設定項目を追加する:
   - `MAX_ORDER_AMOUNT_PER_TRADE`（1回あたりの発注上限額）
   - `MAX_ORDER_COUNT_PER_DAY`（1日の最大発注回数、既定値10）
   - `DAILY_LOSS_LIMIT_RATIO`（1日の想定損失上限の運用資金に対する比率）
@@ -171,9 +174,8 @@ flow.mdの③〜⑨に相当。担当ユースケース: `application/trading_us
 
 ## 9. 残る未確定・要すり合わせ事項
 
-1. RSI14は初期実装からWilder方式を使用し、30本程度の確定終値を取得する
-2. ②の完了が9:35に間に合わなかった場合の具体的なリトライ・アラート方法（§1のガードはあるが、通知先・再実行手順は未設計）
-3. ⑤の都度API取得によるレート制限（`/apisoftlimit`）への抵触有無の実測確認
+1. ②の完了が9:35に間に合わなかった場合の具体的なリトライ・アラート方法（§1のガードはあるが、通知先・再実行手順は未設計）
+2. ⑤の都度API取得によるレート制限（`/apisoftlimit`）への抵触有無の実測確認
 
 ## 10. 関連設計書
 

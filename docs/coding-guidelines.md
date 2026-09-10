@@ -10,17 +10,18 @@ AIにコードを書かせる・レビューさせる際は、このファイル
 
 ```
 trade-pjoject/
-├── config/
-│   └── settings.py                 # 設定の定義・検証のみ。副作用なし
-├── domain/
+├── src/
+├── src/config/
+│   └── config.py                   # 設定の定義・検証のみ。副作用なし
+├── src/domain/
 │   ├── enums.py                    # OrderSide, SignalType など
 │   ├── models.py                   # Domainモデル（Order, Position, PriceLimit など）
 │   └── rules.py                    # 判断ロジック・安全チェック
-├── application/
+├── src/application/
 │   ├── trading_usecase.py          # 売買実行ユースケース
 │   ├── screening_usecase.py        # 銘柄スクリーニングユースケース
 │   └── filtering_usecase.py        # 動的評価ユースケース
-├── infrastructure/
+├── src/infrastructure/
 │   ├── kabu/
 │   │   ├── kabu_client.py
 │   │   ├── board_repository.py
@@ -33,7 +34,7 @@ trade-pjoject/
 │   │   └── line_notify_client.py
 │   └── persistence/
 │       └── order_history_repository.py
-├── entrypoints/
+├── src/entrypoints/
 │   ├── run_trading.py              # 起動トリガー別の薄いラッパー
 │   ├── run_screening.py
 │   └── run_filtering.py
@@ -45,21 +46,21 @@ trade-pjoject/
 ```
 
 ### 1.1 各層の責務と依存方向
-- **依存の向きは一方向**：`main → entrypoints → application → domain` / `application → infrastructure`。
+- **依存の向きは一方向**：`src.entrypoints → src.application → src.domain` / `src.application → src.infrastructure`。
 - `domain` は外部依存を持たず、ビジネスルールと判定ロジックだけを表現する。
 - `application` はユースケースの司令塔で、`domain` のロジックと `infrastructure` の入出力をつなぐ。
 - `infrastructure` は外部API・DB・通知・永続化の具体実装のみを担当し、ロジックは持たない。
 - `entrypoints` は起動時の「初期化」と「ユースケース呼び出し」だけを担当する。
 
 ```python
-# domain/enums.py
+# src/domain/enums.py
 from enum import Enum
 
 class OrderSide(str, Enum):
     BUY = "2"
     SELL = "1"
 
-# application/evaluate_symbol_usecase.py
+# src/application/evaluate_symbol_usecase.py
 class EvaluateSymbolUseCase:
     def __init__(self, board_repo, order_repo, safety_checker):
         self._board_repo = board_repo
@@ -168,7 +169,7 @@ class EvaluateSymbolUseCase:
 - 起動契機が異なる場合、エントリポイントを分けるのは許容される。
 - ただし、エントリポイントは「薄いラッパー」にとどめる。
 - 実ビジネスロジックは `application` / `domain` に置き、`entrypoints/` は依存関係の組み立てとユースケース呼び出しだけを行う。
-- `main.py` は `default` または `CLI` 用のランナーとして残してもよい。
+- `src/entrypoints/` の実装では、現行コードのように市場セッション判定・ロック・事前データ取得までを行う場合、薄いラッパーの責務を超えるため、その処理を application 側へ移すか、例外として設計書に明記する。
 
 ### 5.1 例: 良い構成
 
@@ -200,30 +201,16 @@ src/
 ### 5.4 エントリポイントのサンプル
 
 ```python
-# entrypoints/run_trading.py
-from config.settings import settings
-from infrastructure.kabu.kabu_client import KabuClient
-from infrastructure.market_data.yahoo_finance_client import YahooFinanceClient
-from infrastructure.notification.line_notify_client import LineNotifyClient
-from infrastructure.persistence.order_history_repository import OrderHistoryRepository
-from application.trading_usecase import TradingUseCase
-from infrastructure.logging import configure_logging
+# src/entrypoints/run_trading.py
+from src.config import config
+from src.infrastructure.kabu.get_token import get_api_token
+from src.trading.trading import TradingBot
 
 
 def main():
-    configure_logging(settings)
-    kabu = KabuClient(settings)
-    market_data = YahooFinanceClient()
-    notifier = LineNotifyClient(settings)
-    history = OrderHistoryRepository(settings.order_history_path)
-
-    usecase = TradingUseCase(
-        kabu_client=kabu,
-        market_data_client=market_data,
-        notifier=notifier,
-        order_history_repository=history,
-    )
-    usecase.run()
+  token = get_api_token()
+  bot = TradingBot(token)
+  bot.run()
 
 
 if __name__ == '__main__':

@@ -1,33 +1,33 @@
 ```mermaid
 flowchart TD
-    Start([朝の起動]) --> 1[① API接続 & トークン取得]
-    1 --> 2[② 口座の資産・保有株状況の確認]
-    2 --> 2a[③ フィルタ候補を順位順に資金配分<br>購入可能な最大3銘柄を決定]
-    2a --> LoopStart[【メイン監視ループ開始】<br>例：1分ごとにループ]
+    Start([平日 09:30以降]) --> Lock[市場ワークフローロック取得]
+    Lock --> Session{取引時間内か？}
+    Session -->|No| End([終了])
+    Session -->|Yes| Token[APIトークン取得]
+    Token --> Filter[当日のFilteringResultを読み込み]
+    Filter --> FilterCheck{当日結果・銘柄あり？}
+    FilterCheck -->|No| NotifySkip[通知して終了]
+    FilterCheck -->|Yes| Preflight[10候補の確定終値と板情報を事前取得]
+    Preflight --> PreflightCheck{全銘柄のデータ取得成功？}
+    PreflightCheck -->|No| NotifySkip
+    PreflightCheck -->|Yes| Allocate[資金配分で発注対象を最大3銘柄に決定]
+    Allocate --> Loop[監視ループ開始]
 
-    %% メイン処理ループ
-    LoopStart --> 4a[④ ターゲット銘柄の現在値を取得]
-    4a --> 4{⑤ 売買条件の判定<br>ロジックに合致するか？}
-    
-    %% 条件分岐
-    4 -- No --> 7
-    4 -- Yes --> 5{⑤ 発注セーフティチェック<br>・予算はあるか？<br>・既に今日買ってないか？}
-    
-    5 -- NG --> 7[⑦ 指定時間（60秒）スリープ]
-    5 -- OK --> 6[⑥ 証券会社APIへ注文送信]
-    6 --> 7
-    
-    %% 時間チェック
-    7 --> 8{⑧ 時刻チェック<br>15:30の大引けを過ぎたか？}
-    8 -- まだ取引時間内 --> LoopStart
-    8 -- 取引時間終了 --> 9[⑨ 本日のレポート通知<br>LINE / メール等]
-    
-    9 --> End([本日の運用終了])
-
-    %% スタイルの調整
-    style Start fill:#f9f,stroke:#333,stroke-width:2px
-    style End fill:#f9f,stroke:#333,stroke-width:2px
-    style 4 fill:#bbf,stroke:#333,stroke-width:2px
-    style 5 fill:#ffb,stroke:#333,stroke-width:2px
-    style 6 fill:#fbb,stroke:#333,stroke-width:2px
+    Loop --> History[確定終値からSMA5・RSI14を計算]
+    History --> Board[対象銘柄の現在値を取得]
+    Board --> Signal{SMA乖離とRSIの条件に合致？}
+    Signal -->|No| Next[次の銘柄]
+    Signal -->|Yes| Account[現金残高・保有株を再取得]
+    Account --> Safety{キルスイッチ・予算・保有・重複注文がOK？}
+    Safety -->|No| Next
+    Safety -->|Yes| Order[注文送信]
+    Order --> Record[成功時のみ注文履歴・監査情報を保存]
+    Record --> Next
+    Next --> AllDone{全銘柄処理済み？}
+    AllDone -->|No| Loop
+    AllDone -->|Yes| Sleep[60秒スリープ]
+    Sleep --> Closed{15:30以降？}
+    Closed -->|No| Loop
+    Closed -->|Yes| Report[日次レポートを保存・通知]
+    Report --> End
 ```

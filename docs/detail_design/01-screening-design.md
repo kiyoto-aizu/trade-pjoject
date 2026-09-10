@@ -97,7 +97,7 @@ kabuステーションAPIの `GET /ranking` は「kabuステーションが保�
 | `ScreeningResult` | date, symbols(list[str]), generated_at, audit_entries(list[`ScreeningAuditEntry`]) | ⑤の永続化対象・②の入力。`audit_entries`は監査目的で追加した実装差分（2026-09-04追記、5節参照）で、全候補のランキング・規制・採用判定情報を保持する |
 | `ScreeningAuditEntry` | symbol, turnover_rank, turnover_value, price_gain_rank, price_gain_value, total_rank, primary_exchange, is_restricted, restriction_reason, selected | 監査ログ用。なぜその銘柄が採用/除外されたかを後から再現するための全候補分の記録 |
 
-`config/settings.py`に以下の設定項目を追加する:
+`src/config/config.py`に以下の設定項目を追加する:
 
 ### infrastructure/persistence/screening_result_repository.py（新規）
 - `save(result: ScreeningResult) -> None`

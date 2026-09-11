@@ -347,9 +347,12 @@ class TradingUseCase:
         kill_switch_triggered = False
         # 市場終了時刻まで取引ループを実行
         use_preflight_market_data = bool(preflight_market_data)
-        while not kill_switch_triggered and not is_market_closed(now_provider().time(), config.MARKET_CLOSE_HOUR, config.MARKET_CLOSE_MINUTE):
-            if is_market_closed(
-                now_provider().time(),
+        while not kill_switch_triggered:
+            now = now_provider()
+            if is_market_closed(now.time(), config.MARKET_CLOSE_HOUR, config.MARKET_CLOSE_MINUTE):
+                break
+            if not config.ALLOW_OVERNIGHT_HOLDING and is_market_closed(
+                now.time(),
                 config.MARKET_LIQUIDATION_HOUR,
                 config.MARKET_LIQUIDATION_MINUTE,
             ):

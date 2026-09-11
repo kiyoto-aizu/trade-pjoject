@@ -106,7 +106,7 @@ def main(now_provider=None) -> None:
                 raise SystemExit('トークン取得に失敗しました。')
 
             bot = TradingBot(token)
-            if is_market_closed(
+            if not config.ALLOW_OVERNIGHT_HOLDING and is_market_closed(
                 now.time(),
                 config.MARKET_LIQUIDATION_HOUR,
                 config.MARKET_LIQUIDATION_MINUTE,

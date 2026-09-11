@@ -129,7 +129,7 @@ def test_simulate_backtest_buys_then_sells_on_signal():
         "7203": [90.0, 90.0, 90.0, 90.0, 90.0, 92.0, 120.0, 98.0, 96.0],
     }
 
-    result = simulate_backtest(["7203"], history, starting_cash=10_000.0, qty_per_trade=100)
+    result = simulate_backtest(["7203"], history, starting_cash=10_000.0, qty_per_trade=100, close_at_eod=False)
 
     assert result["total_trades"] == 2
     assert result["cash"] == 10_400.0
@@ -163,6 +163,7 @@ def test_simulate_timeseries_backtest_uses_daily_symbol_sets():
         dated_history,
         starting_cash=10_000.0,
         qty_per_trade=100,
+        close_at_eod=False,
     )
 
     assert result["total_trades"] == 2
@@ -197,6 +198,7 @@ def test_timeseries_backtest_evaluates_each_minute_with_daily_indicators(tmp_pat
         qty_per_trade=100,
         minute_bar_repository=repository,
         indicator_source="daily",
+        close_at_eod=False,
     )
 
     assert [signal["time"] for signal in result["signals"]] == [
@@ -225,6 +227,7 @@ def test_timeseries_backtest_minute_indicator_does_not_use_current_bar(tmp_path)
         qty_per_trade=100,
         minute_bar_repository=repository,
         indicator_source="minute",
+        close_at_eod=False,
     )
 
     assert [signal["time"] for signal in result["signals"]] == [
@@ -263,6 +266,7 @@ def test_timeseries_backtest_merges_symbols_in_minute_order(tmp_path):
         qty_per_trade=100,
         minute_bar_repository=repository,
         indicator_source="daily",
+        close_at_eod=False,
     )
 
     assert [signal["symbol"] for signal in result["signals"]] == ["1111", "1111"]
@@ -275,7 +279,7 @@ def test_simulate_backtest_does_not_use_current_price_for_signal_baseline():
         "7203": [90.0, 90.0, 90.0, 90.0, 90.0, 92.0, 120.0, 98.0, 96.0],
     }
 
-    result = simulate_backtest(["7203"], history, starting_cash=10_000.0, qty_per_trade=100)
+    result = simulate_backtest(["7203"], history, starting_cash=10_000.0, qty_per_trade=100, close_at_eod=False)
 
     assert result["total_trades"] == 2
     assert result["final_position"] == 0
@@ -292,6 +296,7 @@ def test_simulate_backtest_fees_and_position_state():
         starting_cash=10_000.0,
         qty_per_trade=100,
         fee_rate=0.001,
+        close_at_eod=False,
     )
 
     assert result["total_trades"] == 2
@@ -326,7 +331,7 @@ def test_simulate_backtest_tracks_trade_history_with_holding_days():
         "7203": [90.0, 90.0, 90.0, 90.0, 90.0, 92.0, 120.0, 98.0, 96.0],
     }
 
-    result = simulate_backtest(["7203"], history, starting_cash=10_000.0, qty_per_trade=100)
+    result = simulate_backtest(["7203"], history, starting_cash=10_000.0, qty_per_trade=100, close_at_eod=False)
 
     assert "trade_history" in result
     assert len(result["trade_history"]) == 1
@@ -434,7 +439,6 @@ def test_simulate_backtest_closes_positions_at_end_of_day_for_day_trade_mode():
         history,
         starting_cash=10_000.0,
         qty_per_trade=100,
-        close_at_eod=True,
     )
 
     assert result["final_position"] == 0

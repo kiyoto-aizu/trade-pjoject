@@ -112,6 +112,7 @@ ORDER_UNIT = 100
 # 持ち越しを防止するため、全保有を成行決済する時刻（日本標準時）
 MARKET_LIQUIDATION_HOUR = int(os.getenv("MARKET_LIQUIDATION_HOUR", "15"))
 MARKET_LIQUIDATION_MINUTE = int(os.getenv("MARKET_LIQUIDATION_MINUTE", "20"))
+ALLOW_OVERNIGHT_HOLDING = os.getenv("ALLOW_OVERNIGHT_HOLDING", "false").strip().lower() in ("1", "true", "yes")
 
 # 同じ銘柄の重複注文を防ぐためのロック期間（秒）
 ORDER_LOCK_SECONDS = 60

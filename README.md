@@ -148,6 +148,9 @@ API_SOFT_LIMIT=1000000
 # 持ち越し防止の全保有成行売却時刻（日本標準時）
 MARKET_LIQUIDATION_HOUR=15
 MARKET_LIQUIDATION_MINUTE=20
+
+# true の場合のみ持ち越しを許可する（既定は false）
+ALLOW_OVERNIGHT_HOLDING=false
 ```
 
 本番APIを使うペーパートレードでは、`IS_DEMO=false`、`TRADING_MODE=paper`、`ENABLE_LIVE_ORDERING=false`にします。

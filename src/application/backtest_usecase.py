@@ -44,7 +44,7 @@ def simulate_backtest(
     starting_cash: float = 100_000.0,
     qty_per_trade: int = 100,
     fee_rate: float = 0.0,
-    close_at_eod: bool = False,
+    close_at_eod: bool = True,
     buy_threshold_ratio: float = 1.0,
     sell_threshold_ratio: float = 1.0,
     noise_band_ratio: float = 0.0,
@@ -338,6 +338,7 @@ def simulate_timeseries_backtest(
     trend_strength_ratio: float = 0.0,
     minute_bar_repository: MinuteBarRepository | None = None,
     indicator_source: str = "daily",
+    close_at_eod: bool = True,
 ) -> dict:
     """日付ごとのフィルタリング結果を、日足または分足で再生します。"""
     if indicator_source not in {"daily", "minute"}:
@@ -465,6 +466,7 @@ def simulate_timeseries_backtest(
                 if daily_close is not None:
                     ticks_by_time.setdefault(f"{date_text}T15:30:00", []).append((symbol, daily_close, None))
 
+        closing_prices: dict[str, tuple[float, str | None]] = {}
         for _, ticks in sorted(ticks_by_time.items()):
             signals_at_time: list[tuple[str, float, str | None, TradeSignal]] = []
             stopped_out_symbols: set[str] = set()
@@ -504,6 +506,13 @@ def simulate_timeseries_backtest(
             for symbol, price, time_text in ticks:
                 if time_text is not None:
                     minute_prices_by_symbol.setdefault(symbol, []).append(price)
+                closing_prices[symbol] = (price, time_text)
+
+        if close_at_eod:
+            for symbol, quantity in list(holdings.items()):
+                if quantity > 0 and symbol in closing_prices:
+                    price, time_text = closing_prices[symbol]
+                    close_position(symbol, date_text, price, time_text, "close_at_eod")
 
     last_date = max(daily_symbols) if daily_symbols else ""
     equity = cash

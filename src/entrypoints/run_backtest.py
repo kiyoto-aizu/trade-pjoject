@@ -197,7 +197,7 @@ def main() -> None:
         parser.add_argument("--fee", type=float, default=0.0, help="売買手数料率 (例: 0.001 = 0.1%%)")
         parser.add_argument("--live", action="store_true", help="Yahoo Finance から実データを取得してバックテストを実行")
         parser.add_argument("--days", type=int, default=730, help="Yahoo Finance から取得する日数（既定: 約2年）")
-        parser.add_argument("--day-trade", action="store_true", help="デイトレードとして実行し、当日の終値で保有を強制的に決済する")
+        parser.add_argument("--allow-overnight", action="store_true", help="持ち越しを許可し、当日終値での強制決済を無効にする")
         parser.add_argument(
             "--minute-bars-dir",
             type=Path,
@@ -239,6 +239,7 @@ def main() -> None:
                 fee_rate=args.fee,
                 minute_bar_repository=minute_bar_repository,
                 indicator_source=args.indicator_source,
+                close_at_eod=not args.allow_overnight,
             )
         else:
             symbols = load_symbols(args.symbols)
@@ -266,6 +267,7 @@ def main() -> None:
                     fee_rate=args.fee,
                     minute_bar_repository=minute_bar_repository,
                     indicator_source=args.indicator_source,
+                    close_at_eod=not args.allow_overnight,
                 )
             else:
                 result = simulate_backtest(
@@ -274,7 +276,7 @@ def main() -> None:
                     starting_cash=args.cash,
                     qty_per_trade=args.qty,
                     fee_rate=args.fee,
-                    close_at_eod=args.day_trade,
+                    close_at_eod=not args.allow_overnight,
                 )
 
         # CLI 出力は日本語ラベルを優先して見やすくする

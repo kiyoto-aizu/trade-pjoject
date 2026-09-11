@@ -250,6 +250,40 @@ def test_trading_use_case_does_not_record_rejected_order(monkeypatch, tmp_path):
     assert use_case.order_history == []
 
 
+def test_trading_use_case_liquidates_all_holdings_before_market_close(monkeypatch, tmp_path):
+    symbols_path = tmp_path / 'top_symbols.json'
+    symbols_path.write_text(json.dumps(['7203']), encoding='utf-8')
+    executor = PaperOrderExecutor(prices={'7203': 100.0}, cash=20_000.0, order_qty=100)
+    executor.place_market_order('unused', '7203', config.OrderSide.BUY.value)
+
+    class BoardClient:
+        def get_current_board(self, token, symbol):
+            return {'current_price': 101.0}
+
+    monkeypatch.setattr(config, 'MARKET_LIQUIDATION_HOUR', 15)
+    monkeypatch.setattr(config, 'MARKET_LIQUIDATION_MINUTE', 20)
+    use_case = TradingUseCase(
+        token='unused',
+        order_history_path=tmp_path / 'order_history.json',
+        board_client=BoardClient(),
+        order_sender=executor,
+        notifier=lambda message: None,
+        daily_report_directory=tmp_path / 'reports',
+    )
+
+    use_case.run(
+        top_symbols_path=symbols_path,
+        now_provider=lambda: datetime(2026, 9, 4, 15, 20),
+        sleep=lambda seconds: None,
+    )
+
+    assert executor.holdings == {}
+    assert executor.orders[-1]['Side'] == config.OrderSide.SELL.value
+    assert executor.orders[-1]['Qty'] == 100
+    assert use_case.order_history[-1].side == config.OrderSide.SELL
+    assert use_case.order_history[-1].qty == 100
+
+
 def test_trading_use_case_warns_once_for_repeated_sell_signal_without_holdings(monkeypatch, tmp_path, caplog):
     symbols_path = tmp_path / 'top_symbols.json'
     symbols_path.write_text(json.dumps(['7203']), encoding='utf-8')

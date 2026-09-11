@@ -105,13 +105,19 @@ def main(now_provider=None) -> None:
             if not token:
                 raise SystemExit('トークン取得に失敗しました。')
 
-            market_data = collect_market_data_sources(token, filtering_result.symbols)
-            if market_data is None:
-                logging.getLogger(__name__).error('市場データまたは板情報を取得できないため、取引を開始しません。')
-                return
-
             bot = TradingBot(token)
-            bot.run(preflight_market_data=market_data)
+            if is_market_closed(
+                now.time(),
+                config.MARKET_LIQUIDATION_HOUR,
+                config.MARKET_LIQUIDATION_MINUTE,
+            ):
+                bot.run()
+            else:
+                market_data = collect_market_data_sources(token, filtering_result.symbols)
+                if market_data is None:
+                    logging.getLogger(__name__).error('市場データまたは板情報を取得できないため、取引を開始しません。')
+                    return
+                bot.run(preflight_market_data=market_data)
 
 
 if __name__ == '__main__':

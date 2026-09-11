@@ -255,6 +255,45 @@ class TradingUseCase:
         write_json(self.daily_report_directory / f"{today}.json", report_data)
         self.notifier(report_text)
 
+    def _liquidate_all_positions(self) -> None:
+        """持ち越しを防ぐため、現物の全保有を成行で売却します。"""
+        _, positions = self._load_account_state()
+        self.last_positions = positions
+        holdings: dict[str, int] = {}
+        for position in positions:
+            if position.get('Side') != config.OrderSide.SELL.value:
+                continue
+            quantity = int(position.get('HoldQty', 0) or 0)
+            if quantity > 0:
+                symbol = str(position.get('Symbol', ''))
+                if symbol:
+                    holdings[symbol] = holdings.get(symbol, 0) + quantity
+
+        for symbol, quantity in holdings.items():
+            try:
+                board = (
+                    self.board_client.get_current_board(self.token, symbol)
+                    if self.board_client else get_current_board(self.token, symbol)
+                )
+                price = float((board or {}).get('current_price') or 0)
+                signal = TradeSignal(symbol, config.OrderSide.SELL, price, quantity)
+                if self.order_sender and hasattr(self.order_sender, 'set_price') and price > 0:
+                    self.order_sender.set_price(symbol, price)
+                order_method = self.order_sender.place_market_order if self.order_sender else place_market_order
+                order_args = (self.token, symbol, config.OrderSide.SELL.value, quantity)
+                try:
+                    inspect.signature(order_method).bind(*order_args)
+                except TypeError:
+                    order_args = order_args[:3]
+                order_result = order_method(*order_args)
+                if order_result and order_result.get('Result') == 0:
+                    self._register_order(signal, PriceLimit(price, price), order_result)
+                    logger.info("持ち越し防止売りを発注しました: 銘柄=%s | 数量=%s", symbol, quantity)
+                else:
+                    logger.error("持ち越し防止売りに失敗しました: 銘柄=%s | 数量=%s", symbol, quantity)
+            except Exception:
+                logger.exception("持ち越し防止売り中にエラーが発生しました: 銘柄=%s", symbol)
+
     # ================================================================================
     # メイン取引ループ
     # ================================================================================
@@ -309,6 +348,13 @@ class TradingUseCase:
         # 市場終了時刻まで取引ループを実行
         use_preflight_market_data = bool(preflight_market_data)
         while not kill_switch_triggered and not is_market_closed(now_provider().time(), config.MARKET_CLOSE_HOUR, config.MARKET_CLOSE_MINUTE):
+            if is_market_closed(
+                now_provider().time(),
+                config.MARKET_LIQUIDATION_HOUR,
+                config.MARKET_LIQUIDATION_MINUTE,
+            ):
+                self._liquidate_all_positions()
+                break
             for symbol in symbols:
                 try:
                     # RSI計算用の確定日足終値を取得

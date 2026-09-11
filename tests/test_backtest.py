@@ -1,4 +1,5 @@
 import json
+from datetime import date
 
 import pytest
 
@@ -7,7 +8,9 @@ from src.config import config
 from src.domain.rules import calculate_rsi
 from src.entrypoints.run_backtest import fetch_yahoo_history, load_history, save_backtest_result
 from src.infrastructure.analysis.daily_analyzer import OpenAIDailyAnalyzer
+from src.domain.models import MinuteBar
 from src.entrypoints.run_monthly_analysis import build_monthly_summary
+from src.infrastructure.persistence.minute_bar_repository import MinuteBarRepository
 
 
 @pytest.fixture(autouse=True)
@@ -162,6 +165,65 @@ def test_simulate_timeseries_backtest_uses_daily_symbol_sets():
     assert result["total_pnl"] == 400.0
     assert result["period_start"] == "2026-09-06"
     assert result["period_end"] == "2026-09-07"
+
+
+def test_timeseries_backtest_evaluates_each_minute_with_daily_indicators(tmp_path):
+    dated_history = {
+        "7203": {
+            "2026-09-01": 100.0,
+            "2026-09-02": 100.0,
+            "2026-09-03": 100.0,
+            "2026-09-04": 100.0,
+            "2026-09-05": 100.0,
+            "2026-09-06": 100.0,
+        },
+    }
+    repository = MinuteBarRepository(tmp_path)
+    repository.append_bar(date(2026, 9, 6), "7203", MinuteBar(
+        time="2026-09-06T09:00:00", price=98.0, cumulative_volume=None, volume=100, source="yahoo",
+    ))
+    repository.append_bar(date(2026, 9, 6), "7203", MinuteBar(
+        time="2026-09-06T09:01:00", price=102.0, cumulative_volume=None, volume=100, source="yahoo",
+    ))
+
+    result = simulate_timeseries_backtest(
+        {"2026-09-06": ["7203"]},
+        dated_history,
+        starting_cash=10_000.0,
+        qty_per_trade=100,
+        minute_bar_repository=repository,
+        indicator_source="daily",
+    )
+
+    assert [signal["time"] for signal in result["signals"]] == [
+        "2026-09-06T09:00:00",
+        "2026-09-06T09:01:00",
+    ]
+    assert result["total_pnl"] == 400.0
+
+
+def test_timeseries_backtest_minute_indicator_does_not_use_current_bar(tmp_path):
+    repository = MinuteBarRepository(tmp_path)
+    for minute, price in enumerate([100.0, 100.0, 100.0, 100.0, 100.0, 98.0, 102.0]):
+        repository.append_bar(date(2026, 9, 6), "7203", MinuteBar(
+            time=f"2026-09-06T09:{minute:02d}:00", price=price,
+            cumulative_volume=None, volume=100, source="yahoo",
+        ))
+
+    result = simulate_timeseries_backtest(
+        {"2026-09-06": ["7203"]},
+        {"7203": {"2026-09-06": 102.0}},
+        starting_cash=10_000.0,
+        qty_per_trade=100,
+        minute_bar_repository=repository,
+        indicator_source="minute",
+    )
+
+    assert [signal["time"] for signal in result["signals"]] == [
+        "2026-09-06T09:05:00",
+        "2026-09-06T09:06:00",
+    ]
+    assert result["total_pnl"] == 400.0
 
 
 def test_simulate_backtest_does_not_use_current_price_for_signal_baseline():

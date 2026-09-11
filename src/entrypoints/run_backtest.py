@@ -12,6 +12,7 @@ import requests
 from src.application.backtest_usecase import simulate_backtest, simulate_timeseries_backtest
 from src.infrastructure.analysis.daily_analyzer import create_daily_analyzer
 from src.infrastructure.notification.line_notify import process_notification, send_line_notify
+from src.infrastructure.persistence.minute_bar_repository import MinuteBarRepository
 
 logger = logging.getLogger(__name__)
 
@@ -197,8 +198,24 @@ def main() -> None:
         parser.add_argument("--live", action="store_true", help="Yahoo Finance から実データを取得してバックテストを実行")
         parser.add_argument("--days", type=int, default=730, help="Yahoo Finance から取得する日数（既定: 約2年）")
         parser.add_argument("--day-trade", action="store_true", help="デイトレードとして実行し、当日の終値で保有を強制的に決済する")
+        parser.add_argument(
+            "--minute-bars-dir",
+            type=Path,
+            default=None,
+            help="分足データディレクトリ。指定時は分足ごとに判定・約定を再生します",
+        )
+        parser.add_argument(
+            "--indicator-source",
+            choices=("daily", "minute"),
+            default="daily",
+            help="SMA5/RSIの算出元（既定: daily）",
+        )
         parser.add_argument("--output", type=Path, default=None, help="結果JSONの保存先")
         args = parser.parse_args()
+        minute_bar_repository = MinuteBarRepository(args.minute_bars_dir) if args.minute_bars_dir else None
+
+        if args.indicator_source == "minute" and minute_bar_repository is None:
+            raise ValueError("--indicator-source minute を使う場合は --minute-bars-dir を指定してください")
 
         if args.filtering_dir:
             if not args.live:
@@ -220,6 +237,8 @@ def main() -> None:
                 starting_cash=args.cash,
                 qty_per_trade=args.qty,
                 fee_rate=args.fee,
+                minute_bar_repository=minute_bar_repository,
+                indicator_source=args.indicator_source,
             )
         else:
             symbols = load_symbols(args.symbols)
@@ -227,14 +246,36 @@ def main() -> None:
             if args.live:
                 history = fetch_yahoo_history(symbols, days=args.days)
 
-            result = simulate_backtest(
-                symbols,
-                history,
-                starting_cash=args.cash,
-                qty_per_trade=args.qty,
-                fee_rate=args.fee,
-                close_at_eod=args.day_trade,
-            )
+            if minute_bar_repository is not None:
+                if not args.live:
+                    raise ValueError("--minute-bars-dir を使う固定銘柄モードでは --live を指定してください")
+                dated_history = fetch_yahoo_dated_history(symbols, days=args.days + 5)
+                daily_symbols = {
+                    date_text: symbols
+                    for date_text in sorted({
+                        date_text
+                        for symbol_history in dated_history.values()
+                        for date_text in symbol_history
+                    })
+                }
+                result = simulate_timeseries_backtest(
+                    daily_symbols,
+                    dated_history,
+                    starting_cash=args.cash,
+                    qty_per_trade=args.qty,
+                    fee_rate=args.fee,
+                    minute_bar_repository=minute_bar_repository,
+                    indicator_source=args.indicator_source,
+                )
+            else:
+                result = simulate_backtest(
+                    symbols,
+                    history,
+                    starting_cash=args.cash,
+                    qty_per_trade=args.qty,
+                    fee_rate=args.fee,
+                    close_at_eod=args.day_trade,
+                )
 
         # CLI 出力は日本語ラベルを優先して見やすくする
         display_result = {

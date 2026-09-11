@@ -170,6 +170,14 @@ if BACKTEST_EXECUTION_DELAY_BARS < 0:
 if BACKTEST_ORDER_TYPE not in {"market", "limit"}:
     raise ValueError("BACKTEST_ORDER_TYPE は market または limit を指定してください。")
 
+# ペーパートレードでは発注後の次回価格を観測できないため、現在価格に不利方向の成行スリッページを適用する。
+PAPER_FEE_RATE = float(os.getenv("PAPER_FEE_RATE", str(BACKTEST_FEE_RATE)))
+PAPER_MARKET_SLIPPAGE_BPS = float(os.getenv("PAPER_MARKET_SLIPPAGE_BPS", str(BACKTEST_MARKET_SLIPPAGE_BPS)))
+if PAPER_FEE_RATE < 0:
+    raise ValueError("PAPER_FEE_RATE は0以上を指定してください。")
+if PAPER_MARKET_SLIPPAGE_BPS < 0:
+    raise ValueError("PAPER_MARKET_SLIPPAGE_BPS は0以上を指定してください。")
+
 # ================================================================================
 # 注文履歴・市場設定
 # ================================================================================

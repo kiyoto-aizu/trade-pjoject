@@ -16,7 +16,10 @@ class PaperOrderExecutor:
     prices: Dict[str, float]
     cash: float = 1_000_000.0
     order_qty: int = field(default_factory=lambda: config.ORDER_UNIT)
+    fee_rate: float = field(default_factory=lambda: config.PAPER_FEE_RATE)
+    market_slippage_bps: float = field(default_factory=lambda: config.PAPER_MARKET_SLIPPAGE_BPS)
     holdings: Dict[str, int] = field(default_factory=dict)
+    average_costs: Dict[str, float] = field(default_factory=dict)
     orders: List[dict] = field(default_factory=list)
     state_path: Optional[Path] = None
     _next_order_id: int = 1
@@ -33,6 +36,11 @@ class PaperOrderExecutor:
             for symbol, quantity in state.get('holdings', {}).items()
             if int(quantity) > 0
         }
+        self.average_costs = {
+            str(symbol): float(cost)
+            for symbol, cost in state.get('average_costs', {}).items()
+            if symbol in self.holdings
+        }
         self._next_order_id = max(1, int(state.get('next_order_id', self._next_order_id)))
 
     def _save_state(self) -> None:
@@ -40,6 +48,7 @@ class PaperOrderExecutor:
             write_json(self.state_path, {
                 'cash': self.cash,
                 'holdings': self.holdings,
+                'average_costs': self.average_costs,
                 'next_order_id': self._next_order_id,
             })
 
@@ -47,7 +56,7 @@ class PaperOrderExecutor:
         self.prices[symbol] = price
 
     def place_market_order(self, token: str, symbol: str, side: str, quantity: Optional[int] = None) -> Optional[dict]:
-        """成行注文を現在価格で仮想約定し、実注文と同じ形式の結果を返す。"""
+        """成行注文を不利方向のスリッページ・手数料込みで仮想約定する。"""
         del token
         price = self.prices.get(symbol)
         if price is None:
@@ -55,21 +64,29 @@ class PaperOrderExecutor:
 
         quantity = quantity if quantity is not None else self.order_qty
         held_quantity = self.holdings.get(symbol, 0)
+        slippage_rate = self.market_slippage_bps / 10_000.0
         if side == config.OrderSide.BUY.value:
-            required_cash = price * quantity
+            execution_price = price * (1.0 + slippage_rate)
+            fee = execution_price * quantity * self.fee_rate
+            required_cash = execution_price * quantity + fee
             if self.cash < required_cash:
                 return None
             self.cash -= required_cash
             self.holdings[symbol] = held_quantity + quantity
+            previous_cost = self.average_costs.get(symbol, 0.0) * held_quantity
+            self.average_costs[symbol] = (previous_cost + required_cash) / self.holdings[symbol]
         elif side == config.OrderSide.SELL.value:
             if held_quantity < quantity:
                 return None
-            self.cash += price * quantity
+            execution_price = price * (1.0 - slippage_rate)
+            fee = execution_price * quantity * self.fee_rate
+            self.cash += execution_price * quantity - fee
             remaining_quantity = held_quantity - quantity
             if remaining_quantity:
                 self.holdings[symbol] = remaining_quantity
             else:
                 self.holdings.pop(symbol, None)
+                self.average_costs.pop(symbol, None)
         else:
             return None
 
@@ -81,7 +98,10 @@ class PaperOrderExecutor:
             "Symbol": symbol,
             "Side": side,
             "Qty": quantity,
-            "Price": price,
+            "Price": execution_price,
+            "SignalPrice": price,
+            "Fee": fee,
+            "SlippageBps": self.market_slippage_bps,
         }
         self.orders.append(order)
         self._save_state()
@@ -98,7 +118,7 @@ class PaperOrderExecutor:
                 'Symbol': symbol,
                 'Side': config.OrderSide.SELL.value,
                 'HoldQty': quantity,
-                'ProfitLoss': 0,
+                'ProfitLoss': round((self.prices.get(symbol, 0.0) - self.average_costs.get(symbol, 0.0)) * quantity, 2),
             }
             for symbol, quantity in self.holdings.items()
         ]

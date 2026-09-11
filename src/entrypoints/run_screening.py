@@ -69,7 +69,11 @@ def main() -> None:
         if not acquired:
             logging.getLogger(__name__).warning("他の市場処理が実行中のため、スクリーニングを中止します。")
             return
-        with process_notification('スクリーニング', notify_lifecycle=False):
+        with process_notification(
+            'スクリーニング',
+            notify_lifecycle=False,
+            trigger='スケジュールまたは手動実行',
+        ):
             token = get_api_token()
             if not token:
                 raise SystemExit('トークン取得に失敗しました。')

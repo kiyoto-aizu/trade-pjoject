@@ -192,7 +192,7 @@ class TradingUseCase:
         today = datetime.now().date().isoformat()
         daily_orders = [entry for entry in self.order_history if entry.timestamp.startswith(today)]
         lines = [
-            f"【{config.TRADING_MODE_LABEL}】本日の自動売買レポート ({config.ORDER_HISTORY_FILE})",
+            f"【取引】結果（{config.TRADING_MODE_LABEL}）本日の自動売買レポート ({config.ORDER_HISTORY_FILE})",
             f"発注件数: {len(daily_orders)}"
         ]
         if self.kill_switch_triggered:

@@ -182,7 +182,7 @@ def save_backtest_result(output_path: Path, result: dict) -> Path:
 
 
 def main() -> None:
-    with process_notification('バックテスト', notify_lifecycle=False):
+    with process_notification('バックテスト', notify_lifecycle=False, trigger='手動実行'):
         repo_root = Path(__file__).resolve().parents[2]
         default_symbols_path = repo_root / "data" / "filtering" / "2026-09-01.json"
         default_history_path = repo_root / "data" / "backtest" / "sample_history.json"
@@ -263,7 +263,7 @@ def main() -> None:
 
         print(json.dumps(display_result, ensure_ascii=False, indent=2))
         report_lines = [
-            "【バックテスト結果】",
+            "【バックテスト】結果",
             f"対象期間: {display_result['対象期間'] or '指定なし'}",
             f"総損益: {display_result['総損益']}",
             f"勝率: {display_result['勝率']}",

@@ -85,7 +85,11 @@ def main(now_provider=None) -> None:
         if not acquired:
             logging.getLogger(__name__).warning("他の市場処理が実行中のため、トレーディングを中止します。")
             return
-        with process_notification(f'取引（{config.TRADING_MODE_LABEL}）'):
+        with process_notification(
+            '取引',
+            trigger='フィルタリング結果',
+            start_detail=f'開始（{config.TRADING_MODE_LABEL}）',
+        ):
             now = (now_provider or datetime.now)()
             if not is_trading_session(now):
                 logging.getLogger(__name__).info('市場時間外または休場日のため、取引を開始しません。')

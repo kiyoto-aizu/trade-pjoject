@@ -62,34 +62,40 @@ class FilteringUseCase:
         screening = self.screening_repository.load_for_date(previous_business_day)
         scored = []
         candidates = []
+        skipped_count = 0
         if screening:
             for symbol in screening.symbols:
                 if target_date and hasattr(self.volume_client, "get_turnover_for_date"):
                     today_value = self.volume_client.get_turnover_for_date(symbol, today)
                     average = self.volume_client.get_average_turnover_before(symbol, today, 20)
                     if today_value is None or average is None:
-                        logger.warning("過去日フィルタリングスキップ: 銘柄=%s | 日付=%s", symbol, today)
+                        skipped_count += 1
+                        logger.warning("フィルタリング評価対象外: 銘柄=%s 理由=過去データなし | 日付=%s", symbol, today)
                         continue
                     try:
                         surge_ratio = calculate_volume_surge_ratio(float(today_value), average)
                     except ValueError:
-                        logger.warning("平均出来高が0以下のため、%s をスキップします。", symbol)
+                        skipped_count += 1
+                        logger.warning("フィルタリング評価対象外: 銘柄=%s 理由=平均出来高が0以下", symbol)
                         continue
                     scored.append(ScoredCandidate(symbol, float(today_value), average, surge_ratio))
                     continue
 
                 board = self.board_client.get_current_board(symbol)
                 if not board:
-                    logger.warning("フィルタリングスキップ: 銘柄=%s 理由=板情報なし", symbol)
+                    skipped_count += 1
+                    logger.warning("フィルタリング評価対象外: 銘柄=%s 理由=板情報なし", symbol)
                     continue
                 if board.get("current_price") is None:
-                    logger.warning("フィルタリングスキップ: 銘柄=%s 理由=現在値なし", symbol)
+                    skipped_count += 1
+                    logger.warning("フィルタリング評価対象外: 銘柄=%s 理由=現在値なし", symbol)
                     continue
                 today_value = board.get("trading_value")
                 if today_value is None and board.get("trading_volume") is not None:
                     today_value = float(board["current_price"]) * float(board["trading_volume"])
                 if today_value is None:
-                    logger.warning("フィルタリングスキップ: 銘柄=%s 理由=当日売買代金なし", symbol)
+                    skipped_count += 1
+                    logger.warning("フィルタリング評価対象外: 銘柄=%s 理由=当日売買代金なし", symbol)
                     continue
                 if hasattr(self.volume_client, "get_average_turnover"):
                     average = self.volume_client.get_average_turnover(symbol, 20)
@@ -97,12 +103,14 @@ class FilteringUseCase:
                     average_volume = self.volume_client.get_average_volume(symbol, 20)
                     average = average_volume * float(board["current_price"]) if average_volume is not None else None
                 if average is None:
-                    logger.warning("フィルタリングスキップ: 銘柄=%s 理由=平均売買代金なし", symbol)
+                    skipped_count += 1
+                    logger.warning("フィルタリング評価対象外: 銘柄=%s 理由=平均売買代金なし", symbol)
                     continue
                 try:
                     surge_ratio = calculate_volume_surge_ratio(float(today_value), average)
                 except ValueError:
-                    logger.warning("平均出来高が0以下のため、%s をスキップします。", symbol)
+                    skipped_count += 1
+                    logger.warning("フィルタリング評価対象外: 銘柄=%s 理由=平均出来高が0以下", symbol)
                     continue
                 scored.append(ScoredCandidate(symbol, float(today_value), average, surge_ratio))
             # 同時刻帯の過去分足が取得できないため、絶対倍率の足切りは行わず相対順位で選ぶ。
@@ -111,29 +119,29 @@ class FilteringUseCase:
         result = FilteringResult(today.isoformat(), symbols, datetime.now().isoformat())
         self.result_repository.save(result)
         if self.notifier:
-            excluded_by_surge_count = len(scored) - len(candidates)
-            self._notify_completion(screening, symbols, scored, excluded_by_surge_count)
+            self._notify_completion(screening, symbols, scored, skipped_count)
         return result
 
-    def _notify_completion(self, screening, symbols, scored, excluded_by_surge_count: int = 0) -> None:
+    def _notify_completion(self, screening, symbols, scored, skipped_count: int = 0) -> None:
         if not screening:
-            message = "【フィルタリング結果】\n前日のスクリーニング結果がないため、0銘柄です"
+            message = "【フィルタリング】結果\n前日のスクリーニング結果がないため、0銘柄です"
         else:
             ratios_by_symbol = {candidate.symbol: candidate.surge_ratio for candidate in scored}
             top_symbols = " / ".join(
                 f"{symbol}(20日平均売買代金の{ratios_by_symbol[symbol]:.1f}倍)" for symbol in symbols[:5]
             )
             message = (
-                "【フィルタリング結果】\n"
+                "【フィルタリング】結果\n"
                 f"採用銘柄: {len(symbols)}銘柄\n"
-                f"スクリーニング対象: {len(screening.symbols)}件\n"
-                f"出来高条件で除外: {excluded_by_surge_count}件"
+                f"スクリーニング結果からの入力: {len(screening.symbols)}件\n"
+                f"評価完了: {len(scored)}件\n"
+                f"評価対象外: {skipped_count}件"
             )
             if top_symbols:
                 message += "\n上位銘柄:\n" + "\n".join(
                     f"- {symbol}(20日平均売買代金の{ratios_by_symbol[symbol]:.1f}倍)" for symbol in symbols[:5]
                 )
-            anomaly = self._analyze_anomaly_if_needed(screening, symbols, scored, excluded_by_surge_count)
+            anomaly = self._analyze_anomaly_if_needed(screening, symbols, scored, skipped_count)
             if anomaly:
                 message += f"\n--- LLM異常検知（参考） ---\n{anomaly}"
         try:
@@ -141,7 +149,7 @@ class FilteringUseCase:
         except Exception:
             logger.exception("フィルタリング完了通知に失敗しました。")
 
-    def _analyze_anomaly_if_needed(self, screening, symbols, scored, excluded_by_surge_count: int) -> str | None:
+    def _analyze_anomaly_if_needed(self, screening, symbols, scored, skipped_count: int) -> str | None:
         """採用件数が閾値を下回るなど普段と異なる可能性がある時だけLLMを呼び出し、クレジットを節約する。"""
         candidate_count = len(screening.symbols)
         if candidate_count > 0 and len(symbols) >= config.FILTERING_ANOMALY_MIN_SYMBOLS:
@@ -156,7 +164,7 @@ class FilteringUseCase:
                 "スクリーニング対象件数": candidate_count,
                 "出来高条件クリア件数": len(scored),
                 "採用件数": len(symbols),
-                "出来高条件で除外した件数": excluded_by_surge_count,
+                "評価対象外件数": skipped_count,
             }
             return analyzer.analyze_filtering(summary)
         except Exception:

@@ -111,7 +111,7 @@ def test_end_of_day_report_identifies_paper_trading(monkeypatch, tmp_path):
 
     use_case._send_end_of_day_report()
 
-    assert messages[0].startswith('【ペーパートレード】')
+    assert messages[0].startswith('【取引】結果（ペーパートレード）')
     report = json.loads((tmp_path / 'reports' / f'{datetime.now().date().isoformat()}.json').read_text(encoding='utf-8'))
     assert report['order_count'] == 0
     assert report['report_text'] == messages[0]

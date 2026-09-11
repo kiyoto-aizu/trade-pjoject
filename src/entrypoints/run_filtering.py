@@ -94,7 +94,11 @@ def main() -> None:
         if not acquired:
             logging.getLogger(__name__).warning("他の市場処理が実行中のため、フィルタリングを中止します。")
             return
-        with process_notification('フィルタリング', notify_lifecycle=False):
+        with process_notification(
+            'フィルタリング',
+            notify_lifecycle=False,
+            trigger='スクリーニング結果',
+        ):
             root = Path(__file__).resolve().parents[2] / 'data'
             token = None
             board_client = None

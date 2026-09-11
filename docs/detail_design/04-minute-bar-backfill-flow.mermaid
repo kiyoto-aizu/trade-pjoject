@@ -1,0 +1,27 @@
+flowchart TD
+    Start(["タスク起動: 毎週月・木 07:30<br/>run_minute_backfill.py"]) --> A1["collect_recent_symbols()<br/>直近7日間のFilteringResultから銘柄抽出"]
+    A1 --> A2{"対象銘柄が<br/>存在するか？"}
+    A2 -->|No| A2a["ログ出力して終了"]
+    A2a --> End(["終了"])
+
+    A2 -->|Yes| B1["銘柄ごとにループ開始"]
+    B1 --> B2["get_yahoo_intraday_bars()<br/>Yahoo chart APIから1分足(range=7d)取得"]
+    B2 --> B3{"取得成功？"}
+    B3 -->|No| B3a["スキップして次の銘柄へ"]
+    B3 -->|Yes| C1["各MinuteBarの日付(time[:10])を判定"]
+
+    C1 --> C2["MinuteBarRepository.append_bar()"]
+    C2 --> C3{"既存にyahoo由来あり<br/>かつ新規がpoll？"}
+    C3 -->|Yes| C3a["上書きスキップ（精度維持）"]
+    C3 -->|No| C3b["新しい足で上書き・ソートしてJSON保存"]
+
+    B3a --> NextSymbol{"全銘柄処理済み？"}
+    C3a --> NextSymbol
+    C3b --> NextSymbol
+    NextSymbol -->|No| B2
+    NextSymbol -->|Yes| D1["結果サマリをLINE通知"]
+    D1 --> End2(["終了"])
+
+    style A2a fill:#f8d7da,stroke:#c0392b
+    style B3a fill:#fff3cd,stroke:#d4a017
+    style C3a fill:#e2e3e5,stroke:#6c757d

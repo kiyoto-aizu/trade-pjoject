@@ -56,7 +56,7 @@ def main(now_provider=None, filtering_dir: Path | None = None, output_dir: Path 
         logger.info("直近%d日分のフィルタリング結果がないため、バックフィルを行いません。", args.days)
         return
 
-    with process_notification("分足バックフィル", notify_lifecycle=False):
+    with process_notification("分足バックフィル", notify_lifecycle=False, trigger="フィルタリング結果"):
         usecase = MinuteBarBackfillUseCase(
             fetch_intraday_bars=get_yahoo_intraday_bars,
             repository=MinuteBarRepository(target_output_dir),
@@ -65,7 +65,7 @@ def main(now_provider=None, filtering_dir: Path | None = None, output_dir: Path 
 
         total = sum(imported_counts.values())
         send_line_notify(
-            f"【分足バックフィル結果】\n対象銘柄数: {len(symbols)}\n取り込んだ足の総数: {total}"
+            f"【分足バックフィル】結果\n対象銘柄数: {len(symbols)}\n取り込んだ足の総数: {total}"
         )
 
 

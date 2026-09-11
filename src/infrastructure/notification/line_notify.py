@@ -6,15 +6,15 @@ from src.config import config
 logger = logging.getLogger(__name__)
 
 
-def notify_process_start(process_name: str) -> None:
+def notify_process_start(process_name: str, detail: str = "開始") -> None:
     """処理開始を通知します。通知失敗で本処理を中断させません。"""
-    _send_process_message(f"【開始】{process_name}")
+    _send_process_message(f"【{process_name}】{detail}")
 
 
 def notify_process_end(process_name: str, success: bool = True, detail: str = "") -> None:
     """処理終了を通知します。必要に応じて終了理由を付加します。"""
-    status = "完了" if success else "失敗"
-    message = f"【終了】{process_name}: {status}"
+    status = "終了" if success else "異常終了"
+    message = f"【{process_name}】{status}"
     if detail:
         message += f"\n{detail}"
     _send_process_message(message)
@@ -48,10 +48,17 @@ def _short_summary(summary: str, limit: int = 200) -> str:
 
 
 @contextmanager
-def process_notification(process_name: str, notify_lifecycle: bool = True):
+def process_notification(
+    process_name: str,
+    notify_lifecycle: bool = True,
+    trigger: str = "",
+    start_detail: str = "開始",
+):
     """処理の開始と終了を通知します。例外は呼び出し元へ再送出します。"""
+    trigger_detail = f": 契機={trigger}" if trigger else ""
+    logger.info("【%s】%s%s", process_name, start_detail, trigger_detail)
     if notify_lifecycle:
-        notify_process_start(process_name)
+        notify_process_start(process_name, start_detail)
     try:
         yield
     except KeyboardInterrupt:
@@ -68,10 +75,12 @@ def process_notification(process_name: str, notify_lifecycle: bool = True):
             detail = f"{headline}\n--- LLM原因分析（参考） ---\n{_short_summary(analysis.summary)}"
         if notify_lifecycle:
             notify_process_end(process_name, success=False, detail=detail)
+        logger.info("【%s】異常終了%s", process_name, trigger_detail)
         raise
     else:
         if notify_lifecycle:
             notify_process_end(process_name)
+        logger.info("【%s】終了%s", process_name, trigger_detail)
 
 
 def send_line_notify(message: str) -> bool:

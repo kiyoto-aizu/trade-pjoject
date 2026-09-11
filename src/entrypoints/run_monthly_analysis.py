@@ -100,7 +100,7 @@ def main() -> None:
     if not args.force and today != _month_bounds(f"{today.year:04d}-{today.month:02d}")[1]:
         logger.info("月末ではないため月次分析をスキップします")
         return
-    with process_notification("月次総合分析", notify_lifecycle=False):
+    with process_notification("月次総合分析", notify_lifecycle=False, trigger="月末または手動実行"):
         summary = build_monthly_summary(month_text, args.reports, args.backtests)
         analyzer = create_daily_analyzer()
         analysis = analyzer.analyze_monthly(summary) if analyzer else None
@@ -109,7 +109,7 @@ def main() -> None:
         output_path = args.output / f"{month_text}.json"
         write_json(output_path, result)
         lines = [
-            "【月次総合分析】",
+            "【月次総合分析】結果",
             f"対象月: {month_text}",
             f"ペーパートレード: {summary['daily']['report_count']}日 / {summary['daily']['order_count']}件",
             f"バックテスト: {summary['backtest']['run_count']}回 / 損益 {summary['backtest']['total_pnl']}",

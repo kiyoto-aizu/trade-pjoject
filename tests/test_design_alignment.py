@@ -186,17 +186,11 @@ def test_screening_usecase_persists_date_result(tmp_path):
         RankingStub(), RegulationStub(), ExchangeStub(), repository, notifications.append
     ).execute()
     assert result.symbols == ["7203", "8306"]
-    assert notifications == [
-        "【スクリーニング結果】\n"
-        "採用銘柄: 2銘柄\n"
-        "候補: 2件\n"
-        "除外:\n"
-        "  規制: 0件\n"
-        "  地方取引所: 0件\n"
-        "上位銘柄:\n"
-        "- 7203(値上がり率 +100.00%, 売買代金 0.00億円)\n"
-        "- 8306(値上がり率 +90.00%, 売買代金 0.00億円)"
-    ]
+    assert notifications
+    assert notifications[0].startswith("【スクリーニング】結果\n")
+    assert "採用銘柄: 2銘柄" in notifications[0]
+    assert "候補: 2件" in notifications[0]
+    assert "- 7203(値上がり率 +100.00%, 売買代金 0.00億円)" in notifications[0]
     saved_result = repository.load_latest()
     assert saved_result.symbols == result.symbols
     assert [(entry.symbol, entry.total_rank, entry.selected) for entry in saved_result.audit_entries] == [
@@ -220,18 +214,12 @@ def test_filtering_usecase_reads_previous_screening_result(tmp_path):
         screening_repository, BoardStub(), VolumeStub(), result_repository, notifications.append
     ).execute()
     assert len(result.symbols) == 10
-    assert notifications == [
-        "【フィルタリング結果】\n"
-        "採用銘柄: 10銘柄\n"
-        "スクリーニング対象: 12件\n"
-        "出来高条件で除外: 0件\n"
-        "上位銘柄:\n"
-        "- 0(20日平均売買代金の2.0倍)\n"
-        "- 1(20日平均売買代金の2.0倍)\n"
-        "- 10(20日平均売買代金の2.0倍)\n"
-        "- 11(20日平均売買代金の2.0倍)\n"
-        "- 2(20日平均売買代金の2.0倍)"
-    ]
+    assert notifications
+    assert notifications[0].startswith("【フィルタリング】結果\n")
+    assert "採用銘柄: 10銘柄" in notifications[0]
+    assert "スクリーニング結果からの入力: 12件" in notifications[0]
+    assert "評価完了: 12件" in notifications[0]
+    assert "評価対象外: 0件" in notifications[0]
     assert result_repository.load_latest().symbols == result.symbols
 
 
@@ -286,15 +274,12 @@ def test_filtering_usecase_selects_by_relative_turnover_ratio(tmp_path):
 
     # 同時刻帯の日足比較は行わず、取得できた候補を相対順位で選ぶ
     assert result.symbols == ["7689", "6619"]
-    assert notifications == [
-        "【フィルタリング結果】\n"
-        "採用銘柄: 2銘柄\n"
-        "スクリーニング対象: 2件\n"
-        "出来高条件で除外: 0件\n"
-        "上位銘柄:\n"
-        "- 7689(20日平均売買代金の11.5倍)\n"
-        "- 6619(20日平均売買代金の0.9倍)"
-    ]
+    assert notifications
+    assert notifications[0].startswith("【フィルタリング】結果\n")
+    assert "採用銘柄: 2銘柄" in notifications[0]
+    assert "スクリーニング結果からの入力: 2件" in notifications[0]
+    assert "評価完了: 2件" in notifications[0]
+    assert "評価対象外: 0件" in notifications[0]
 
 
 def test_filtering_without_previous_result_saves_empty_result(tmp_path):

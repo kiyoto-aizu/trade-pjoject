@@ -34,7 +34,7 @@ def test_run_minute_backfill_main_flow(tmp_path):
         )
 
         mock_notify.assert_called_once()
-        assert "【分足バックフィル結果】" in mock_notify.call_args[0][0]
+        assert "【分足バックフィル】結果" in mock_notify.call_args[0][0]
         assert "対象銘柄数: 1" in mock_notify.call_args[0][0]
         assert "取り込んだ足の総数: 1" in mock_notify.call_args[0][0]
 

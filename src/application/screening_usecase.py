@@ -184,7 +184,7 @@ class ScreeningUseCase:
         price_gain_by_symbol,
     ) -> None:
         message = (
-            "【スクリーニング結果】\n"
+            "【スクリーニング】結果\n"
             f"採用銘柄: {len(symbols)}銘柄\n"
             f"候補: {len(candidates)}件\n"
             "除外:\n"

@@ -29,6 +29,12 @@ def test_required_env_helper_raises_when_missing():
         config._load_required_env('MISSING_ENV_FOR_TEST', allow_missing=False)
 
 
+def test_application_logs_are_stored_under_data_logs():
+    assert Path(config.LOG_FILE_PATH) == config.LOG_DIRECTORY / 'trade_project.log'
+    assert config.LOG_DIRECTORY.name == 'logs'
+    assert config.LOG_DIRECTORY.parent.name == 'data'
+
+
 def test_is_market_closed_boundary():
     assert not is_market_closed(time(15, 29), 15, 30)
     assert is_market_closed(time(15, 30), 15, 30)

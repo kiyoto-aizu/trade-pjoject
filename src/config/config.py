@@ -230,8 +230,10 @@ BASE_URL = f"http://localhost:{API_PORT}/kabusapi"
 # ログ設定
 # ================================================================================
 
-# アプリケーションログのファイルパス
-LOG_FILE_PATH = str(_repo_root / "trade_project.log")
+# アプリケーションログの保存先
+LOG_DIRECTORY = _repo_root / "data" / "logs"
+LOG_DIRECTORY.mkdir(parents=True, exist_ok=True)
+LOG_FILE_PATH = str(LOG_DIRECTORY / "trade_project.log")
 
 # 保持する日次ログの世代数
 LOG_BACKUP_COUNT = int(os.getenv("LOG_BACKUP_COUNT", str(5)))

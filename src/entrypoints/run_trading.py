@@ -6,45 +6,41 @@
 """
 import logging
 from logging.handlers import TimedRotatingFileHandler
-from datetime import datetime, time
+from datetime import datetime
 from pathlib import Path
 
 from src.config import config
-from src.trading.trading import TradingBot
+from src.application.trading_usecase import TradingUseCase
+from src.domain.rules import is_market_closed, is_trading_session
 from src.infrastructure.kabu.get_token import get_api_token
-from src.infrastructure.kabu.get_board import get_current_board
-from src.infrastructure.market_data.get_daily_closes import get_yahoo_daily_closes
 from src.infrastructure.notification.line_notify import process_notification
 from src.infrastructure.persistence.filtering_result_repository import FilteringResultRepository
 from src.infrastructure.execution_lock import market_workflow_lock
+from src.infrastructure.notification.line_notify import send_line_notify
+from src.infrastructure.paper.paper_order_executor import PaperOrderExecutor
 
 
-def is_trading_session(now: datetime) -> bool:
-    """平日の市場時間内かを判定します。"""
-    if now.weekday() >= 5:
-        return False
-    session_start = time(config.MARKET_OPEN_HOUR, config.MARKET_OPEN_MINUTE)
-    session_end = time(config.MARKET_CLOSE_HOUR, config.MARKET_CLOSE_MINUTE)
-    return session_start <= now.time() < session_end
-
-
-def collect_market_data_sources(token: str, symbols: list[str]) -> dict[str, dict] | None:
-    """対象銘柄の過去終値と現在の板価格を取得し、初回判定用に返します。"""
-    market_data = {}
-    for symbol in symbols:
-        closes = get_yahoo_daily_closes(symbol)
-        if not closes or len(closes) < config.RSI_MINIMUM_CLOSES:
-            return None
-        board = get_current_board(token, symbol)
-        if not board or board.get('current_price') is None:
-            return None
-        market_data[symbol] = {'closes': closes, 'board': board}
-    return market_data
-
-
-def check_market_data_sources(token: str, symbols: list[str]) -> bool:
-    """対象銘柄の過去終値と現在の板価格を取得できるか確認します。"""
-    return collect_market_data_sources(token, symbols) is not None
+def create_trading_use_case(token: str) -> TradingUseCase:
+    """実行モードに応じた取引ユースケースを組み立てます。"""
+    root = Path(__file__).resolve().parents[2]
+    order_sender = None
+    if config.TRADING_MODE == 'paper':
+        order_sender = PaperOrderExecutor(
+            prices={},
+            cash=config.OPERATING_CAPITAL,
+            state_path=root / config.PAPER_ACCOUNT_STATE_FILE,
+        )
+    elif config.TRADING_MODE != 'live' or config.IS_DEMO or not config.ENABLE_LIVE_ORDERING:
+        raise ValueError(
+            'ライブ注文にはTRADING_MODE=live、IS_DEMO=false、ENABLE_LIVE_ORDERING=trueが必要です。'
+        )
+    return TradingUseCase(
+        token=token,
+        order_history_path=root / config.ORDER_HISTORY_FILE,
+        order_sender=order_sender,
+        filtering_result_repository=FilteringResultRepository(root / 'data' / 'filtering'),
+        notifier=send_line_notify,
+    )
 
 
 def configure_logging() -> None:
@@ -77,7 +73,7 @@ def main(now_provider=None) -> None:
     処理フロー：
     1. ロギングを設定
     2. APIトークンを取得
-    3. TradingBotを起動し、run()メソッドを実行
+    3. TradingUseCaseを組み立てて実行
     """
     configure_logging()
     logging.getLogger(__name__).info('取引モード: %s', config.TRADING_MODE_LABEL)
@@ -91,7 +87,13 @@ def main(now_provider=None) -> None:
             start_detail=f'開始（{config.TRADING_MODE_LABEL}）',
         ):
             now = (now_provider or datetime.now)()
-            if not is_trading_session(now):
+            if not is_trading_session(
+                now,
+                config.MARKET_OPEN_HOUR,
+                config.MARKET_OPEN_MINUTE,
+                config.MARKET_CLOSE_HOUR,
+                config.MARKET_CLOSE_MINUTE,
+            ):
                 logging.getLogger(__name__).info('市場時間外または休場日のため、取引を開始しません。')
                 return
 
@@ -105,19 +107,19 @@ def main(now_provider=None) -> None:
             if not token:
                 raise SystemExit('トークン取得に失敗しました。')
 
-            bot = TradingBot(token)
+            use_case = create_trading_use_case(token)
             if not config.ALLOW_OVERNIGHT_HOLDING and is_market_closed(
                 now.time(),
                 config.MARKET_LIQUIDATION_HOUR,
                 config.MARKET_LIQUIDATION_MINUTE,
             ):
-                bot.run()
+                use_case.run()
             else:
-                market_data = collect_market_data_sources(token, filtering_result.symbols)
+                market_data = use_case.collect_preflight_market_data(filtering_result.symbols)
                 if market_data is None:
                     logging.getLogger(__name__).error('市場データまたは板情報を取得できないため、取引を開始しません。')
                     return
-                bot.run(preflight_market_data=market_data)
+                use_case.run(preflight_market_data=market_data)
 
 
 if __name__ == '__main__':

@@ -9,7 +9,7 @@ from src.domain.models import PriceLimit, TradeSignal
 from src.domain.rules import is_market_closed
 from src.application.trading_usecase import TradingUseCase
 from src.infrastructure.paper.paper_order_executor import PaperOrderExecutor
-from src.trading.trading import TradingBot
+from src.entrypoints.run_trading import create_trading_use_case
 
 
 @pytest.fixture(autouse=True)
@@ -98,23 +98,23 @@ def test_has_holdings_checks_sell_side_positions():
     assert not use_case._has_holdings('9999', positions)
 
 
-def test_trading_bot_uses_paper_executor_by_default(monkeypatch):
+def test_trading_use_case_factory_uses_paper_executor_by_default(monkeypatch):
     monkeypatch.setattr(config, 'TRADING_MODE', 'paper')
     monkeypatch.setattr(config, 'IS_DEMO', True)
     monkeypatch.setattr(config, 'ENABLE_LIVE_ORDERING', False)
 
-    bot = TradingBot(token='dummy')
+    bot = create_trading_use_case(token='dummy')
 
     assert isinstance(bot.order_sender, PaperOrderExecutor)
 
 
-def test_trading_bot_rejects_live_mode_without_explicit_production_settings(monkeypatch):
+def test_trading_use_case_factory_rejects_live_mode_without_explicit_production_settings(monkeypatch):
     monkeypatch.setattr(config, 'TRADING_MODE', 'live')
     monkeypatch.setattr(config, 'IS_DEMO', True)
     monkeypatch.setattr(config, 'ENABLE_LIVE_ORDERING', True)
 
     with pytest.raises(ValueError, match='ライブ注文には'):
-        TradingBot(token='dummy')
+        create_trading_use_case(token='dummy')
 
 
 def test_end_of_day_report_identifies_paper_trading(monkeypatch, tmp_path):
@@ -218,6 +218,47 @@ def test_trading_use_case_places_and_records_buy_order_without_live_api(monkeypa
     assert use_case.order_history[0].order_id == 'paper-order-1'
 
 
+def test_trading_use_case_collects_complete_preflight_market_data(tmp_path):
+    class MarketDataClient:
+        def get_yahoo_daily_closes(self, symbol):
+            return [100.0] * config.RSI_MINIMUM_CLOSES
+
+    class BoardClient:
+        def get_current_board(self, token, symbol):
+            return {'current_price': 101.0}
+
+    use_case = TradingUseCase(
+        token='dummy',
+        order_history_path=tmp_path / 'order_history.json',
+        market_data_client=MarketDataClient(),
+        board_client=BoardClient(),
+    )
+
+    assert use_case.collect_preflight_market_data(['7203', '8306']) == {
+        '7203': {'closes': [100.0] * config.RSI_MINIMUM_CLOSES, 'board': {'current_price': 101.0}},
+        '8306': {'closes': [100.0] * config.RSI_MINIMUM_CLOSES, 'board': {'current_price': 101.0}},
+    }
+
+
+def test_trading_use_case_rejects_incomplete_preflight_market_data(tmp_path):
+    class MarketDataClient:
+        def get_yahoo_daily_closes(self, symbol):
+            return [100.0] * (config.RSI_MINIMUM_CLOSES - 1)
+
+    class BoardClient:
+        def get_current_board(self, token, symbol):
+            raise AssertionError('board should not be called')
+
+    use_case = TradingUseCase(
+        token='dummy',
+        order_history_path=tmp_path / 'order_history.json',
+        market_data_client=MarketDataClient(),
+        board_client=BoardClient(),
+    )
+
+    assert use_case.collect_preflight_market_data(['7203']) is None
+
+
 def test_trading_use_case_does_not_record_rejected_order(monkeypatch, tmp_path):
     symbols_path = tmp_path / 'top_symbols.json'
     symbols_path.write_text(json.dumps(['7203']), encoding='utf-8')
@@ -288,6 +329,54 @@ def test_trading_use_case_liquidates_all_holdings_before_market_close(monkeypatc
     assert executor.orders[-1]['Qty'] == 100
     assert use_case.order_history[-1].side == config.OrderSide.SELL
     assert use_case.order_history[-1].qty == 100
+
+
+def test_trading_use_case_records_kill_switch_in_daily_report(monkeypatch, tmp_path):
+    symbols_path = tmp_path / 'top_symbols.json'
+    symbols_path.write_text(json.dumps(['7203']), encoding='utf-8')
+    messages = []
+    current_times = iter([datetime(2026, 9, 4, 10, 0), datetime(2026, 9, 4, 10, 0)])
+
+    class MarketDataClient:
+        def get_yahoo_daily_closes(self, symbol):
+            return [90.0] * 5
+
+    class BoardClient:
+        def get_current_board(self, token, symbol):
+            return {'current_price': 92.0}
+
+    class WalletClient:
+        def get_wallet_cash(self, token):
+            return {'StockAccountWallet': 100_000.0}
+
+    class PositionsClient:
+        def get_positions(self, token):
+            return []
+
+    monkeypatch.setattr(config, 'IS_DEMO', True)
+    monkeypatch.setattr(config, 'API_SOFT_LIMIT', 100_000.0)
+    monkeypatch.setattr('src.application.trading_usecase.check_kill_switch', lambda *args: False)
+    use_case = TradingUseCase(
+        token='dummy',
+        order_history_path=tmp_path / 'order_history.json',
+        market_data_client=MarketDataClient(),
+        board_client=BoardClient(),
+        wallet_client=WalletClient(),
+        positions_client=PositionsClient(),
+        notifier=messages.append,
+        daily_report_directory=tmp_path / 'reports',
+    )
+
+    use_case.run(
+        top_symbols_path=symbols_path,
+        now_provider=lambda: next(current_times),
+        sleep=lambda seconds: None,
+    )
+
+    report = json.loads((tmp_path / 'reports' / '2026-09-11.json').read_text(encoding='utf-8'))
+    assert use_case.kill_switch_triggered is True
+    assert report['kill_switch_triggered'] is True
+    assert 'キルスイッチ: 発動' in messages[0]
 
 
 def test_trading_use_case_warns_once_for_repeated_sell_signal_without_holdings(monkeypatch, tmp_path, caplog):

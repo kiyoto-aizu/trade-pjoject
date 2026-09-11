@@ -8,7 +8,7 @@ import logging
 from datetime import datetime, time, timedelta
 from typing import List, Optional
 
-from src.domain.enums import OrderSide, RankingType
+from src.domain.enums import OrderSide
 from src.domain.models import ExclusionResult, OrderHistoryEntry, PriceLimit, ScoredCandidate, TradeSignal
 
 logger = logging.getLogger(__name__)
@@ -80,6 +80,15 @@ def is_market_closed(now: time, close_hour: int, close_minute: int) -> bool:
         市場終了時刻に達している場合True
     """
     return (now.hour, now.minute) >= (close_hour, close_minute)
+
+
+def is_trading_session(now: datetime, open_hour: int, open_minute: int, close_hour: int, close_minute: int) -> bool:
+    """平日の市場時間内かを判定します。"""
+    if now.weekday() >= 5:
+        return False
+    session_start = time(open_hour, open_minute)
+    session_end = time(close_hour, close_minute)
+    return session_start <= now.time() < session_end
 
 
 # ================================================================================
@@ -286,7 +295,7 @@ def select_top_n_by_surge_ratio(scored: List[ScoredCandidate], n: int = 10):
     return [candidate.symbol for candidate in sorted(scored, key=lambda item: (-item.surge_ratio, item.symbol))[:n]]
 
 
-def check_kill_switch(daily_orders, daily_pnl, capital, settings, order_amount, api_soft_limit=None):
+def check_kill_switch(daily_orders, daily_pnl, capital, settings):
     if daily_orders >= settings.MAX_ORDER_COUNT_PER_DAY:
         return False
     if capital > 0 and daily_pnl <= -(capital * settings.DAILY_LOSS_LIMIT_RATIO):

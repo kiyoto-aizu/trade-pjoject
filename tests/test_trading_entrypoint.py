@@ -2,17 +2,18 @@ from datetime import datetime
 
 from src.config import config
 from src.entrypoints import run_trading
+from src.domain.rules import is_trading_session
 
 
 def test_is_trading_session_accepts_weekday_market_hours():
-    assert run_trading.is_trading_session(datetime(2026, 9, 4, 9, 0))
-    assert run_trading.is_trading_session(datetime(2026, 9, 4, 15, 29))
+    assert is_trading_session(datetime(2026, 9, 4, 9, 0), 9, 0, 15, 30)
+    assert is_trading_session(datetime(2026, 9, 4, 15, 29), 9, 0, 15, 30)
 
 
 def test_is_trading_session_rejects_boundaries_and_weekends():
-    assert not run_trading.is_trading_session(datetime(2026, 9, 4, 8, 59))
-    assert not run_trading.is_trading_session(datetime(2026, 9, 4, 15, 30))
-    assert not run_trading.is_trading_session(datetime(2026, 9, 5, 10, 0))
+    assert not is_trading_session(datetime(2026, 9, 4, 8, 59), 9, 0, 15, 30)
+    assert not is_trading_session(datetime(2026, 9, 4, 15, 30), 9, 0, 15, 30)
+    assert not is_trading_session(datetime(2026, 9, 5, 10, 0), 9, 0, 15, 30)
 
 
 def test_main_does_not_request_token_outside_trading_session(monkeypatch):
@@ -26,38 +27,40 @@ def test_main_does_not_request_token_outside_trading_session(monkeypatch):
     run_trading.main(now_provider=lambda: datetime(2026, 9, 5, 10, 0))
 
 
-def test_check_market_data_sources_accepts_complete_market_data(monkeypatch):
-    monkeypatch.setattr(
-        run_trading,
-        'get_yahoo_daily_closes',
-        lambda symbol: [100.0] * config.RSI_MINIMUM_CLOSES,
-    )
-    monkeypatch.setattr(run_trading, 'get_current_board', lambda token, symbol: {'current_price': 101.0})
+def test_main_can_enter_the_pre_close_liquidation_path(monkeypatch):
+    class FilteringResult:
+        symbols = ['7203']
 
-    assert run_trading.check_market_data_sources('dummy', ['7203', '8306'])
+    class FilteringRepository:
+        def __init__(self, path):
+            pass
 
+        def load_for_date(self, target_date):
+            return FilteringResult()
 
-def test_check_market_data_sources_rejects_incomplete_market_data(monkeypatch):
-    monkeypatch.setattr(
-        run_trading,
-        'get_yahoo_daily_closes',
-        lambda symbol: [100.0] * (config.RSI_MINIMUM_CLOSES - 1),
-    )
-    monkeypatch.setattr(
-        run_trading,
-        'get_current_board',
-        lambda token, symbol: (_ for _ in ()).throw(AssertionError('board should not be called')),
-    )
+    class Bot:
+        def __init__(self, token):
+            assert token == 'dummy'
+            self.was_run = False
 
-    assert not run_trading.check_market_data_sources('dummy', ['7203'])
+        def run(self, **kwargs):
+            self.was_run = True
 
+    class NoOpContext:
+        def __enter__(self):
+            return True
 
-def test_check_market_data_sources_rejects_missing_board_price(monkeypatch):
-    monkeypatch.setattr(
-        run_trading,
-        'get_yahoo_daily_closes',
-        lambda symbol: [100.0] * config.RSI_MINIMUM_CLOSES,
-    )
-    monkeypatch.setattr(run_trading, 'get_current_board', lambda token, symbol: {})
+        def __exit__(self, exc_type, exc_value, traceback):
+            return False
 
-    assert not run_trading.check_market_data_sources('dummy', ['7203'])
+    monkeypatch.setattr(run_trading, 'configure_logging', lambda: None)
+    monkeypatch.setattr(run_trading, 'FilteringResultRepository', FilteringRepository)
+    monkeypatch.setattr(run_trading, 'create_trading_use_case', Bot)
+    monkeypatch.setattr(run_trading, 'get_api_token', lambda: 'dummy')
+    monkeypatch.setattr(run_trading, 'market_workflow_lock', NoOpContext)
+    monkeypatch.setattr(run_trading, 'process_notification', lambda *args, **kwargs: NoOpContext())
+    monkeypatch.setattr(config, 'ALLOW_OVERNIGHT_HOLDING', False)
+    monkeypatch.setattr(config, 'MARKET_LIQUIDATION_HOUR', 15)
+    monkeypatch.setattr(config, 'MARKET_LIQUIDATION_MINUTE', 20)
+
+    run_trading.main(now_provider=lambda: datetime(2026, 9, 4, 15, 20))

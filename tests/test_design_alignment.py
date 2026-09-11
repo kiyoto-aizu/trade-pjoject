@@ -75,14 +75,14 @@ def test_limit_candidates_caps_the_result_at_fifty():
 
 def test_volume_ratio_and_kill_switch():
     assert calculate_volume_surge_ratio(300, 100) == 3
-    assert not check_kill_switch(10, 0, 100_000, config, 1)
+    assert not check_kill_switch(10, 0, 100_000, config)
 
 
 def test_order_amount_limit_applies_only_to_buy_orders():
     assert is_buy_order_amount_allowed(10_000, config, api_soft_limit=1_000_000)
     assert not is_buy_order_amount_allowed(10_001, config, api_soft_limit=1_000_000)
     # 売り注文は保有株の決済であり、金額上限では止めない。
-    assert check_kill_switch(0, 0, 100_000, config, 100_000, api_soft_limit=1_000_000)
+    assert check_kill_switch(0, 0, 100_000, config)
 
 
 def test_buy_quantity_uses_maximum_affordable_order_units():

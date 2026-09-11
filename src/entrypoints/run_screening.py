@@ -11,7 +11,6 @@ from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
 
 from src.config import config
-from src.screening.screening import run as screening_run
 from src.infrastructure.kabu.get_token import get_api_token
 from src.infrastructure.kabu.ranking_repository import RankingRepository
 from src.infrastructure.kabu.regulation_repository import RegulationRepository
@@ -100,7 +99,7 @@ def main() -> None:
             )
             usecase.batch_started = lambda batch, _: register_symbols(token, batch) is not None
             usecase.batch_finished = lambda _, __: unregister_all(token) is not None
-            screening_run(usecase, target_date=args.target_date)
+            usecase.execute(target_date=args.target_date)
 
 
 if __name__ == '__main__':

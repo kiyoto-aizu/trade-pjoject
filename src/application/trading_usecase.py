@@ -183,6 +183,25 @@ class TradingUseCase:
         )
         return {allocation.symbol: allocation.quantity for allocation in allocations}
 
+    def collect_preflight_market_data(self, symbols: list[str]) -> dict[str, dict] | None:
+        """初回の売買判断に必要な確定終値と板価格を取得します。"""
+        market_data = {}
+        for symbol in symbols:
+            closes = (
+                self.market_data_client.get_yahoo_daily_closes(symbol)
+                if self.market_data_client else get_yahoo_daily_closes(symbol)
+            )
+            if not closes or len(closes) < config.RSI_MINIMUM_CLOSES:
+                return None
+            board = (
+                self.board_client.get_current_board(self.token, symbol)
+                if self.board_client else get_current_board(self.token, symbol)
+            )
+            if not board or board.get('current_price') is None:
+                return None
+            market_data[symbol] = {'closes': closes, 'board': board}
+        return market_data
+
     # ================================================================================
     # レポート送信
     # ================================================================================
@@ -437,8 +456,9 @@ class TradingUseCase:
                         1 for entry in self.order_history
                         if entry.timestamp.startswith(now_provider().date().isoformat())
                     )
-                    if not check_kill_switch(daily_orders, daily_pnl, config.OPERATING_CAPITAL, config, 0, api_soft_limit=self.api_soft_limit):
+                    if not check_kill_switch(daily_orders, daily_pnl, config.OPERATING_CAPITAL, config):
                         logger.warning("キルスイッチにより発注を停止しました。")
+                        self.kill_switch_triggered = True
                         kill_switch_triggered = True
                         break
                     if (

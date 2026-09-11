@@ -11,7 +11,6 @@ from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
 
 from src.config import config
-from src.filter_dynamic.filter_dynamic import run as filtering_run
 from src.application.filtering_usecase import FilteringUseCase
 from src.infrastructure.kabu.get_board import get_current_board
 from src.infrastructure.kabu.get_token import get_api_token
@@ -118,7 +117,7 @@ def main() -> None:
                 FilteringResultRepository(root / 'filtering'),
                 notifier,
             )
-            filtering_run(usecase, target_date=args.target_date)
+            usecase.execute(target_date=args.target_date)
 
 
 if __name__ == '__main__':

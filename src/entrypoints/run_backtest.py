@@ -194,7 +194,25 @@ def main() -> None:
         parser.add_argument("--history", type=Path, default=default_history_path, help="銘柄ごとの終値履歴JSONファイル")
         parser.add_argument("--cash", type=float, default=100000.0, help="開始現金")
         parser.add_argument("--qty", type=int, default=100, help="1回の売買数量")
-        parser.add_argument("--fee", type=float, default=0.0, help="売買手数料率 (例: 0.001 = 0.1%%)")
+        parser.add_argument("--fee", type=float, default=config.BACKTEST_FEE_RATE, help="片道手数料率 (例: 0.001 = 0.1%%)")
+        parser.add_argument(
+            "--market-slippage-bps",
+            type=float,
+            default=config.BACKTEST_MARKET_SLIPPAGE_BPS,
+            help="成行の片道スリッページ（bps、買いは加算・売りは減算）",
+        )
+        parser.add_argument(
+            "--execution-delay-bars",
+            type=int,
+            default=config.BACKTEST_EXECUTION_DELAY_BARS,
+            help="シグナルから想定約定までの遅延バー数",
+        )
+        parser.add_argument(
+            "--order-type",
+            choices=("market", "limit"),
+            default=config.BACKTEST_ORDER_TYPE,
+            help="想定注文種別（market: 成行、limit: シグナル価格の指値）",
+        )
         parser.add_argument("--live", action="store_true", help="Yahoo Finance から実データを取得してバックテストを実行")
         parser.add_argument("--days", type=int, default=730, help="Yahoo Finance から取得する日数（既定: 約2年）")
         parser.add_argument("--allow-overnight", action="store_true", help="持ち越しを許可し、当日終値での強制決済を無効にする")
@@ -237,6 +255,9 @@ def main() -> None:
                 starting_cash=args.cash,
                 qty_per_trade=args.qty,
                 fee_rate=args.fee,
+                market_slippage_bps=args.market_slippage_bps,
+                execution_delay_bars=args.execution_delay_bars,
+                order_type=args.order_type,
                 minute_bar_repository=minute_bar_repository,
                 indicator_source=args.indicator_source,
                 close_at_eod=not args.allow_overnight,
@@ -265,6 +286,9 @@ def main() -> None:
                     starting_cash=args.cash,
                     qty_per_trade=args.qty,
                     fee_rate=args.fee,
+                    market_slippage_bps=args.market_slippage_bps,
+                    execution_delay_bars=args.execution_delay_bars,
+                    order_type=args.order_type,
                     minute_bar_repository=minute_bar_repository,
                     indicator_source=args.indicator_source,
                     close_at_eod=not args.allow_overnight,
@@ -276,6 +300,9 @@ def main() -> None:
                     starting_cash=args.cash,
                     qty_per_trade=args.qty,
                     fee_rate=args.fee,
+                    market_slippage_bps=args.market_slippage_bps,
+                    execution_delay_bars=args.execution_delay_bars,
+                    order_type=args.order_type,
                     close_at_eod=not args.allow_overnight,
                 )
 

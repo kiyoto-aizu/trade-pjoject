@@ -19,6 +19,9 @@ def legacy_backtest_signal_parameters(monkeypatch):
     monkeypatch.setattr(config, "RSI_MINIMUM_CLOSES", 5)
     monkeypatch.setattr(config, "RSI_ENTRY_THRESHOLD", 50.0)
     monkeypatch.setattr(config, "RSI_EXIT_THRESHOLD", 50.0)
+    monkeypatch.setattr(config, "BACKTEST_FEE_RATE", 0.0)
+    monkeypatch.setattr(config, "BACKTEST_MARKET_SLIPPAGE_BPS", 0.0)
+    monkeypatch.setattr(config, "BACKTEST_EXECUTION_DELAY_BARS", 0)
 
 
 def test_calculate_rsi_uses_wilder_smoothing():
@@ -303,6 +306,55 @@ def test_simulate_backtest_fees_and_position_state():
     assert result["final_position"] == 0
     assert 10_000.0 < result["cash"] < 10_400.0
     assert result["total_pnl"] < 400.0
+
+
+def test_simulate_backtest_applies_delayed_market_slippage_and_round_trip_fees():
+    history = {"7203": [90.0, 90.0, 90.0, 90.0, 90.0, 92.0, 120.0, 98.0, 96.0]}
+
+    result = simulate_backtest(
+        ["7203"],
+        history,
+        starting_cash=20_000.0,
+        qty_per_trade=100,
+        fee_rate=0.001,
+        market_slippage_bps=5.0,
+        execution_delay_bars=1,
+        close_at_eod=False,
+    )
+
+    trade = result["trade_history"][0]
+    assert trade["buy_price"] == pytest.approx(120.06)
+    assert trade["sell_price"] == pytest.approx(95.952)
+    assert trade["fee"] == pytest.approx(21.6012)
+    assert trade["realized_pnl"] == pytest.approx(-2432.4012)
+    assert result["execution_assumptions"]["execution_delay_bars"] == 1
+
+
+def test_timeseries_backtest_applies_delayed_market_slippage_and_round_trip_fees(tmp_path):
+    repository = MinuteBarRepository(tmp_path)
+    for minute, price in enumerate([90.0, 90.0, 90.0, 90.0, 90.0, 92.0, 120.0, 98.0, 96.0]):
+        repository.append_bar(date(2026, 9, 6), "7203", MinuteBar(
+            time=f"2026-09-06T09:{minute:02d}:00", price=price,
+            cumulative_volume=None, volume=100, source="yahoo",
+        ))
+
+    result = simulate_timeseries_backtest(
+        {"2026-09-06": ["7203"]},
+        {"7203": {"2026-09-06": 96.0}},
+        starting_cash=20_000.0,
+        qty_per_trade=100,
+        fee_rate=0.001,
+        market_slippage_bps=5.0,
+        execution_delay_bars=1,
+        minute_bar_repository=repository,
+        indicator_source="minute",
+        close_at_eod=False,
+    )
+
+    trade = result["trade_history"][0]
+    assert trade["buy_price"] == pytest.approx(120.06)
+    assert trade["sell_price"] == pytest.approx(95.952)
+    assert trade["fee"] == pytest.approx(21.6012)
 
 
 def test_simulate_backtest_reports_summary_metrics():

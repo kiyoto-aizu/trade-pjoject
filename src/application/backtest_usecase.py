@@ -10,6 +10,38 @@ from src.domain.rules import calculate_price_limit, calculate_rsi
 from src.infrastructure.persistence.minute_bar_repository import MinuteBarRepository
 
 
+def _calculate_execution_price(
+    side: OrderSide,
+    signal_price: float,
+    prices: List[float],
+    signal_index: int,
+    execution_delay_bars: int,
+    order_type: str,
+    market_slippage_bps: float,
+) -> tuple[float, float]:
+    """シグナル後の観測価格から、注文種別に応じた想定約定価格を返す。"""
+    delayed_index = min(signal_index + execution_delay_bars, len(prices) - 1)
+    delayed_price = prices[delayed_index]
+    if order_type == "limit":
+        return signal_price, delayed_price
+
+    slippage_rate = market_slippage_bps / 10_000.0
+    execution_price = delayed_price * (1.0 + slippage_rate if side == OrderSide.BUY else 1.0 - slippage_rate)
+    return execution_price, delayed_price
+
+
+def _validate_execution_assumptions(
+    fee_rate: float,
+    market_slippage_bps: float,
+    execution_delay_bars: int,
+    order_type: str,
+) -> None:
+    if fee_rate < 0 or market_slippage_bps < 0 or execution_delay_bars < 0:
+        raise ValueError("手数料率、スリッページ、執行遅延は0以上を指定してください")
+    if order_type not in {"market", "limit"}:
+        raise ValueError("order_type は 'market' または 'limit' を指定してください")
+
+
 def _calculate_metrics(trade_results: List[float], starting_cash: float) -> dict:
     """売買結果から勝率・利益率・ドローダウンを計算する。"""
     if not trade_results:
@@ -43,7 +75,10 @@ def simulate_backtest(
     history_by_symbol: Dict[str, List[float]],
     starting_cash: float = 100_000.0,
     qty_per_trade: int = 100,
-    fee_rate: float = 0.0,
+    fee_rate: float | None = None,
+    market_slippage_bps: float | None = None,
+    execution_delay_bars: int | None = None,
+    order_type: str | None = None,
     close_at_eod: bool = True,
     buy_threshold_ratio: float = 1.0,
     sell_threshold_ratio: float = 1.0,
@@ -60,10 +95,17 @@ def simulate_backtest(
     - 売却時に実現損益と保有期間を計算する
     - 手数料込みで勝率・利益率・ドローダウンを評価する
     """
+    fee_rate = config.BACKTEST_FEE_RATE if fee_rate is None else fee_rate
+    market_slippage_bps = config.BACKTEST_MARKET_SLIPPAGE_BPS if market_slippage_bps is None else market_slippage_bps
+    execution_delay_bars = config.BACKTEST_EXECUTION_DELAY_BARS if execution_delay_bars is None else execution_delay_bars
+    order_type = config.BACKTEST_ORDER_TYPE if order_type is None else order_type
+    _validate_execution_assumptions(fee_rate, market_slippage_bps, execution_delay_bars, order_type)
     # 現金・保有数・平均取得単価を初期化
     cash = float(starting_cash)
     holdings: dict[str, int] = {symbol: 0 for symbol in symbols}
     avg_cost: dict[str, float] = {symbol: 0.0 for symbol in symbols}
+    entry_prices: dict[str, float] = {symbol: 0.0 for symbol in symbols}
+    entry_fees: dict[str, float] = {symbol: 0.0 for symbol in symbols}
     buy_index: dict[str, int] = {symbol: -1 for symbol in symbols}
     total_trades = 0
     signals: list[dict] = []
@@ -80,17 +122,24 @@ def simulate_backtest(
             # デイトレードでは、翌日の終値を迎える前に保有を閉じる
             if close_at_eod and holdings[symbol] > 0 and index > buy_index[symbol]:
                 qty = holdings[symbol]
-                fee = price * qty * fee_rate
-                proceeds = price * qty
-                realized_pnl = (price - avg_cost[symbol]) * qty - fee
+                execution_price, delayed_price = _calculate_execution_price(
+                    OrderSide.SELL, price, closes, index, execution_delay_bars, order_type, market_slippage_bps,
+                )
+                fee = execution_price * qty * fee_rate
+                proceeds = execution_price * qty
+                realized_pnl = (execution_price - avg_cost[symbol]) * qty - fee
                 cash += proceeds - fee
                 trade_results.append(realized_pnl)
                 trade_history.append({
                     "symbol": symbol,
-                    "buy_price": avg_cost[symbol],
-                    "sell_price": price,
+                    "buy_price": entry_prices[symbol],
+                    "sell_price": execution_price,
+                    "signal_price": price,
+                    "delayed_price": delayed_price,
+                    "entry_fee": entry_fees[symbol],
+                    "exit_fee": fee,
                     "qty": qty,
-                    "fee": fee,
+                    "fee": entry_fees[symbol] + fee,
                     "realized_pnl": round(realized_pnl, 2),
                     "entry_day": buy_index[symbol],
                     "exit_day": index,
@@ -99,12 +148,16 @@ def simulate_backtest(
                 symbols_visited.add(symbol)
                 holdings[symbol] = 0
                 avg_cost[symbol] = 0.0
+                entry_prices[symbol] = 0.0
+                entry_fees[symbol] = 0.0
                 buy_index[symbol] = -1
                 total_trades += 1
                 signals.append({
                     "symbol": symbol,
                     "side": OrderSide.SELL.value,
-                    "price": price,
+                    "price": execution_price,
+                    "signal_price": price,
+                    "delayed_price": delayed_price,
                     "qty": qty,
                     "fee": fee,
                     "realized_pnl": round(realized_pnl, 2),
@@ -115,17 +168,24 @@ def simulate_backtest(
                 stop_limit = avg_cost[symbol] * (1.0 - stop_loss_ratio)
                 if price <= stop_limit:
                     qty = holdings[symbol]
-                    fee = price * qty * fee_rate
-                    proceeds = price * qty
-                    realized_pnl = (price - avg_cost[symbol]) * qty - fee
+                    execution_price, delayed_price = _calculate_execution_price(
+                        OrderSide.SELL, price, closes, index, execution_delay_bars, order_type, market_slippage_bps,
+                    )
+                    fee = execution_price * qty * fee_rate
+                    proceeds = execution_price * qty
+                    realized_pnl = (execution_price - avg_cost[symbol]) * qty - fee
                     cash += proceeds - fee
                     trade_results.append(realized_pnl)
                     trade_history.append({
                         "symbol": symbol,
-                        "buy_price": avg_cost[symbol],
-                        "sell_price": price,
+                        "buy_price": entry_prices[symbol],
+                        "sell_price": execution_price,
+                        "signal_price": price,
+                        "delayed_price": delayed_price,
+                        "entry_fee": entry_fees[symbol],
+                        "exit_fee": fee,
                         "qty": qty,
-                        "fee": fee,
+                        "fee": entry_fees[symbol] + fee,
                         "realized_pnl": round(realized_pnl, 2),
                         "entry_day": buy_index[symbol],
                         "exit_day": index,
@@ -134,12 +194,16 @@ def simulate_backtest(
                     symbols_visited.add(symbol)
                     holdings[symbol] = 0
                     avg_cost[symbol] = 0.0
+                    entry_prices[symbol] = 0.0
+                    entry_fees[symbol] = 0.0
                     buy_index[symbol] = -1
                     total_trades += 1
                     signals.append({
                         "symbol": symbol,
                         "side": OrderSide.SELL.value,
-                        "price": price,
+                        "price": execution_price,
+                        "signal_price": price,
+                        "delayed_price": delayed_price,
                         "qty": qty,
                         "fee": fee,
                         "realized_pnl": round(realized_pnl, 2),
@@ -186,35 +250,46 @@ def simulate_backtest(
             if signal is None:
                 continue
 
-            if signal.side == OrderSide.BUY and holdings[symbol] == 0 and cash >= price * qty_per_trade:
+            execution_price, delayed_price = _calculate_execution_price(
+                signal.side, price, closes, index, execution_delay_bars, order_type, market_slippage_bps,
+            )
+            if signal.side == OrderSide.BUY and holdings[symbol] == 0 and cash >= execution_price * qty_per_trade * (1.0 + fee_rate):
                 qty = qty_per_trade
-                fee = price * qty * fee_rate
-                cash -= (price * qty) + fee
+                fee = execution_price * qty * fee_rate
+                cash -= (execution_price * qty) + fee
                 holdings[symbol] = qty
-                avg_cost[symbol] = price
+                avg_cost[symbol] = execution_price + fee / qty
+                entry_prices[symbol] = execution_price
+                entry_fees[symbol] = fee
                 buy_index[symbol] = index
                 total_trades += 1
                 signals.append({
                     "symbol": symbol,
                     "side": signal.side.value,
-                    "price": price,
+                    "price": execution_price,
+                    "signal_price": price,
+                    "delayed_price": delayed_price,
                     "qty": qty,
                     "fee": fee,
                 })
             elif signal.side == OrderSide.SELL and holdings[symbol] > 0:
                 qty = holdings[symbol]
-                fee = price * qty * fee_rate
-                proceeds = price * qty
-                realized_pnl = (price - avg_cost[symbol]) * qty - fee
+                fee = execution_price * qty * fee_rate
+                proceeds = execution_price * qty
+                realized_pnl = (execution_price - avg_cost[symbol]) * qty - fee
                 cash += proceeds - fee
                 trade_results.append(realized_pnl)
                 holding_days = max(0, index - buy_index[symbol])
                 trade_history.append({
                     "symbol": symbol,
-                    "buy_price": avg_cost[symbol],
-                    "sell_price": price,
+                    "buy_price": entry_prices[symbol],
+                    "sell_price": execution_price,
+                    "signal_price": price,
+                    "delayed_price": delayed_price,
+                    "entry_fee": entry_fees[symbol],
+                    "exit_fee": fee,
                     "qty": qty,
-                    "fee": fee,
+                    "fee": entry_fees[symbol] + fee,
                     "realized_pnl": round(realized_pnl, 2),
                     "entry_day": buy_index[symbol],
                     "exit_day": index,
@@ -223,12 +298,16 @@ def simulate_backtest(
                 symbols_visited.add(symbol)
                 holdings[symbol] = 0
                 avg_cost[symbol] = 0.0
+                entry_prices[symbol] = 0.0
+                entry_fees[symbol] = 0.0
                 buy_index[symbol] = -1
                 total_trades += 1
                 signals.append({
                     "symbol": symbol,
                     "side": signal.side.value,
-                    "price": price,
+                    "price": execution_price,
+                    "signal_price": price,
+                    "delayed_price": delayed_price,
                     "qty": qty,
                     "fee": fee,
                     "realized_pnl": round(realized_pnl, 2),
@@ -309,6 +388,12 @@ def simulate_backtest(
         "summary_by_symbol": summary_by_symbol,
         "daily_summary": daily_summary,
         "holding_bucket_summary": holding_bucket_summary,
+        "execution_assumptions": {
+            "fee_rate": fee_rate,
+            "order_type": order_type,
+            "market_slippage_bps": market_slippage_bps,
+            "execution_delay_bars": execution_delay_bars,
+        },
         # 日本語で読みやすくした主要指標
         "現金残高": round(cash, 2),
         "最終保有数": final_position,
@@ -330,7 +415,10 @@ def simulate_timeseries_backtest(
     dated_history_by_symbol: Dict[str, Dict[str, float]],
     starting_cash: float = 100_000.0,
     qty_per_trade: int = 100,
-    fee_rate: float = 0.0,
+    fee_rate: float | None = None,
+    market_slippage_bps: float | None = None,
+    execution_delay_bars: int | None = None,
+    order_type: str | None = None,
     buy_threshold_ratio: float = 1.0,
     sell_threshold_ratio: float = 1.0,
     noise_band_ratio: float = 0.0,
@@ -344,9 +432,16 @@ def simulate_timeseries_backtest(
     if indicator_source not in {"daily", "minute"}:
         raise ValueError("indicator_source は 'daily' または 'minute' を指定してください")
 
+    fee_rate = config.BACKTEST_FEE_RATE if fee_rate is None else fee_rate
+    market_slippage_bps = config.BACKTEST_MARKET_SLIPPAGE_BPS if market_slippage_bps is None else market_slippage_bps
+    execution_delay_bars = config.BACKTEST_EXECUTION_DELAY_BARS if execution_delay_bars is None else execution_delay_bars
+    order_type = config.BACKTEST_ORDER_TYPE if order_type is None else order_type
+    _validate_execution_assumptions(fee_rate, market_slippage_bps, execution_delay_bars, order_type)
     cash = float(starting_cash)
     holdings: dict[str, int] = {}
     avg_cost: dict[str, float] = {}
+    entry_prices: dict[str, float] = {}
+    entry_fees: dict[str, float] = {}
     buy_dates: dict[str, str] = {}
     buy_times: dict[str, str] = {}
     trade_results: list[float] = []
@@ -371,18 +466,31 @@ def simulate_timeseries_backtest(
         qty = holdings.get(symbol, 0)
         if qty <= 0:
             return
-        fee = price * qty * fee_rate
-        realized_pnl = (price - avg_cost[symbol]) * qty - fee
-        cash += price * qty - fee
+        execution_price, delayed_price = _calculate_execution_price(
+            OrderSide.SELL,
+            price,
+            prices_by_symbol[symbol],
+            current_bar_indices[symbol],
+            execution_delay_bars,
+            order_type,
+            market_slippage_bps,
+        )
+        exit_fee = execution_price * qty * fee_rate
+        realized_pnl = (execution_price - avg_cost[symbol]) * qty - exit_fee
+        cash += execution_price * qty - exit_fee
         trade_results.append(realized_pnl)
         entry_date = buy_dates[symbol]
         holding_days = max(0, (date.fromisoformat(date_text) - date.fromisoformat(entry_date)).days)
         trade_history.append({
             "symbol": symbol,
-            "buy_price": avg_cost[symbol],
-            "sell_price": price,
+            "buy_price": entry_prices[symbol],
+            "sell_price": execution_price,
+            "signal_price": price,
+            "delayed_price": delayed_price,
             "qty": qty,
-            "fee": fee,
+            "entry_fee": entry_fees[symbol],
+            "exit_fee": exit_fee,
+            "fee": entry_fees[symbol] + exit_fee,
             "realized_pnl": round(realized_pnl, 2),
             "entry_date": entry_date,
             "exit_date": date_text,
@@ -395,9 +503,11 @@ def simulate_timeseries_backtest(
         signal = {
             "symbol": symbol,
             "side": OrderSide.SELL.value,
-            "price": price,
+            "price": execution_price,
+            "signal_price": price,
+            "delayed_price": delayed_price,
             "qty": qty,
-            "fee": fee,
+            "fee": exit_fee,
             "realized_pnl": round(realized_pnl, 2),
         }
         if time_text:
@@ -407,6 +517,8 @@ def simulate_timeseries_backtest(
         signals.append(signal)
         holdings[symbol] = 0
         avg_cost[symbol] = 0.0
+        entry_prices.pop(symbol, None)
+        entry_fees.pop(symbol, None)
         buy_dates.pop(symbol, None)
         buy_times.pop(symbol, None)
 
@@ -452,6 +564,8 @@ def simulate_timeseries_backtest(
     for date_text in sorted(daily_symbols):
         active_symbols = set(daily_symbols[date_text])
         ticks_by_time: dict[str, list[tuple[str, float, str | None]]] = {}
+        prices_by_symbol: dict[str, list[float]] = {}
+        current_bar_indices: dict[str, int] = {}
         for symbol in sorted(all_symbols):
             bars = (
                 minute_bar_repository.load_bars(date.fromisoformat(date_text), symbol)
@@ -459,11 +573,13 @@ def simulate_timeseries_backtest(
                 else []
             )
             if bars:
+                prices_by_symbol[symbol] = [bar.price for bar in bars]
                 for bar in bars:
                     ticks_by_time.setdefault(bar.time, []).append((symbol, bar.price, bar.time))
             else:
                 daily_close = dated_history_by_symbol.get(symbol, {}).get(date_text)
                 if daily_close is not None:
+                    prices_by_symbol[symbol] = [daily_close]
                     ticks_by_time.setdefault(f"{date_text}T15:30:00", []).append((symbol, daily_close, None))
 
         closing_prices: dict[str, tuple[float, str | None]] = {}
@@ -471,6 +587,7 @@ def simulate_timeseries_backtest(
             signals_at_time: list[tuple[str, float, str | None, TradeSignal]] = []
             stopped_out_symbols: set[str] = set()
             for symbol, price, time_text in sorted(ticks):
+                current_bar_indices[symbol] = current_bar_indices.get(symbol, -1) + 1
                 last_prices[symbol] = price
                 if holdings.get(symbol, 0) > 0 and stop_loss_ratio > 0:
                     if price <= avg_cost[symbol] * (1.0 - stop_loss_ratio):
@@ -486,17 +603,32 @@ def simulate_timeseries_backtest(
                     close_position(symbol, date_text, price, time_text)
             for symbol, price, time_text, signal in signals_at_time:
                 if signal.side == OrderSide.BUY and holdings.get(symbol, 0) == 0 and cash >= price * qty_per_trade:
-                    fee = price * qty_per_trade * fee_rate
-                    cash -= price * qty_per_trade + fee
+                    execution_price, delayed_price = _calculate_execution_price(
+                        OrderSide.BUY,
+                        price,
+                        prices_by_symbol[symbol],
+                        current_bar_indices[symbol],
+                        execution_delay_bars,
+                        order_type,
+                        market_slippage_bps,
+                    )
+                    fee = execution_price * qty_per_trade * fee_rate
+                    if cash < execution_price * qty_per_trade + fee:
+                        continue
+                    cash -= execution_price * qty_per_trade + fee
                     holdings[symbol] = qty_per_trade
-                    avg_cost[symbol] = price
+                    avg_cost[symbol] = execution_price + fee / qty_per_trade
+                    entry_prices[symbol] = execution_price
+                    entry_fees[symbol] = fee
                     buy_dates[symbol] = date_text
                     if time_text:
                         buy_times[symbol] = time_text
                     signals.append({
                         "symbol": symbol,
                         "side": OrderSide.BUY.value,
-                        "price": price,
+                        "price": execution_price,
+                        "signal_price": price,
+                        "delayed_price": delayed_price,
                         "qty": qty_per_trade,
                         "fee": fee,
                         "date": date_text,
@@ -540,4 +672,10 @@ def simulate_timeseries_backtest(
         "minute_bar_mode": minute_bar_repository is not None,
         "minute_signal_evaluations": minute_signal_evaluations,
         "daily_close_signal_evaluations": daily_close_signal_evaluations,
+        "execution_assumptions": {
+            "fee_rate": fee_rate,
+            "order_type": order_type,
+            "market_slippage_bps": market_slippage_bps,
+            "execution_delay_bars": execution_delay_bars,
+        },
     }

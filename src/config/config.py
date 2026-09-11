@@ -156,6 +156,20 @@ RSI_ENTRY_THRESHOLD = float(os.getenv("RSI_ENTRY_THRESHOLD", os.getenv("RSI_BUY_
 RSI_EXIT_THRESHOLD = float(os.getenv("RSI_EXIT_THRESHOLD", os.getenv("RSI_SELL_THRESHOLD", "45")))
 RSI_MINIMUM_CLOSES = int(os.getenv("RSI_MINIMUM_CLOSES", "30"))
 
+# バックテストの約定コスト。各値は証券会社の料金プラン・運用実績に合わせて環境変数で調整する。
+BACKTEST_FEE_RATE = float(os.getenv("BACKTEST_FEE_RATE", "0.00055"))
+BACKTEST_MARKET_SLIPPAGE_BPS = float(os.getenv("BACKTEST_MARKET_SLIPPAGE_BPS", "5"))
+BACKTEST_EXECUTION_DELAY_BARS = int(os.getenv("BACKTEST_EXECUTION_DELAY_BARS", "1"))
+BACKTEST_ORDER_TYPE = os.getenv("BACKTEST_ORDER_TYPE", "market").strip().lower()
+if BACKTEST_FEE_RATE < 0:
+    raise ValueError("BACKTEST_FEE_RATE は0以上を指定してください。")
+if BACKTEST_MARKET_SLIPPAGE_BPS < 0:
+    raise ValueError("BACKTEST_MARKET_SLIPPAGE_BPS は0以上を指定してください。")
+if BACKTEST_EXECUTION_DELAY_BARS < 0:
+    raise ValueError("BACKTEST_EXECUTION_DELAY_BARS は0以上を指定してください。")
+if BACKTEST_ORDER_TYPE not in {"market", "limit"}:
+    raise ValueError("BACKTEST_ORDER_TYPE は market または limit を指定してください。")
+
 # ================================================================================
 # 注文履歴・市場設定
 # ================================================================================

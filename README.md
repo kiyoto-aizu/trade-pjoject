@@ -287,6 +287,8 @@ Windowsの計画実行では、スクリーニング・フィルタリングと�
 
 結果は最新結果として `data/backtest/latest_timeseries.json` に保存され、同じ内容が `data/backtest/latest_timeseries_YYYYMMDD_HHMMSS_ffffff.json` の形式で履歴保存されます。LINE設定がある場合は、対象期間・総損益・勝率・取引数・最大ドローダウン・最終保有数のサマリーと、LLMによる参考評価（有効時）も通知します。LLM評価は投資判断やロジック変更の指示ではなく、統計の解釈・不確実性・追加確認事項を扱います。詳細な取引履歴はJSONで確認できます。毎週月曜16:30に自動実行するタスクは、初回のみ次で登録します。
 
+バックテストは既定で片道手数料0.055%、成行スリッページ5bps、1バーの執行遅延を反映します。成行は遅延後の観測価格に対し、買いは上振れ・売りは下振れで約定させます。指値はkabuステーションAPIの `FrontOrderType=20` に対応する想定として、シグナル時価格で約定し成行スリッページは加えません。分足がない日足再生では遅延は次の終値、分足再生では次の分足価格を使います。手数料プランと実運用の約定履歴に合わせる場合は、`BACKTEST_FEE_RATE`、`BACKTEST_MARKET_SLIPPAGE_BPS`、`BACKTEST_EXECUTION_DELAY_BARS`、`BACKTEST_ORDER_TYPE` を環境変数で上書きするか、`--fee`、`--market-slippage-bps`、`--execution-delay-bars`、`--order-type` を指定します。
+
 ```powershell
 .\scripts\register_backtest_task.ps1
 ```

@@ -10,6 +10,7 @@ from pathlib import Path
 import requests
 
 from src.application.backtest_usecase import simulate_backtest, simulate_timeseries_backtest
+from src.config import config
 from src.infrastructure.analysis.daily_analyzer import create_daily_analyzer
 from src.infrastructure.notification.line_notify import process_notification, send_line_notify
 from src.infrastructure.persistence.minute_bar_repository import MinuteBarRepository

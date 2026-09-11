@@ -184,6 +184,10 @@ def test_trading_use_case_places_and_records_buy_order_without_live_api(monkeypa
         def get_positions(self, token):
             return []
 
+    class NoOpAnalyzer:
+        def analyze(self, summary):
+            return None
+
     class OrderSender:
         def place_market_order(self, token, symbol, side):
             calls.append((token, symbol, side))
@@ -353,6 +357,10 @@ def test_trading_use_case_records_kill_switch_in_daily_report(monkeypatch, tmp_p
         def get_positions(self, token):
             return []
 
+    class NoOpAnalyzer:
+        def analyze(self, summary):
+            return None
+
     monkeypatch.setattr(config, 'IS_DEMO', True)
     monkeypatch.setattr(config, 'API_SOFT_LIMIT', 100_000.0)
     monkeypatch.setattr('src.application.trading_usecase.check_kill_switch', lambda *args: False)
@@ -364,6 +372,7 @@ def test_trading_use_case_records_kill_switch_in_daily_report(monkeypatch, tmp_p
         wallet_client=WalletClient(),
         positions_client=PositionsClient(),
         notifier=messages.append,
+        daily_analyzer=NoOpAnalyzer(),
         daily_report_directory=tmp_path / 'reports',
     )
 
@@ -373,7 +382,7 @@ def test_trading_use_case_records_kill_switch_in_daily_report(monkeypatch, tmp_p
         sleep=lambda seconds: None,
     )
 
-    report = json.loads((tmp_path / 'reports' / '2026-09-11.json').read_text(encoding='utf-8'))
+    report = json.loads((tmp_path / 'reports' / f'{datetime.now().date().isoformat()}.json').read_text(encoding='utf-8'))
     assert use_case.kill_switch_triggered is True
     assert report['kill_switch_triggered'] is True
     assert 'キルスイッチ: 発動' in messages[0]

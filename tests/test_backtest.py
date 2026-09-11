@@ -100,6 +100,24 @@ def test_backtest_analyzer_uses_backtest_specific_review_prompt(monkeypatch):
     assert "バックテスト集計" in captured["payload"]["messages"][1]["content"]
 
 
+def test_openai_analyzer_daily_and_monthly_success(monkeypatch):
+    class DummyResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"choices": [{"message": {"content": "参考評価です。"}}]}
+
+    monkeypatch.setattr(
+        "src.infrastructure.analysis.daily_analyzer.requests.post",
+        lambda *args, **kwargs: DummyResponse(),
+    )
+    analyzer = OpenAIDailyAnalyzer("key", "model", "https://example.test")
+
+    assert analyzer.analyze({"order_count": 1}) == "参考評価です。"
+    assert analyzer.analyze_monthly({"months": 1}) == "参考評価です。"
+
+
 def test_build_monthly_summary_aggregates_daily_reports_and_backtests(tmp_path):
     reports = tmp_path / "reports"
     backtests = tmp_path / "backtests"

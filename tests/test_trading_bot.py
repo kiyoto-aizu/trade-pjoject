@@ -18,8 +18,8 @@ def set_env(monkeypatch):
     monkeypatch.setenv('IS_DEMO', 'true')
     monkeypatch.setattr(config, "RSI_PERIOD", 2)
     monkeypatch.setattr(config, "RSI_MINIMUM_CLOSES", 5)
-    monkeypatch.setattr(config, "RSI_BUY_THRESHOLD", 50.0)
-    monkeypatch.setattr(config, "RSI_SELL_THRESHOLD", 0.0)
+    monkeypatch.setattr(config, "RSI_ENTRY_THRESHOLD", 50.0)
+    monkeypatch.setattr(config, "RSI_EXIT_THRESHOLD", 50.0)
     return monkeypatch
 
 
@@ -33,6 +33,18 @@ def test_is_market_closed_boundary():
     assert not is_market_closed(time(15, 29), 15, 30)
     assert is_market_closed(time(15, 30), 15, 30)
     assert is_market_closed(time(16, 0), 15, 30)
+
+
+def test_trade_signal_follows_trend_and_exits_when_it_weakens():
+    limit = PriceLimit(buy=99.0, sell=101.0)
+
+    entry = TradeSignal.evaluate('7203', 102.0, limit, 60.0, 55.0, 45.0)
+    exit_signal = TradeSignal.evaluate('7203', 98.0, limit, 40.0, 55.0, 45.0)
+
+    assert entry is not None
+    assert entry.side == config.OrderSide.BUY
+    assert exit_signal is not None
+    assert exit_signal.side == config.OrderSide.SELL
 
 
 def test_order_history_load_corrupt(tmp_path):
@@ -152,11 +164,11 @@ def test_trading_use_case_places_and_records_buy_order_without_live_api(monkeypa
 
     class MarketDataClient:
         def get_yahoo_daily_closes(self, symbol):
-            return [100.0] * 5
+            return [90.0] * 5
 
     class BoardClient:
         def get_current_board(self, token, symbol):
-            return {'current_price': 90.0}
+            return {'current_price': 92.0}
 
     class WalletClient:
         def get_wallet_cash(self, token):
@@ -207,10 +219,10 @@ def test_trading_use_case_does_not_record_rejected_order(monkeypatch, tmp_path):
     order_calls = []
     current_times = iter([datetime(2026, 9, 4, 10, 0), datetime(2026, 9, 4, 15, 30)])
 
-    monkeypatch.setattr('src.application.trading_usecase.get_yahoo_daily_closes', lambda symbol: [100.0] * 5)
+    monkeypatch.setattr('src.application.trading_usecase.get_yahoo_daily_closes', lambda symbol: [90.0] * 5)
     monkeypatch.setattr(
         'src.application.trading_usecase.get_current_board',
-        lambda token, symbol: {'current_price': 90.0},
+        lambda token, symbol: {'current_price': 92.0},
     )
     monkeypatch.setattr(
         'src.application.trading_usecase.get_wallet_cash',
@@ -251,11 +263,11 @@ def test_trading_use_case_warns_once_for_repeated_sell_signal_without_holdings(m
 
     class MarketDataClient:
         def get_yahoo_daily_closes(self, symbol):
-            return [100.0] * 5
+            return [90.0] * 5
 
     class BoardClient:
         def get_current_board(self, token, symbol):
-            return {'current_price': 101.0}
+            return {'current_price': 89.0}
 
     class WalletClient:
         def get_wallet_cash(self, token):

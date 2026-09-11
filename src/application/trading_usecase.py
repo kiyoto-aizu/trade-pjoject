@@ -336,18 +336,18 @@ class TradingUseCase:
                         board['current_price'],
                         limit,
                         rsi,
-                        config.RSI_BUY_THRESHOLD,
-                        config.RSI_SELL_THRESHOLD,
+                        config.RSI_ENTRY_THRESHOLD,
+                        config.RSI_EXIT_THRESHOLD,
                     )
                     logger.info(
-                        "売買判定: 銘柄=%s | 現在値=%.1f | 買い基準=%.1f | 売り基準=%.1f | RSI=%.1f | 買いRSI基準=%.1f | 売りRSI基準=%.1f | 判定=%s",
+                        "売買判定: 銘柄=%s | 現在値=%.1f | エントリー基準=%.1f | 決済基準=%.1f | RSI=%.1f | エントリーRSI基準=%.1f | 決済RSI基準=%.1f | 判定=%s",
                         symbol,
                         board['current_price'],
                         limit.buy,
                         limit.sell,
                         rsi,
-                        config.RSI_BUY_THRESHOLD,
-                        config.RSI_SELL_THRESHOLD,
+                        config.RSI_ENTRY_THRESHOLD,
+                        config.RSI_EXIT_THRESHOLD,
                         signal.side.name if signal else "なし",
                     )
                     if not signal:

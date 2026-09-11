@@ -129,11 +129,11 @@ class TradeSignal:
         current_price: float,
         limit: PriceLimit,
         rsi: Optional[float],
-        rsi_buy_threshold: float = 30.0,
-        rsi_sell_threshold: float = 70.0,
+        rsi_entry_threshold: float = 55.0,
+        rsi_exit_threshold: float = 45.0,
     ) -> Optional['TradeSignal']:
         """
-        現在価格と基準値を比較して、取引シグナルを生成します。
+        上昇トレンドへの追随と、その失速時の決済シグナルを生成します。
         
         Args:
             symbol: 株式シンボル
@@ -145,9 +145,9 @@ class TradeSignal:
         """
         if rsi is None:
             return None
-        if current_price <= limit.buy and rsi <= rsi_buy_threshold:
+        if current_price >= limit.sell and rsi >= rsi_entry_threshold:
             return cls(symbol=symbol, side=OrderSide.BUY, price=current_price, qty=0)
-        if current_price >= limit.sell and rsi >= rsi_sell_threshold:
+        if current_price <= limit.buy and rsi <= rsi_exit_threshold:
             return cls(symbol=symbol, side=OrderSide.SELL, price=current_price, qty=0)
         return None
 

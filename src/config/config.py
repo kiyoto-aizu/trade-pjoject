@@ -145,10 +145,10 @@ SCREENING_EXCHANGE_DIVISIONS = [
 # Kabu Station APIの登録銘柄上限に合わせたスクリーニング処理単位
 SCREENING_BATCH_SIZE = 50
 
-# 売買シグナルの行き過ぎ判定（Wilder方式のRSI）
+# 売買シグナルのトレンド確認（Wilder方式のRSI）
 RSI_PERIOD = int(os.getenv("RSI_PERIOD", "14"))
-RSI_BUY_THRESHOLD = float(os.getenv("RSI_BUY_THRESHOLD", "30"))
-RSI_SELL_THRESHOLD = float(os.getenv("RSI_SELL_THRESHOLD", "70"))
+RSI_ENTRY_THRESHOLD = float(os.getenv("RSI_ENTRY_THRESHOLD", os.getenv("RSI_BUY_THRESHOLD", "55")))
+RSI_EXIT_THRESHOLD = float(os.getenv("RSI_EXIT_THRESHOLD", os.getenv("RSI_SELL_THRESHOLD", "45")))
 RSI_MINIMUM_CLOSES = int(os.getenv("RSI_MINIMUM_CLOSES", "30"))
 
 # ================================================================================

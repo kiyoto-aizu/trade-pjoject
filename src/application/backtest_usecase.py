@@ -176,8 +176,8 @@ def simulate_backtest(
                 price,
                 adjusted_limit,
                 rsi,
-                config.RSI_BUY_THRESHOLD,
-                config.RSI_SELL_THRESHOLD,
+                config.RSI_ENTRY_THRESHOLD,
+                config.RSI_EXIT_THRESHOLD,
             )
             if signal is None:
                 signal = None
@@ -356,6 +356,8 @@ def simulate_timeseries_backtest(
     }
     minute_prices_by_symbol: dict[str, list[float]] = {}
     last_prices: dict[str, float] = {}
+    minute_signal_evaluations = 0
+    daily_close_signal_evaluations = 0
 
     def close_position(
         symbol: str,
@@ -407,78 +409,99 @@ def simulate_timeseries_backtest(
         buy_dates.pop(symbol, None)
         buy_times.pop(symbol, None)
 
+    def evaluate_signal(symbol: str, date_text: str, time_text: str | None, price: float) -> TradeSignal | None:
+        nonlocal minute_signal_evaluations, daily_close_signal_evaluations
+        if time_text is None:
+            daily_close_signal_evaluations += 1
+        else:
+            minute_signal_evaluations += 1
+        if indicator_source == "minute" and time_text is not None:
+            previous_prices = minute_prices_by_symbol.get(symbol, [])[-config.RSI_MINIMUM_CLOSES:]
+        else:
+            previous_prices = [
+                price_value
+                for history_date, price_value in sorted(dated_history_by_symbol.get(symbol, {}).items())
+                if history_date < date_text
+            ][-config.RSI_MINIMUM_CLOSES:]
+        if len(previous_prices) < config.RSI_MINIMUM_CLOSES:
+            return None
+        limit = calculate_price_limit(previous_prices)
+        rsi = calculate_rsi(previous_prices, config.RSI_PERIOD, config.RSI_MINIMUM_CLOSES)
+        if limit is None or rsi is None:
+            return None
+
+        base_mean = (limit.buy + limit.sell) / 2.0
+        within_noise_band = noise_band_ratio > 0 and abs(price - base_mean) / base_mean < noise_band_ratio
+        weak_trend = trend_strength_ratio > 0 and abs(price - base_mean) / base_mean < trend_strength_ratio
+        if within_noise_band or weak_trend:
+            return None
+        adjusted_limit = type(limit)(
+            buy=limit.buy * buy_threshold_ratio,
+            sell=limit.sell * sell_threshold_ratio,
+        )
+        return TradeSignal.evaluate(
+            symbol,
+            price,
+            adjusted_limit,
+            rsi,
+            config.RSI_ENTRY_THRESHOLD,
+            config.RSI_EXIT_THRESHOLD,
+        )
+
     for date_text in sorted(daily_symbols):
         active_symbols = set(daily_symbols[date_text])
-
+        ticks_by_time: dict[str, list[tuple[str, float, str | None]]] = {}
         for symbol in sorted(all_symbols):
             bars = (
                 minute_bar_repository.load_bars(date.fromisoformat(date_text), symbol)
                 if minute_bar_repository is not None
                 else []
             )
-            price_ticks = [(bar.time, bar.price) for bar in bars]
-            if not price_ticks:
+            if bars:
+                for bar in bars:
+                    ticks_by_time.setdefault(bar.time, []).append((symbol, bar.price, bar.time))
+            else:
                 daily_close = dated_history_by_symbol.get(symbol, {}).get(date_text)
-                price_ticks = [(None, daily_close)] if daily_close is not None else []
+                if daily_close is not None:
+                    ticks_by_time.setdefault(f"{date_text}T15:30:00", []).append((symbol, daily_close, None))
 
-            for time_text, price in price_ticks:
+        for _, ticks in sorted(ticks_by_time.items()):
+            signals_at_time: list[tuple[str, float, str | None, TradeSignal]] = []
+            stopped_out_symbols: set[str] = set()
+            for symbol, price, time_text in sorted(ticks):
                 last_prices[symbol] = price
-                stopped_out = False
                 if holdings.get(symbol, 0) > 0 and stop_loss_ratio > 0:
                     if price <= avg_cost[symbol] * (1.0 - stop_loss_ratio):
                         close_position(symbol, date_text, price, time_text, "stop_loss")
-                        stopped_out = True
+                        stopped_out_symbols.add(symbol)
+                if symbol in active_symbols and symbol not in stopped_out_symbols:
+                    signal = evaluate_signal(symbol, date_text, time_text, price)
+                    if signal is not None:
+                        signals_at_time.append((symbol, price, time_text, signal))
 
-                if symbol in active_symbols and not stopped_out:
-                    if indicator_source == "minute" and time_text is not None:
-                        previous_prices = minute_prices_by_symbol.get(symbol, [])[-config.RSI_MINIMUM_CLOSES:]
-                    else:
-                        previous_prices = [
-                            price_value
-                            for history_date, price_value in sorted(dated_history_by_symbol.get(symbol, {}).items())
-                            if history_date < date_text
-                        ][-config.RSI_MINIMUM_CLOSES:]
-                    if len(previous_prices) >= config.RSI_MINIMUM_CLOSES:
-                        limit = calculate_price_limit(previous_prices)
-                        rsi = calculate_rsi(previous_prices, config.RSI_PERIOD, config.RSI_MINIMUM_CLOSES)
-                        if limit is not None and rsi is not None:
-                            base_mean = (limit.buy + limit.sell) / 2.0
-                            within_noise_band = noise_band_ratio > 0 and abs(price - base_mean) / base_mean < noise_band_ratio
-                            weak_trend = trend_strength_ratio > 0 and abs(price - base_mean) / base_mean < trend_strength_ratio
-                            if not within_noise_band and not weak_trend:
-                                adjusted_limit = type(limit)(
-                                    buy=limit.buy * buy_threshold_ratio,
-                                    sell=limit.sell * sell_threshold_ratio,
-                                )
-                                signal = TradeSignal.evaluate(
-                                    symbol,
-                                    price,
-                                    adjusted_limit,
-                                    rsi,
-                                    config.RSI_BUY_THRESHOLD,
-                                    config.RSI_SELL_THRESHOLD,
-                                )
-                                if signal is not None and signal.side == OrderSide.BUY:
-                                    if holdings.get(symbol, 0) == 0 and cash >= price * qty_per_trade:
-                                        fee = price * qty_per_trade * fee_rate
-                                        cash -= price * qty_per_trade + fee
-                                        holdings[symbol] = qty_per_trade
-                                        avg_cost[symbol] = price
-                                        buy_dates[symbol] = date_text
-                                        if time_text:
-                                            buy_times[symbol] = time_text
-                                        signals.append({
-                                            "symbol": symbol,
-                                            "side": OrderSide.BUY.value,
-                                            "price": price,
-                                            "qty": qty_per_trade,
-                                            "fee": fee,
-                                            "date": date_text,
-                                            **({"time": time_text} if time_text else {}),
-                                        })
-                                elif signal is not None and signal.side == OrderSide.SELL and holdings.get(symbol, 0) > 0:
-                                    close_position(symbol, date_text, price, time_text)
+            for symbol, price, time_text, signal in signals_at_time:
+                if signal.side == OrderSide.SELL and holdings.get(symbol, 0) > 0:
+                    close_position(symbol, date_text, price, time_text)
+            for symbol, price, time_text, signal in signals_at_time:
+                if signal.side == OrderSide.BUY and holdings.get(symbol, 0) == 0 and cash >= price * qty_per_trade:
+                    fee = price * qty_per_trade * fee_rate
+                    cash -= price * qty_per_trade + fee
+                    holdings[symbol] = qty_per_trade
+                    avg_cost[symbol] = price
+                    buy_dates[symbol] = date_text
+                    if time_text:
+                        buy_times[symbol] = time_text
+                    signals.append({
+                        "symbol": symbol,
+                        "side": OrderSide.BUY.value,
+                        "price": price,
+                        "qty": qty_per_trade,
+                        "fee": fee,
+                        "date": date_text,
+                        **({"time": time_text} if time_text else {}),
+                    })
 
+            for symbol, price, time_text in ticks:
                 if time_text is not None:
                     minute_prices_by_symbol.setdefault(symbol, []).append(price)
 
@@ -504,4 +527,8 @@ def simulate_timeseries_backtest(
         "period_start": min(daily_symbols) if daily_symbols else None,
         "period_end": last_date or None,
         "days": len(daily_symbols),
+        "indicator_source": indicator_source,
+        "minute_bar_mode": minute_bar_repository is not None,
+        "minute_signal_evaluations": minute_signal_evaluations,
+        "daily_close_signal_evaluations": daily_close_signal_evaluations,
     }

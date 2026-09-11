@@ -16,6 +16,8 @@ try {
         --filtering-dir data/filtering `
         --live `
         --days 730 `
+        --minute-bars-dir data/minute_bars `
+        --indicator-source daily `
         --output data/backtest/latest_timeseries.json
     exit $LASTEXITCODE
 }

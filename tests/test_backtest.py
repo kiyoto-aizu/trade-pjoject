@@ -17,8 +17,8 @@ from src.infrastructure.persistence.minute_bar_repository import MinuteBarReposi
 def legacy_backtest_signal_parameters(monkeypatch):
     monkeypatch.setattr(config, "RSI_PERIOD", 2)
     monkeypatch.setattr(config, "RSI_MINIMUM_CLOSES", 5)
-    monkeypatch.setattr(config, "RSI_BUY_THRESHOLD", 50.0)
-    monkeypatch.setattr(config, "RSI_SELL_THRESHOLD", 0.0)
+    monkeypatch.setattr(config, "RSI_ENTRY_THRESHOLD", 50.0)
+    monkeypatch.setattr(config, "RSI_EXIT_THRESHOLD", 50.0)
 
 
 def test_calculate_rsi_uses_wilder_smoothing():
@@ -126,7 +126,7 @@ def test_build_monthly_summary_aggregates_daily_reports_and_backtests(tmp_path):
 
 def test_simulate_backtest_buys_then_sells_on_signal():
     history = {
-        "7203": [100.0, 100.0, 100.0, 100.0, 100.0, 98.0, 102.0],
+        "7203": [90.0, 90.0, 90.0, 90.0, 90.0, 92.0, 120.0, 98.0, 96.0],
     }
 
     result = simulate_backtest(["7203"], history, starting_cash=10_000.0, qty_per_trade=100)
@@ -140,18 +140,22 @@ def test_simulate_backtest_buys_then_sells_on_signal():
 def test_simulate_timeseries_backtest_uses_daily_symbol_sets():
     dated_history = {
         "7203": {
-            "2026-09-01": 100.0,
-            "2026-09-02": 100.0,
-            "2026-09-03": 100.0,
-            "2026-09-04": 100.0,
-            "2026-09-05": 100.0,
-            "2026-09-06": 98.0,
-            "2026-09-07": 102.0,
+            "2026-09-01": 90.0,
+            "2026-09-02": 90.0,
+            "2026-09-03": 90.0,
+            "2026-09-04": 90.0,
+            "2026-09-05": 90.0,
+            "2026-09-06": 92.0,
+            "2026-09-07": 120.0,
+            "2026-09-08": 98.0,
+            "2026-09-09": 96.0,
         },
     }
     daily_symbols = {
         "2026-09-06": ["7203"],
         "2026-09-07": ["7203"],
+        "2026-09-08": ["7203"],
+        "2026-09-09": ["7203"],
     }
 
     result = simulate_timeseries_backtest(
@@ -164,26 +168,26 @@ def test_simulate_timeseries_backtest_uses_daily_symbol_sets():
     assert result["total_trades"] == 2
     assert result["total_pnl"] == 400.0
     assert result["period_start"] == "2026-09-06"
-    assert result["period_end"] == "2026-09-07"
+    assert result["period_end"] == "2026-09-09"
 
 
 def test_timeseries_backtest_evaluates_each_minute_with_daily_indicators(tmp_path):
     dated_history = {
         "7203": {
-            "2026-09-01": 100.0,
-            "2026-09-02": 100.0,
-            "2026-09-03": 100.0,
-            "2026-09-04": 100.0,
-            "2026-09-05": 100.0,
-            "2026-09-06": 100.0,
+            "2026-09-01": 90.0,
+            "2026-09-02": 90.0,
+            "2026-09-03": 90.0,
+            "2026-09-04": 90.0,
+            "2026-09-05": 90.0,
+            "2026-09-06": 90.0,
         },
     }
     repository = MinuteBarRepository(tmp_path)
     repository.append_bar(date(2026, 9, 6), "7203", MinuteBar(
-        time="2026-09-06T09:00:00", price=98.0, cumulative_volume=None, volume=100, source="yahoo",
+        time="2026-09-06T09:00:00", price=92.0, cumulative_volume=None, volume=100, source="yahoo",
     ))
     repository.append_bar(date(2026, 9, 6), "7203", MinuteBar(
-        time="2026-09-06T09:01:00", price=102.0, cumulative_volume=None, volume=100, source="yahoo",
+        time="2026-09-06T09:01:00", price=89.0, cumulative_volume=None, volume=100, source="yahoo",
     ))
 
     result = simulate_timeseries_backtest(
@@ -199,12 +203,16 @@ def test_timeseries_backtest_evaluates_each_minute_with_daily_indicators(tmp_pat
         "2026-09-06T09:00:00",
         "2026-09-06T09:01:00",
     ]
-    assert result["total_pnl"] == 400.0
+    assert result["total_pnl"] == -300.0
+    assert result["indicator_source"] == "daily"
+    assert result["minute_bar_mode"] is True
+    assert result["minute_signal_evaluations"] == 2
+    assert result["daily_close_signal_evaluations"] == 0
 
 
 def test_timeseries_backtest_minute_indicator_does_not_use_current_bar(tmp_path):
     repository = MinuteBarRepository(tmp_path)
-    for minute, price in enumerate([100.0, 100.0, 100.0, 100.0, 100.0, 98.0, 102.0]):
+    for minute, price in enumerate([90.0, 90.0, 90.0, 90.0, 90.0, 92.0, 120.0, 98.0, 96.0]):
         repository.append_bar(date(2026, 9, 6), "7203", MinuteBar(
             time=f"2026-09-06T09:{minute:02d}:00", price=price,
             cumulative_volume=None, volume=100, source="yahoo",
@@ -212,7 +220,7 @@ def test_timeseries_backtest_minute_indicator_does_not_use_current_bar(tmp_path)
 
     result = simulate_timeseries_backtest(
         {"2026-09-06": ["7203"]},
-        {"7203": {"2026-09-06": 102.0}},
+        {"7203": {"2026-09-06": 96.0}},
         starting_cash=10_000.0,
         qty_per_trade=100,
         minute_bar_repository=repository,
@@ -221,14 +229,50 @@ def test_timeseries_backtest_minute_indicator_does_not_use_current_bar(tmp_path)
 
     assert [signal["time"] for signal in result["signals"]] == [
         "2026-09-06T09:05:00",
-        "2026-09-06T09:06:00",
+        "2026-09-06T09:08:00",
     ]
     assert result["total_pnl"] == 400.0
 
 
+def test_timeseries_backtest_merges_symbols_in_minute_order(tmp_path):
+    repository = MinuteBarRepository(tmp_path)
+    dated_history = {
+        symbol: {
+            "2026-09-01": 90.0,
+            "2026-09-02": 90.0,
+            "2026-09-03": 90.0,
+            "2026-09-04": 90.0,
+            "2026-09-05": 90.0,
+        }
+        for symbol in ("1111", "2222")
+    }
+    for symbol, bars in {
+        "1111": [("09:00", 92.0), ("10:00", 89.0)],
+        "2222": [("09:30", 92.0)],
+    }.items():
+        for clock, price in bars:
+            repository.append_bar(date(2026, 9, 6), symbol, MinuteBar(
+                time=f"2026-09-06T{clock}:00", price=price,
+                cumulative_volume=None, volume=100, source="yahoo",
+            ))
+
+    result = simulate_timeseries_backtest(
+        {"2026-09-06": ["1111", "2222"]},
+        dated_history,
+        starting_cash=10_000.0,
+        qty_per_trade=100,
+        minute_bar_repository=repository,
+        indicator_source="daily",
+    )
+
+    assert [signal["symbol"] for signal in result["signals"]] == ["1111", "1111"]
+    assert result["final_position"] == 0
+    assert result["cash"] == 9_700.0
+
+
 def test_simulate_backtest_does_not_use_current_price_for_signal_baseline():
     history = {
-        "7203": [100.0, 100.0, 100.0, 100.0, 100.0, 98.0, 100.65],
+        "7203": [90.0, 90.0, 90.0, 90.0, 90.0, 92.0, 120.0, 98.0, 96.0],
     }
 
     result = simulate_backtest(["7203"], history, starting_cash=10_000.0, qty_per_trade=100)
@@ -239,7 +283,7 @@ def test_simulate_backtest_does_not_use_current_price_for_signal_baseline():
 
 def test_simulate_backtest_fees_and_position_state():
     history = {
-        "7203": [100.0, 100.0, 100.0, 100.0, 100.0, 98.0, 102.0],
+        "7203": [90.0, 90.0, 90.0, 90.0, 90.0, 92.0, 120.0, 98.0, 96.0],
     }
 
     result = simulate_backtest(
@@ -258,7 +302,7 @@ def test_simulate_backtest_fees_and_position_state():
 
 def test_simulate_backtest_reports_summary_metrics():
     history = {
-        "7203": [100.0, 100.0, 100.0, 100.0, 100.0, 98.0, 102.0],
+        "7203": [90.0, 90.0, 90.0, 90.0, 90.0, 92.0, 120.0, 98.0, 96.0],
     }
 
     result = simulate_backtest(
@@ -279,7 +323,7 @@ def test_simulate_backtest_reports_summary_metrics():
 
 def test_simulate_backtest_tracks_trade_history_with_holding_days():
     history = {
-        "7203": [100.0, 100.0, 100.0, 100.0, 100.0, 95.0, 103.0],
+        "7203": [90.0, 90.0, 90.0, 90.0, 90.0, 92.0, 120.0, 98.0, 96.0],
     }
 
     result = simulate_backtest(["7203"], history, starting_cash=10_000.0, qty_per_trade=100)
@@ -287,14 +331,14 @@ def test_simulate_backtest_tracks_trade_history_with_holding_days():
     assert "trade_history" in result
     assert len(result["trade_history"]) == 1
     assert result["trade_history"][0]["symbol"] == "7203"
-    assert result["trade_history"][0]["realized_pnl"] == 800.0
-    assert result["trade_history"][0]["holding_days"] == 1
+    assert result["trade_history"][0]["realized_pnl"] == 400.0
+    assert result["trade_history"][0]["holding_days"] == 3
 
 
 def test_simulate_backtest_summarizes_symbol_and_holding_period_results():
     history = {
-        "7203": [100.0, 100.0, 100.0, 100.0, 100.0, 110.0, 90.0, 90.0, 90.0, 120.0, 120.0],
-        "7204": [100.0, 100.0, 100.0, 100.0, 100.0, 98.0, 98.0, 102.0],
+        "7203": [90.0, 90.0, 90.0, 90.0, 90.0, 92.0, 120.0, 98.0, 96.0],
+        "7204": [90.0, 90.0, 90.0, 90.0, 90.0, 92.0, 120.0, 98.0, 96.0],
     }
 
     result = simulate_backtest(["7203", "7204"], history, starting_cash=10_000.0, qty_per_trade=100)
@@ -308,7 +352,7 @@ def test_simulate_backtest_summarizes_symbol_and_holding_period_results():
 
 def test_simulate_backtest_tracks_daily_summary_for_review():
     history = {
-        "7203": [100.0, 100.0, 100.0, 100.0, 100.0, 95.0, 103.0, 95.0, 103.0, 105.0],
+        "7203": [90.0, 90.0, 90.0, 90.0, 90.0, 92.0, 96.0],
     }
 
     result = simulate_backtest(
@@ -327,7 +371,7 @@ def test_simulate_backtest_tracks_daily_summary_for_review():
 
 def test_simulate_backtest_supports_tunable_signal_thresholds():
     history = {
-        "7203": [100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 97.1, 103.0],
+        "7203": [90.0, 90.0, 90.0, 90.0, 90.0, 92.0, 120.0, 98.0, 96.0],
     }
 
     result = simulate_backtest(
@@ -347,7 +391,7 @@ def test_simulate_backtest_supports_tunable_signal_thresholds():
 
 def test_simulate_backtest_applies_stop_loss_to_limit_downside():
     history = {
-        "7203": [100.0, 100.0, 100.0, 100.0, 100.0, 98.0, 96.0],
+        "7203": [90.0, 90.0, 90.0, 90.0, 90.0, 92.0, 89.0],
     }
 
     result = simulate_backtest(
@@ -365,7 +409,7 @@ def test_simulate_backtest_applies_stop_loss_to_limit_downside():
 
 def test_simulate_backtest_requires_directional_momentum_for_signal():
     history = {
-        "7203": [100.0, 100.0, 100.0, 100.0, 100.0, 98.0, 102.0],
+        "7203": [90.0, 90.0, 90.0, 90.0, 90.0, 92.0, 120.0, 98.0, 96.0],
     }
 
     result = simulate_backtest(
@@ -382,7 +426,7 @@ def test_simulate_backtest_requires_directional_momentum_for_signal():
 
 def test_simulate_backtest_closes_positions_at_end_of_day_for_day_trade_mode():
     history = {
-        "7203": [100.0, 100.0, 100.0, 100.0, 100.0, 98.0, 103.0, 105.0],
+        "7203": [90.0, 90.0, 90.0, 90.0, 90.0, 92.0, 89.0],
     }
 
     result = simulate_backtest(

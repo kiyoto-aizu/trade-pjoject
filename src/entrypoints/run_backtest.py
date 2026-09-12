@@ -342,6 +342,17 @@ def main() -> None:
             f"最大ドローダウン: {display_result['最大ドローダウン']}",
             f"最終保有数: {display_result['最終保有数']}",
         ]
+        daily_summary = display_result["日別要約"]
+        if daily_summary:
+            profitable_days = sum(1 for entry in daily_summary if entry.get("total_realized_pnl", 0) > 0)
+            losing_days = sum(1 for entry in daily_summary if entry.get("total_realized_pnl", 0) < 0)
+            best_day = max(daily_summary, key=lambda entry: entry.get("total_realized_pnl", 0))
+            worst_day = min(daily_summary, key=lambda entry: entry.get("total_realized_pnl", 0))
+            report_lines.extend([
+                f"日別決済損益: 利益日 {profitable_days}日 / 損失日 {losing_days}日",
+                f"最大利益日: {best_day.get('date', '-')} ({best_day.get('total_realized_pnl', 0)})",
+                f"最大損失日: {worst_day.get('date', '-')} ({worst_day.get('total_realized_pnl', 0)})",
+            ])
         if args.output:
             report_lines.append(f"詳細: {args.output}")
         if archive_path:

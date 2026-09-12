@@ -17,12 +17,13 @@ from src.config import config
 from src.application.allocate_budget import allocate_budget
 from src.domain.models import Candidate, OrderHistoryEntry, PriceLimit, TradeSignal
 from src.domain.rules import calculate_buy_quantity, calculate_price_limit, calculate_rsi, check_kill_switch, is_buy_order_amount_allowed, is_market_closed, is_safe_to_order
+from src.domain.volatility import DailyBar, adjust_quantity_for_volatility, assess_volatility
 from src.infrastructure.kabu.get_board import get_current_board
 from src.infrastructure.kabu.get_positions import get_positions
 from src.infrastructure.kabu.get_wallet import get_wallet_cash
 from src.infrastructure.kabu.get_apisoftlimit import get_api_soft_limit
 from src.infrastructure.kabu.send_order import place_market_order
-from src.infrastructure.market_data.get_daily_closes import get_yahoo_daily_closes
+from src.infrastructure.market_data.get_daily_closes import get_yahoo_daily_bars, get_yahoo_daily_closes
 from src.infrastructure.notification.line_notify import send_line_notify
 from src.infrastructure.persistence.storage import read_json, write_json
 from src.infrastructure.analysis.daily_analyzer import create_daily_analyzer
@@ -230,11 +231,18 @@ class TradingUseCase:
         )
         return {allocation.symbol: allocation.quantity for allocation in allocations}
 
+    def _get_daily_bars(self, symbol: str) -> list[DailyBar] | None:
+        if self.market_data_client:
+            getter = getattr(self.market_data_client, 'get_yahoo_daily_bars', None)
+            return getter(symbol) if getter else None
+        return get_yahoo_daily_bars(symbol)
+
     def collect_preflight_market_data(self, symbols: list[str]) -> dict[str, dict] | None:
         """初回の売買判断に必要な確定終値と板価格を取得します。"""
         market_data = {}
         for symbol in symbols:
-            closes = (
+            daily_bars = self._get_daily_bars(symbol)
+            closes = [bar.close for bar in daily_bars] if daily_bars is not None else (
                 self.market_data_client.get_yahoo_daily_closes(symbol)
                 if self.market_data_client else get_yahoo_daily_closes(symbol)
             )
@@ -246,7 +254,10 @@ class TradingUseCase:
             )
             if not board or board.get('current_price') is None:
                 return None
-            market_data[symbol] = {'closes': closes, 'board': board}
+            snapshot = {'closes': closes, 'board': board}
+            if daily_bars is not None:
+                snapshot['daily_bars'] = daily_bars
+            market_data[symbol] = snapshot
         return market_data
 
     # ================================================================================
@@ -492,6 +503,33 @@ class TradingUseCase:
                             min(config.MAX_ORDER_AMOUNT_PER_TRADE, self.api_soft_limit),
                             config.ORDER_UNIT,
                         ))
+                        daily_bars = snapshot.get('daily_bars') if snapshot else self._get_daily_bars(symbol)
+                        if daily_bars:
+                            assessment = assess_volatility(
+                                daily_bars,
+                                config.ATR_PERIOD,
+                                config.ATR_CAUTION_RATIO,
+                                config.ATR_DANGER_RATIO,
+                            )
+                            if assessment:
+                                original_qty = signal.qty
+                                signal.qty = adjust_quantity_for_volatility(
+                                    signal.qty,
+                                    assessment.level,
+                                    config.ORDER_UNIT,
+                                    config.ATR_CAUTION_LOT_RATIO,
+                                    config.ATR_DANGER_ACTION,
+                                )
+                                logger.info(
+                                    "ATR数量調整: 銘柄=%s | ATR=%.3f | TR=%.3f | 倍率=%.2f | レベル=%s | 数量=%s->%s",
+                                    symbol,
+                                    assessment.atr,
+                                    assessment.latest_true_range,
+                                    assessment.ratio,
+                                    assessment.level.value,
+                                    original_qty,
+                                    signal.qty,
+                                )
                     else:
                         held_quantity = next(
                             (

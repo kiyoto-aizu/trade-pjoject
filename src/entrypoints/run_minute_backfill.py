@@ -11,10 +11,12 @@
 import argparse
 import logging
 from datetime import date, datetime, timedelta
+from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
 
 from src.entrypoints.run_backtest import load_daily_filtering_symbols
 from src.application.minute_bar_backfill_usecase import MinuteBarBackfillUseCase
+from src.config import config
 from src.infrastructure.market_data.get_intraday_bars import get_yahoo_intraday_bars
 from src.infrastructure.notification.line_notify import process_notification, send_line_notify
 from src.infrastructure.persistence.minute_bar_repository import MinuteBarRepository
@@ -37,8 +39,31 @@ def collect_recent_symbols(filtering_dir: Path, days: int, today: date) -> list[
     return sorted(recent_symbols)
 
 
+def configure_logging() -> None:
+    """標準出力と日次ローテーションするファイルへログを出力します。"""
+    logging.root.handlers.clear()
+    log_level = getattr(logging, config.LOG_LEVEL, logging.INFO)
+    logging.root.setLevel(log_level)
+
+    formatter = logging.Formatter('%(asctime)s %(levelname)s %(name)s: %(message)s')
+
+    stream_handler = logging.StreamHandler()
+    stream_handler.setFormatter(formatter)
+    logging.root.addHandler(stream_handler)
+
+    file_handler = TimedRotatingFileHandler(
+        config.LOG_FILE_PATH,
+        when='midnight',
+        interval=1,
+        backupCount=config.LOG_BACKUP_COUNT,
+        encoding='utf-8',
+    )
+    file_handler.setFormatter(formatter)
+    logging.root.addHandler(file_handler)
+
+
 def main(now_provider=None, filtering_dir: Path | None = None, output_dir: Path | None = None) -> None:
-    logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(name)s: %(message)s')
+    configure_logging()
     now = (now_provider or datetime.now)()
 
     parser = argparse.ArgumentParser(description="Yahoo分足で自前収集データをバックフィルします")

@@ -139,6 +139,21 @@ RSI_ENTRY_THRESHOLD = float(os.getenv("RSI_ENTRY_THRESHOLD", os.getenv("RSI_BUY_
 RSI_EXIT_THRESHOLD = float(os.getenv("RSI_EXIT_THRESHOLD", os.getenv("RSI_SELL_THRESHOLD", "45")))
 RSI_MINIMUM_CLOSES = int(os.getenv("RSI_MINIMUM_CLOSES", "30"))
 
+# ATRベースの銘柄別ボラティリティ調整
+ATR_PERIOD = int(os.getenv("ATR_PERIOD", "14"))
+ATR_CAUTION_RATIO = float(os.getenv("ATR_CAUTION_RATIO", "1.5"))
+ATR_DANGER_RATIO = float(os.getenv("ATR_DANGER_RATIO", "2.0"))
+ATR_CAUTION_LOT_RATIO = float(os.getenv("ATR_CAUTION_LOT_RATIO", "0.5"))
+ATR_DANGER_ACTION = os.getenv("ATR_DANGER_ACTION", "skip").strip().lower()
+if ATR_PERIOD <= 0:
+    raise ValueError("ATR_PERIODは正数を指定してください。")
+if ATR_CAUTION_RATIO <= 0 or ATR_DANGER_RATIO <= ATR_CAUTION_RATIO:
+    raise ValueError("ATRのボラティリティ閾値が不正です。")
+if not 0 < ATR_CAUTION_LOT_RATIO <= 1:
+    raise ValueError("ATR_CAUTION_LOT_RATIOは0より大きく1以下を指定してください。")
+if ATR_DANGER_ACTION not in {"skip", "minimum"}:
+    raise ValueError("ATR_DANGER_ACTIONはskipまたはminimumを指定してください。")
+
 # バックテストの約定コスト。各値は証券会社の料金プラン・運用実績に合わせて環境変数で調整する。
 BACKTEST_FEE_RATE = float(os.getenv("BACKTEST_FEE_RATE", "0.00055"))
 BACKTEST_MARKET_SLIPPAGE_BPS = float(os.getenv("BACKTEST_MARKET_SLIPPAGE_BPS", "5"))

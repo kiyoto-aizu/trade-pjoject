@@ -7,6 +7,7 @@ from src.config import config
 from src.domain.enums import OrderSide
 from src.domain.models import TradeSignal
 from src.domain.rules import calculate_price_limit, calculate_rsi
+from src.domain.volatility import DailyBar, adjust_quantity_for_volatility, assess_volatility
 from src.infrastructure.persistence.minute_bar_repository import MinuteBarRepository
 
 
@@ -42,6 +43,26 @@ def _validate_execution_assumptions(
         raise ValueError("order_type は 'market' または 'limit' を指定してください")
 
 
+def _adjust_backtest_quantity(base_quantity: int, bars: list[DailyBar] | None) -> int:
+    if not bars:
+        return base_quantity
+    assessment = assess_volatility(
+        bars,
+        config.ATR_PERIOD,
+        config.ATR_CAUTION_RATIO,
+        config.ATR_DANGER_RATIO,
+    )
+    if assessment is None:
+        return base_quantity
+    return adjust_quantity_for_volatility(
+        base_quantity,
+        assessment.level,
+        config.ORDER_UNIT,
+        config.ATR_CAUTION_LOT_RATIO,
+        config.ATR_DANGER_ACTION,
+    )
+
+
 def _calculate_metrics(trade_results: List[float], starting_cash: float) -> dict:
     """売買結果から勝率・利益率・ドローダウンを計算する。"""
     if not trade_results:
@@ -75,6 +96,7 @@ def simulate_backtest(
     history_by_symbol: Dict[str, List[float]],
     starting_cash: float = 100_000.0,
     qty_per_trade: int = 100,
+    ohlc_history_by_symbol: Dict[str, List[DailyBar]] | None = None,
     fee_rate: float | None = None,
     market_slippage_bps: float | None = None,
     execution_delay_bars: int | None = None,
@@ -251,8 +273,11 @@ def simulate_backtest(
             execution_price, delayed_price = _calculate_execution_price(
                 signal.side, price, closes, index, execution_delay_bars, order_type, market_slippage_bps,
             )
-            if signal.side == OrderSide.BUY and holdings[symbol] == 0 and cash >= execution_price * qty_per_trade * (1.0 + fee_rate):
-                qty = qty_per_trade
+            if signal.side == OrderSide.BUY and holdings[symbol] == 0:
+                daily_bars = (ohlc_history_by_symbol or {}).get(symbol, [])[:index + 1]
+                qty = _adjust_backtest_quantity(qty_per_trade, daily_bars)
+                if qty <= 0 or cash < execution_price * qty * (1.0 + fee_rate):
+                    continue
                 fee = execution_price * qty * fee_rate
                 cash -= (execution_price * qty) + fee
                 holdings[symbol] = qty
@@ -413,6 +438,7 @@ def simulate_timeseries_backtest(
     dated_history_by_symbol: Dict[str, Dict[str, float]],
     starting_cash: float = 100_000.0,
     qty_per_trade: int = 100,
+    ohlc_history_by_symbol_date: Dict[str, Dict[str, DailyBar]] | None = None,
     fee_rate: float | None = None,
     market_slippage_bps: float | None = None,
     execution_delay_bars: int | None = None,
@@ -600,7 +626,15 @@ def simulate_timeseries_backtest(
                 if signal.side == OrderSide.SELL and holdings.get(symbol, 0) > 0:
                     close_position(symbol, date_text, price, time_text)
             for symbol, price, time_text, signal in signals_at_time:
-                if signal.side == OrderSide.BUY and holdings.get(symbol, 0) == 0 and cash >= price * qty_per_trade:
+                if signal.side == OrderSide.BUY and holdings.get(symbol, 0) == 0:
+                    dated_bars = (ohlc_history_by_symbol_date or {}).get(symbol, {})
+                    daily_bars = [
+                        bar for bar_date, bar in sorted(dated_bars.items())
+                        if bar_date <= date_text
+                    ]
+                    qty = _adjust_backtest_quantity(qty_per_trade, daily_bars)
+                    if qty <= 0 or cash < price * qty:
+                        continue
                     execution_price, delayed_price = _calculate_execution_price(
                         OrderSide.BUY,
                         price,
@@ -610,12 +644,12 @@ def simulate_timeseries_backtest(
                         order_type,
                         market_slippage_bps,
                     )
-                    fee = execution_price * qty_per_trade * fee_rate
-                    if cash < execution_price * qty_per_trade + fee:
+                    fee = execution_price * qty * fee_rate
+                    if cash < execution_price * qty + fee:
                         continue
-                    cash -= execution_price * qty_per_trade + fee
-                    holdings[symbol] = qty_per_trade
-                    avg_cost[symbol] = execution_price + fee / qty_per_trade
+                    cash -= execution_price * qty + fee
+                    holdings[symbol] = qty
+                    avg_cost[symbol] = execution_price + fee / qty
                     entry_prices[symbol] = execution_price
                     entry_fees[symbol] = fee
                     buy_dates[symbol] = date_text
@@ -627,7 +661,7 @@ def simulate_timeseries_backtest(
                         "price": execution_price,
                         "signal_price": price,
                         "delayed_price": delayed_price,
-                        "qty": qty_per_trade,
+                        "qty": qty,
                         "fee": fee,
                         "date": date_text,
                         **({"time": time_text} if time_text else {}),
@@ -653,6 +687,21 @@ def simulate_timeseries_backtest(
 
     metrics = _calculate_metrics(trade_results, starting_cash)
     total_pnl = round(equity - starting_cash, 2)
+    daily_map: dict[str, list[dict]] = {}
+    for entry in trade_history:
+        exit_date = entry.get("exit_date")
+        if exit_date:
+            daily_map.setdefault(exit_date, []).append(entry)
+    daily_summary = [
+        {
+            "date": exit_date,
+            "trade_count": len(entries),
+            "total_realized_pnl": round(sum(entry["realized_pnl"] for entry in entries), 2),
+            "win_count": sum(1 for entry in entries if entry["realized_pnl"] > 0),
+            "avg_realized_pnl": round(sum(entry["realized_pnl"] for entry in entries) / len(entries), 2),
+        }
+        for exit_date, entries in sorted(daily_map.items())
+    ]
     return {
         "cash": round(cash, 2),
         "final_position": sum(holdings.values()),
@@ -663,6 +712,8 @@ def simulate_timeseries_backtest(
         "profit_factor": metrics["profit_factor"],
         "signals": signals,
         "trade_history": trade_history,
+        "daily_summary": daily_summary,
+        "日別要約": daily_summary,
         "period_start": min(daily_symbols) if daily_symbols else None,
         "period_end": last_date or None,
         "days": len(daily_symbols),

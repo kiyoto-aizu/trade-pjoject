@@ -191,6 +191,13 @@ def test_simulate_timeseries_backtest_uses_daily_symbol_sets():
     assert result["total_pnl"] == 400.0
     assert result["period_start"] == "2026-09-06"
     assert result["period_end"] == "2026-09-09"
+    assert result["daily_summary"] == [{
+        "date": "2026-09-09",
+        "trade_count": 1,
+        "total_realized_pnl": 400.0,
+        "win_count": 1,
+        "avg_realized_pnl": 400.0,
+    }]
 
 
 def test_timeseries_backtest_evaluates_each_minute_with_daily_indicators(tmp_path):

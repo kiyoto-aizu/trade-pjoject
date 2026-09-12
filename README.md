@@ -93,7 +93,7 @@ tests/                  pytestテスト
 
 ### インストール
 
-```powershell
+```
 python -m venv .venv
 .venv\Scripts\Activate.ps1
 pip install -r requirements.txt
@@ -162,7 +162,7 @@ ALLOW_OVERNIGHT_HOLDING=false
 
 前日15:35頃に実行し、翌営業日の候補銘柄を保存します。
 
-```powershell
+```
 python -m src.entrypoints.run_screening
 ```
 
@@ -170,20 +170,20 @@ python -m src.entrypoints.run_screening
 
 kabuステーションを起動・ログインしたWindowsユーザーで、平日15:35にスクリーニングを実行するタスクを登録します。初回のみ、PowerShellから次を実行してください。
 
-```powershell
+```
 .\scripts\register_screening_task.ps1
 ```
 
 登録内容の確認と手動起動は次のとおりです。
 
-```powershell
+```
 Get-ScheduledTask -TaskName trade-pjoject-screening
 Start-ScheduledTask -TaskName trade-pjoject-screening
 ```
 
 タスクはログオン中にのみ実行されます。実行時刻の変更と削除は次のコマンドで行えます。
 
-```powershell
+```
 .\scripts\register_screening_task.ps1 -At '15:40'
 .\scripts\register_screening_task.ps1 -Remove
 ```
@@ -194,13 +194,13 @@ Start-ScheduledTask -TaskName trade-pjoject-screening
 
 営業開始後の9:30頃に実行し、出来高急騰率の高い銘柄へ絞り込みます。
 
-```powershell
+```
 python -m src.entrypoints.run_filtering
 ```
 
 保存済みのスクリーニング結果に対して過去日を再計算する場合は、対象日を指定します。過去日モードではkabuステーションに接続せず、Yahoo Financeの日足から対象日の売買代金と直前20営業日の平均を計算します。
 
-```powershell
+```
 python -m src.entrypoints.run_filtering --date 2026-09-08
 .\scripts\run_filtering.ps1 -Date '2026-09-08'
 ```
@@ -219,7 +219,7 @@ symbol,exchange_division,listed_from,listed_to
 
 `listed_to` は上場継続中なら空欄にします。JPX等から取得した日付付きマスタをこの形式に変換してから、次のコマンドを実行します。
 
-```powershell
+```
 python -m src.entrypoints.run_screening --date 2026-09-08
 ```
 
@@ -237,20 +237,20 @@ symbol,primary_exchange,restricted_from,restricted_to,reason
 
 kabuステーションを起動・ログインしたWindowsユーザーで、平日9:30にフィルタリングを実行するタスクを登録します。初回のみ、PowerShellから次を実行してください。
 
-```powershell
+```
 .\scripts\register_filtering_task.ps1
 ```
 
 登録内容の確認と手動起動は次のとおりです。
 
-```powershell
+```
 Get-ScheduledTask -TaskName trade-pjoject-filtering
 Start-ScheduledTask -TaskName trade-pjoject-filtering
 ```
 
 実行時刻の変更と削除は次のコマンドで行えます。
 
-```powershell
+```
 .\scripts\register_filtering_task.ps1 -At '09:35'
 .\scripts\register_filtering_task.ps1 -Remove
 ```
@@ -261,13 +261,13 @@ Start-ScheduledTask -TaskName trade-pjoject-filtering
 
 営業開始前に起動し、15:30まで価格を監視します。
 
-```powershell
+```
 python -m src.entrypoints.run_trading
 ```
 
 Windowsの計画実行では、スクリーニング・フィルタリングと同じ本番API設定を使用し、取引注文だけをペーパー約定に固定できます。初回のみ、次を実行してください。
 
-```powershell
+```
 .\scripts\register_trading_task.ps1
 ```
 
@@ -281,13 +281,13 @@ Windowsの計画実行では、スクリーニング・フィルタリングと�
 
 取引プロセスの次ループで停止フラグを検知し、即時LINE通知を送信したうえで保有ポジションを成行決済します。停止を実行するには次を実行してください。
 
-```powershell
+```
 .\scripts\emergency_stop.ps1
 ```
 
 停止解除後に再起動する場合は、次を実行します。解除前に注文・口座状態を確認してください。
 
-```powershell
+```
 .\scripts\clear_emergency_stop.ps1
 ```
 
@@ -297,21 +297,21 @@ Windowsの計画実行では、スクリーニング・フィルタリングと�
 
 日付ごとのフィルタリング結果を時系列に再生し、その日に選ばれた銘柄だけを対象にバックテストします。過去の銘柄を未来の日付へ持ち越さないため、実運用に近い評価になります。価格データはYahoo Financeから取得し、直近730日（約2年）分のフィルタリング結果を対象にします。通常の週次確認は2年、売買ルールや設定を変更したときは3〜5年を再検証の目安にします。
 
-```powershell
+```
 .\scripts\run_backtest.ps1
 ```
 
-結果は最新結果として `data/backtest/latest_timeseries.json` に保存され、同じ内容が `data/backtest/latest_timeseries_YYYYMMDD_HHMMSS_ffffff.json` の形式で履歴保存されます。LINE設定がある場合は、対象期間・総損益・勝率・取引数・最大ドローダウン・最終保有数のサマリーと、LLMによる参考評価（有効時）も通知します。LLM評価は投資判断やロジック変更の指示ではなく、統計の解釈・不確実性・追加確認事項を扱います。詳細な取引履歴はJSONで確認できます。毎週月曜16:30に自動実行するタスクは、初回のみ次で登録します。
+結果は最新結果として `data/backtest/latest_timeseries.json` に保存され、同じ内容が `data/backtest/latest_timeseries_YYYYMMDD_HHMMSS_ffffff.json` の形式で履歴保存されます。LINE設定がある場合は、対象期間・総損益・勝率・取引数・最大ドローダウン・最終保有数のサマリーと、LLMによる参考評価（有効時）も通知します。LLM評価は投資判断やロジック変更の指示ではなく、統計の解釈・不確実性・追加確認事項を扱います。詳細な取引履歴はJSONで確認できます。毎週土曜08:00に自動実行するタスクは、初回のみ次で登録します。
 
 バックテストは既定で片道手数料0.055%、成行スリッページ5bps、1バーの執行遅延を反映します。成行は遅延後の観測価格に対し、買いは上振れ・売りは下振れで約定させます。指値はkabuステーションAPIの `FrontOrderType=20` に対応する想定として、シグナル時価格で約定し成行スリッページは加えません。分足がない日足再生では遅延は次の終値、分足再生では次の分足価格を使います。手数料プランと実運用の約定履歴に合わせる場合は、`BACKTEST_FEE_RATE`、`BACKTEST_MARKET_SLIPPAGE_BPS`、`BACKTEST_EXECUTION_DELAY_BARS`、`BACKTEST_ORDER_TYPE` を環境変数で上書きするか、`--fee`、`--market-slippage-bps`、`--execution-delay-bars`、`--order-type` を指定します。
 
-```powershell
+```
 .\scripts\register_backtest_task.ps1
 ```
 
 登録内容の確認、手動起動、削除は次のとおりです。
 
-```powershell
+```
 Get-ScheduledTask -TaskName trade-pjoject-backtest
 Start-ScheduledTask -TaskName trade-pjoject-backtest
 .\scripts\register_backtest_task.ps1 -Remove
@@ -323,15 +323,24 @@ Start-ScheduledTask -TaskName trade-pjoject-backtest
 
 初回のみ、毎日17:00に起動し、Python側のガードで月末だけ実行するタスクを登録します。Windows PowerShellの標準タスク登録では月末指定に制約があるため、この方式を採用しています。
 
-```powershell
+```
 .\scripts\register_monthly_analysis_task.ps1
 ```
 
 手動で前月分を実行する場合は次のコマンドを使います。月末以外に当月分を確認する場合は `--force` を追加します。
 
-```powershell
+```
 python -m src.entrypoints.run_monthly_analysis --month 2026-08
 python -m src.entrypoints.run_monthly_analysis --month 2026-09 --force
+```
+
+### 6. 週次総合分析
+
+土曜の分足バックフィルとバックテスト後に、直近の月曜から金曜までの日次ペーパートレードとバックテストを集計します。結果は `data/reports/weekly/YYYY-MM-DD_YYYY-MM-DD.json` に保存し、LLM評価（有効時）とともにLINEへ通知します。
+
+```
+.\scripts\register_weekly_analysis_task.ps1
+python -m src.entrypoints.run_weekly_analysis --week-start 2026-09-07 --force
 ```
 
 従来の固定銘柄による検証を行う場合は、`run_backtest.py` に `--symbols` と `--history` を指定します。
@@ -366,13 +375,13 @@ python -m src.entrypoints.run_monthly_analysis --month 2026-09 --force
 
 ## テスト
 
-```powershell
+```
 pytest -q
 ```
 
 個別に実行する場合：
 
-```powershell
+```
 pytest tests/test_trading_bot.py -v
 pytest tests/test_design_alignment.py -v
 ```

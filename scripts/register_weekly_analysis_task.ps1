@@ -1,12 +1,12 @@
 [CmdletBinding(SupportsShouldProcess)]
 param(
-    [string]$TaskName = 'trade-pjoject-minute-backfill',
-    [datetime]$At = [datetime]'07:30',
+    [string]$TaskName = 'trade-pjoject-weekly-analysis',
+    [datetime]$At = [datetime]'09:00',
     [switch]$Remove
 )
 
 $ErrorActionPreference = 'Stop'
-$runner = Join-Path $PSScriptRoot 'run_minute_backfill.ps1'
+$runner = Join-Path $PSScriptRoot 'run_weekly_analysis.ps1'
 
 if ($Remove) {
     if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
@@ -18,20 +18,19 @@ if ($Remove) {
 }
 
 if (-not (Test-Path $runner)) {
-    throw "Minute backfill runner was not found: $runner"
+    throw "Weekly analysis runner was not found: $runner"
 }
 
-# 毎週土曜の朝、過去7日分の分足データを取得・上書きしてバックフィルする
 $trigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Saturday -At $At
 $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$runner`""
 $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -MultipleInstances IgnoreNew -WakeToRun
 
-if ($PSCmdlet.ShouldProcess($TaskName, "Register weekly Saturday minute-bar backfill task at $($At.ToString('HH:mm'))")) {
+if ($PSCmdlet.ShouldProcess($TaskName, "Register weekly analysis task on Saturday at $($At.ToString('HH:mm'))")) {
     Register-ScheduledTask `
         -TaskName $TaskName `
         -Action $action `
         -Trigger $trigger `
         -Settings $settings `
-        -Description 'Backfills self-polled minute bars with Yahoo Finance intraday data every Saturday for the past 7 days.' `
+        -Description 'Runs weekly paper-trade and backtest analysis.' `
         -Force | Out-Null
 }

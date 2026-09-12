@@ -11,6 +11,7 @@ import sys
 from pathlib import Path
 
 from src.domain.enums import OrderSide  # noqa: F401  # config.OrderSide として再エクスポート（重複定義を避ける）
+from src.domain.market_regime import MarketRegimeThresholds
 
 # .envファイルから環境変数を読み込む（利用可能な場合）
 try:
@@ -159,6 +160,19 @@ ATR_STOP_CAUTION_MULTIPLIER = float(os.getenv("ATR_STOP_CAUTION_MULTIPLIER", "1.
 ATR_STOP_DANGER_MULTIPLIER = float(os.getenv("ATR_STOP_DANGER_MULTIPLIER", "0.7"))
 if min(ATR_STOP_NORMAL_MULTIPLIER, ATR_STOP_CAUTION_MULTIPLIER, ATR_STOP_DANGER_MULTIPLIER) <= 0:
     raise ValueError("ATR損切り倍率は正数を指定してください。")
+
+# 市場全体の荒れ具合（MarketRegime）
+MARKET_REGIME_THRESHOLDS = MarketRegimeThresholds(
+    realized_vol_caution=float(os.getenv("MARKET_REGIME_REALIZED_VOL_CAUTION", "17.0")),
+    realized_vol_danger=float(os.getenv("MARKET_REGIME_REALIZED_VOL_DANGER", "29.0")),
+    vix_caution=float(os.getenv("MARKET_REGIME_VIX_CAUTION", "17.0")),
+    vix_danger=float(os.getenv("MARKET_REGIME_VIX_DANGER", "27.0")),
+    nikkei_change_upgrade=float(os.getenv("MARKET_REGIME_NIKKEI_CHANGE_UPGRADE", "2.0")),
+)
+MARKET_REGIME_REALIZED_VOL_WINDOW = int(os.getenv("MARKET_REGIME_REALIZED_VOL_WINDOW", "20"))
+if MARKET_REGIME_REALIZED_VOL_WINDOW <= 0:
+    raise ValueError("MARKET_REGIME_REALIZED_VOL_WINDOWは正数を指定してください。")
+MARKET_REGIME_DATA_RANGE = os.getenv("MARKET_REGIME_DATA_RANGE", "3mo")
 
 # バックテストの約定コスト。各値は証券会社の料金プラン・運用実績に合わせて環境変数で調整する。
 BACKTEST_FEE_RATE = float(os.getenv("BACKTEST_FEE_RATE", "0.00055"))

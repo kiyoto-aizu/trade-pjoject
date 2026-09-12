@@ -17,6 +17,7 @@ from src.infrastructure.kabu.send_order import place_market_order
 from src.infrastructure.kabu.unregister import unregister_all
 from src.infrastructure.market_data.get_daily_closes import get_yahoo_daily_closes
 from src.infrastructure.market_data.yahoo_finance_client import YahooFinanceClient
+from src.infrastructure.market_data.yahoo_index_client import YahooIndexClient
 from src.infrastructure.notification import line_notify
 from src.infrastructure.persistence.storage import read_json, write_json
 from src.infrastructure.persistence.filtering_result_repository import FilteringResultRepository
@@ -163,6 +164,42 @@ def test_yahoo_clients_parse_valid_and_invalid_responses(monkeypatch):
     assert client.get_daily_market_data('7203', date.today()) is None
     assert client.get_turnover_for_date('7203', date.today()) is None
     assert client.get_average_volume('7203') is None
+
+
+def test_yahoo_index_client_uses_plain_symbol_and_parses_ohlc(monkeypatch):
+    response = {
+        'chart': {
+            'result': [{
+                'timestamp': [1_725_824_000, 1_725_910_400],
+                'indicators': {'quote': [{
+                    'open': [99, 109],
+                    'high': [101, 111],
+                    'low': [98, 108],
+                    'close': [100, 110],
+                }]},
+            }],
+        },
+    }
+    calls = []
+
+    def send_get(url, **kwargs):
+        calls.append((url, kwargs))
+        return response
+
+    monkeypatch.setattr('src.infrastructure.market_data.yahoo_index_client.request_handler.send_get', send_get)
+
+    bars = YahooIndexClient().get_daily_ohlc('^N225', range_='max')
+
+    assert len(bars) == 2
+    assert bars[0].open == 99.0
+    assert bars[1].high == 111.0
+    assert '^N225.T' not in calls[0][0]
+    assert calls[0][1]['params']['interval'] == '1d'
+    assert calls[0][1]['params']['period1'] == 0
+    assert calls[0][1]['params']['period2'] > 0
+
+    with pytest.raises(ValueError):
+        YahooIndexClient().get_daily_ohlc('7203')
 
 
 def test_line_notification_handles_missing_settings_and_request_errors(monkeypatch):

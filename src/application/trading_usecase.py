@@ -85,8 +85,27 @@ class TradingUseCase:
         self.daily_report_directory = daily_report_directory or Path(__file__).resolve().parents[2] / "data" / "reports"
         self.last_positions = []
         self.kill_switch_triggered = False
+        self.emergency_stop_triggered = False
         self.api_soft_limit: Optional[float] = None
         self._missing_holding_warning_symbols: set[str] = set()
+
+    def _notify_safely(self, message: str) -> None:
+        """通知失敗で取引制御自体を妨げないように通知します。"""
+        try:
+            self.notifier(message)
+        except Exception:
+            logger.exception("緊急通知の送信に失敗しました")
+
+    def _trigger_kill_switch(self, reason: str) -> None:
+        """キルスイッチを一度だけ発動し、即時通知します。"""
+        if self.kill_switch_triggered:
+            return
+        self.kill_switch_triggered = True
+        logger.warning("キルスイッチを発動しました: %s", reason)
+        self._notify_safely(f"【緊急停止】キルスイッチを発動しました: {reason}")
+
+    def _is_emergency_stop_requested(self) -> bool:
+        return config.EMERGENCY_STOP_FILE.exists()
 
     # ================================================================================
     # 注文履歴の管理
@@ -244,6 +263,8 @@ class TradingUseCase:
         ]
         if self.kill_switch_triggered:
             lines.append("キルスイッチ: 発動")
+        if self.emergency_stop_triggered:
+            lines.append("手動緊急停止: 発動")
         if daily_orders:
             lines.append("--- 注文履歴 ---")
             for entry in daily_orders:
@@ -285,6 +306,7 @@ class TradingUseCase:
             ],
             "total_profit_loss": sum(float(position.get("ProfitLoss", 0) or 0) for position in self.last_positions),
             "kill_switch_triggered": self.kill_switch_triggered,
+            "emergency_stop_triggered": self.emergency_stop_triggered,
         }
         analysis = None
         if self.daily_analyzer:
@@ -396,6 +418,11 @@ class TradingUseCase:
         # 市場終了時刻まで取引ループを実行
         use_preflight_market_data = bool(preflight_market_data)
         while not kill_switch_triggered:
+            if self._is_emergency_stop_requested():
+                self.emergency_stop_triggered = True
+                self._trigger_kill_switch("手動緊急停止フラグが検知されました")
+                self._liquidate_all_positions()
+                break
             now = now_provider()
             if is_market_closed(now.time(), config.MARKET_CLOSE_HOUR, config.MARKET_CLOSE_MINUTE):
                 break
@@ -455,7 +482,7 @@ class TradingUseCase:
                     api_limit = config.API_SOFT_LIMIT if config.IS_DEMO else get_api_soft_limit(self.token)
                     if api_limit is None:
                         logger.warning("API発注上限を取得できないため、発注を停止しました。")
-                        self.kill_switch_triggered = True
+                        self._trigger_kill_switch("API発注上限を取得できません")
                         kill_switch_triggered = True
                         break
                     self.api_soft_limit = api_limit
@@ -487,7 +514,9 @@ class TradingUseCase:
                     )
                     if not check_kill_switch(daily_orders, daily_pnl, config.OPERATING_CAPITAL, config):
                         logger.warning("キルスイッチにより発注を停止しました。")
-                        self.kill_switch_triggered = True
+                        self._trigger_kill_switch(
+                            f"日次損益または発注回数の上限超過（損益={daily_pnl:.1f}円、発注件数={daily_orders}件）"
+                        )
                         kill_switch_triggered = True
                         break
                     if (

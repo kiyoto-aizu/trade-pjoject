@@ -388,7 +388,64 @@ def test_trading_use_case_records_kill_switch_in_daily_report(monkeypatch, tmp_p
     report = json.loads((tmp_path / 'reports' / f'{datetime.now().date().isoformat()}.json').read_text(encoding='utf-8'))
     assert use_case.kill_switch_triggered is True
     assert report['kill_switch_triggered'] is True
-    assert 'キルスイッチ: 発動' in messages[0]
+    assert '【緊急停止】キルスイッチを発動しました' in messages[0]
+    assert any('キルスイッチ: 発動' in message for message in messages)
+
+
+def test_kill_switch_notifies_only_once(monkeypatch, tmp_path):
+    messages = []
+    use_case = TradingUseCase(
+        token='dummy',
+        order_history_path=tmp_path / 'order_history.json',
+        notifier=messages.append,
+    )
+
+    use_case._trigger_kill_switch('損失上限超過')
+    use_case._trigger_kill_switch('重複通知')
+
+    assert messages == ['【緊急停止】キルスイッチを発動しました: 損失上限超過']
+
+
+def test_emergency_stop_liquidates_positions_and_stops_loop(monkeypatch, tmp_path):
+    symbols_path = tmp_path / 'top_symbols.json'
+    symbols_path.write_text(json.dumps(['7203']), encoding='utf-8')
+    stop_file = tmp_path / 'emergency_stop'
+    stop_file.write_text('requested', encoding='utf-8')
+    messages = []
+    orders = []
+
+    class PositionsClient:
+        def get_positions(self, token):
+            return [{'Symbol': '7203', 'Side': config.OrderSide.SELL.value, 'HoldQty': 100}]
+
+    class BoardClient:
+        def get_current_board(self, token, symbol):
+            return {'current_price': 92.0}
+
+    class OrderSender:
+        def set_price(self, symbol, price):
+            pass
+
+        def place_market_order(self, token, symbol, side, quantity):
+            orders.append((symbol, side, quantity))
+            return {'Result': 0, 'OrderId': 'emergency-1'}
+
+    monkeypatch.setattr(config, 'EMERGENCY_STOP_FILE', stop_file)
+    use_case = TradingUseCase(
+        token='dummy',
+        order_history_path=tmp_path / 'order_history.json',
+        positions_client=PositionsClient(),
+        board_client=BoardClient(),
+        order_sender=OrderSender(),
+        notifier=messages.append,
+        daily_report_directory=tmp_path / 'reports',
+    )
+
+    use_case.run(top_symbols_path=symbols_path, sleep=lambda seconds: None)
+
+    assert use_case.emergency_stop_triggered is True
+    assert orders == [('7203', config.OrderSide.SELL.value, 100)]
+    assert any('手動緊急停止フラグ' in message for message in messages)
 
 
 def test_trading_use_case_warns_once_for_repeated_sell_signal_without_holdings(monkeypatch, tmp_path, caplog):

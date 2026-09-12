@@ -168,6 +168,7 @@ if PAPER_MARKET_SLIPPAGE_BPS < 0:
 # 注文履歴を保存するファイル
 ORDER_HISTORY_FILE = "order_history.json"
 PAPER_ACCOUNT_STATE_FILE = "paper_account_state.json"
+EMERGENCY_STOP_FILE = Path(os.getenv("EMERGENCY_STOP_FILE", str(_repo_root / "data" / "emergency_stop")))
 
 # 市場クローズ時刻（日本標準時）
 MARKET_OPEN_HOUR = 9

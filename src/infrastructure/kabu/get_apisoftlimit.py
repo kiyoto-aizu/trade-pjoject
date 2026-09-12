@@ -15,6 +15,7 @@ def get_api_soft_limit(token: str) -> float | None:
         return None
     value = response.get("Stock", response.get("ApisoftLimit"))
     try:
+        # /apisoftlimit の Stock は公式API仕様上「万円」単位のため、円へ換算する。
         return float(value) * 10000 if value is not None else None
     except (TypeError, ValueError):
         logger.warning("apisoftlimitの値の解析に失敗しました: %s", value)

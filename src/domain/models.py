@@ -29,8 +29,8 @@ class OrderHistoryEntry:
         timestamp: 注文時刻（ISO形式）
         result_code: kabu APIの発注応答コード（Result。0が成功）
         order_id: kabu APIが発行した注文受付番号（OrderId）
-        basis_buy_limit: 発注根拠となった買い基準値（PriceLimit.buy）
-        basis_sell_limit: 発注根拠となった売り基準値（PriceLimit.sell）
+        basis_lower_band: 発注根拠となった下側バンド
+        basis_upper_band: 発注根拠となった上側バンド
     """
     symbol: str
     side: OrderSide
@@ -39,8 +39,8 @@ class OrderHistoryEntry:
     timestamp: str
     result_code: Optional[int] = None
     order_id: Optional[str] = None
-    basis_buy_limit: Optional[float] = None
-    basis_sell_limit: Optional[float] = None
+    basis_lower_band: Optional[float] = None
+    basis_upper_band: Optional[float] = None
 
     @classmethod
     def from_dict(cls, data: Dict) -> 'OrderHistoryEntry':
@@ -61,8 +61,8 @@ class OrderHistoryEntry:
             timestamp=data['timestamp'],
             result_code=data.get('result_code'),
             order_id=data.get('order_id'),
-            basis_buy_limit=data.get('basis_buy_limit'),
-            basis_sell_limit=data.get('basis_sell_limit'),
+            basis_lower_band=data.get('basis_lower_band', data.get('basis_buy_limit')),
+            basis_upper_band=data.get('basis_upper_band', data.get('basis_sell_limit')),
         )
 
     def to_dict(self) -> Dict:
@@ -80,8 +80,8 @@ class OrderHistoryEntry:
             'timestamp': self.timestamp,
             'result_code': self.result_code,
             'order_id': self.order_id,
-            'basis_buy_limit': self.basis_buy_limit,
-            'basis_sell_limit': self.basis_sell_limit,
+            'basis_lower_band': self.basis_lower_band,
+            'basis_upper_band': self.basis_upper_band,
         }
 
 
@@ -92,14 +92,14 @@ class OrderHistoryEntry:
 @dataclass
 class PriceLimit:
     """
-    銘柄ごとの買い/売り基準値を保持するデータクラス。
+    銘柄ごとの上下バンドを保持するデータクラス。
     
     Attributes:
-        buy: 買い基準値（この価格以下なら買い）
-        sell: 売り基準値（この価格以上なら売り）
+        lower_band: 移動平均より下側のバンド。弱含み時の決済判定に使う
+        upper_band: 移動平均より上側のバンド。上抜け時の新規買い判定に使う
     """
-    buy: float
-    sell: float
+    lower_band: float
+    upper_band: float
 
 
 # ================================================================================
@@ -138,16 +138,16 @@ class TradeSignal:
         Args:
             symbol: 株式シンボル
             current_price: 現在価格
-            limit: 買い/売り基準値
+            limit: トレンド追随判定に使う上下バンド
             
         Returns:
             TradeSignalインスタンス（シグナルがない場合はNone）
         """
         if rsi is None:
             return None
-        if current_price >= limit.sell and rsi >= rsi_entry_threshold:
+        if current_price >= limit.upper_band and rsi >= rsi_entry_threshold:
             return cls(symbol=symbol, side=OrderSide.BUY, price=current_price, qty=0)
-        if current_price <= limit.buy and rsi <= rsi_exit_threshold:
+        if current_price <= limit.lower_band and rsi <= rsi_exit_threshold:
             return cls(symbol=symbol, side=OrderSide.SELL, price=current_price, qty=0)
         return None
 
@@ -171,8 +171,8 @@ class TradeSignal:
             timestamp=datetime.now().isoformat(),
             result_code=order_response.get('Result'),
             order_id=order_response.get('OrderId'),
-            basis_buy_limit=limit.buy,
-            basis_sell_limit=limit.sell,
+            basis_lower_band=limit.lower_band,
+            basis_upper_band=limit.upper_band,
         )
 
 

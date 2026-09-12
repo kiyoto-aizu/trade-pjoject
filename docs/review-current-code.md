@@ -38,7 +38,6 @@ src/
 ├── component/      get_api_5d_closes.py / get_board.py / get_positions.py /
 │                   get_token.py / get_wallet.py / line_notify.py / send_order.py
 ├── filter_dynamic/ filter_dynamic.py
-├── sample/         yfinance_test.py
 ├── screening/      screening.py
 ├── main.py
 └── trading_bot.py
@@ -54,7 +53,6 @@ src/
 | `config/config.py` | config | 妥当 |
 | `filter_dynamic/filter_dynamic.py` | 恐らく domain | 名前からは「価格閾値判定」か「銘柄フィルタ」か判別できない |
 | `screening/screening.py` | 恐らく application/domain | `filter_dynamic` との境界が外から見えない |
-| `sample/yfinance_test.py` | ── | 検証用スクリプトが `src/` に混在。`tests/` か `scripts/` へ移動候補 |
 | `main.py` と `trading_bot.py` | ── | エントリーポイントが2つあるように見える。どちらが実際の起動点か要確認 |
 
 **未確認のためコメントできない点**: `filter_dynamic.py` / `screening.py` / `main.py` / `get_token.py` / `storage.py` の中身を見ていないため、domain / application の境界線がどこにあるかは推測段階。中身を確認できれば、より正確なレイヤーマッピングを更新する。

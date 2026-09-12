@@ -118,6 +118,34 @@ class TradingUseCase:
         """
         self.order_history.append(signal.to_order_history_entry(limit, order_response))
         self._save_order_history()
+        side_label = "買い" if signal.side == config.OrderSide.BUY else "売り"
+        message = (
+            f"【約定】{side_label} "
+            f"{signal.symbol} {signal.qty}株 @ {signal.price:.1f}円"
+        )
+        try:
+            self.notifier(message)
+        except Exception:
+            logger.exception("注文約定通知の送信に失敗しました: 銘柄=%s", signal.symbol)
+
+    def _calculate_daily_pnl(self, positions: List[dict]) -> float:
+        """実現損益と保有中の評価損益を合算します。"""
+        unrealized_pnl = sum(float(position.get('ProfitLoss', 0) or 0) for position in positions)
+        realized_pnl = 0.0
+        if self.order_sender and hasattr(self.order_sender, 'get_daily_realized_pnl'):
+            realized_pnl = float(self.order_sender.get_daily_realized_pnl() or 0)
+        else:
+            realized_pnl = sum(
+                float(
+                    position.get(
+                        'RealizedProfitLoss',
+                        position.get('RealizedPnL', position.get('RealizedProfitLossAmount', 0)),
+                    )
+                    or 0
+                )
+                for position in positions
+            )
+        return unrealized_pnl + realized_pnl
 
     # ================================================================================
     # 口座状態の取得
@@ -258,6 +286,7 @@ class TradingUseCase:
             "total_profit_loss": sum(float(position.get("ProfitLoss", 0) or 0) for position in self.last_positions),
             "kill_switch_triggered": self.kill_switch_triggered,
         }
+        analysis = None
         if self.daily_analyzer:
             analysis = self.daily_analyzer.analyze(daily_summary)
             if analysis:
@@ -411,8 +440,8 @@ class TradingUseCase:
                         "売買判定: 銘柄=%s | 現在値=%.1f | エントリー基準=%.1f | 決済基準=%.1f | RSI=%.1f | エントリーRSI基準=%.1f | 決済RSI基準=%.1f | 判定=%s",
                         symbol,
                         board['current_price'],
-                        limit.buy,
-                        limit.sell,
+                        limit.lower_band,
+                        limit.upper_band,
                         rsi,
                         config.RSI_ENTRY_THRESHOLD,
                         config.RSI_EXIT_THRESHOLD,
@@ -451,7 +480,7 @@ class TradingUseCase:
                         logger.info("注文数量が0のため見送ります: 銘柄=%s", symbol)
                         continue
                     # キルスイッチ判定
-                    daily_pnl = sum(float(position.get('ProfitLoss', 0) or 0) for position in positions)
+                    daily_pnl = self._calculate_daily_pnl(positions)
                     daily_orders = sum(
                         1 for entry in self.order_history
                         if entry.timestamp.startswith(now_provider().date().isoformat())

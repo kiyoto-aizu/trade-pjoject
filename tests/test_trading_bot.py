@@ -42,7 +42,7 @@ def test_is_market_closed_boundary():
 
 
 def test_trade_signal_follows_trend_and_exits_when_it_weakens():
-    limit = PriceLimit(buy=99.0, sell=101.0)
+    limit = PriceLimit(lower_band=99.0, upper_band=101.0)
 
     entry = TradeSignal.evaluate('7203', 102.0, limit, 60.0, 55.0, 45.0)
     exit_signal = TradeSignal.evaluate('7203', 98.0, limit, 40.0, 55.0, 45.0)
@@ -68,7 +68,9 @@ def test_order_history_register_records_audit_fields(tmp_path):
     use_case._load_order_history()
 
     signal = TradeSignal(symbol='1475', side=config.OrderSide.BUY, price=1000.0, qty=100)
-    limit = PriceLimit(buy=990.0, sell=1010.0)
+    limit = PriceLimit(lower_band=990.0, upper_band=1010.0)
+    messages = []
+    use_case.notifier = messages.append
     use_case._register_order(signal, limit, {'Result': 0, 'OrderId': 'abc123'})
 
     assert len(use_case.order_history) == 1
@@ -76,8 +78,9 @@ def test_order_history_register_records_audit_fields(tmp_path):
     assert entry.symbol == '1475'
     assert entry.result_code == 0
     assert entry.order_id == 'abc123'
-    assert entry.basis_buy_limit == 990.0
-    assert entry.basis_sell_limit == 1010.0
+    assert entry.basis_lower_band == 990.0
+    assert entry.basis_upper_band == 1010.0
+    assert messages == ['【約定】買い 1475 100株 @ 1000.0円']
 
     # 再読み込みしても永続化されていること
     reloaded = TradingUseCase(token='dummy', order_history_path=history_file)

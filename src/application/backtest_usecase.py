@@ -220,21 +220,19 @@ def simulate_backtest(
                 continue
 
             if noise_band_ratio > 0:
-                avg_price = (limit.buy + limit.sell) / 2.0
+                avg_price = (limit.lower_band + limit.upper_band) / 2.0
                 if abs(price - avg_price) / avg_price < noise_band_ratio:
                     continue
 
             if trend_strength_ratio > 0:
-                base_mean = (limit.buy + limit.sell) / 2.0
+                base_mean = (limit.lower_band + limit.upper_band) / 2.0
                 direction_strength = abs(price - base_mean) / base_mean
                 if direction_strength < trend_strength_ratio:
                     continue
 
-            base_buy = limit.buy
-            base_sell = limit.sell
-            buy_threshold = base_buy * buy_threshold_ratio
-            sell_threshold = base_sell * sell_threshold_ratio
-            adjusted_limit = type(limit)(buy=buy_threshold, sell=sell_threshold)
+            lower_band = limit.lower_band * buy_threshold_ratio
+            upper_band = limit.upper_band * sell_threshold_ratio
+            adjusted_limit = type(limit)(lower_band=lower_band, upper_band=upper_band)
             signal = TradeSignal.evaluate(
                 symbol,
                 price,
@@ -543,14 +541,14 @@ def simulate_timeseries_backtest(
         if limit is None or rsi is None:
             return None
 
-        base_mean = (limit.buy + limit.sell) / 2.0
+        base_mean = (limit.lower_band + limit.upper_band) / 2.0
         within_noise_band = noise_band_ratio > 0 and abs(price - base_mean) / base_mean < noise_band_ratio
         weak_trend = trend_strength_ratio > 0 and abs(price - base_mean) / base_mean < trend_strength_ratio
         if within_noise_band or weak_trend:
             return None
         adjusted_limit = type(limit)(
-            buy=limit.buy * buy_threshold_ratio,
-            sell=limit.sell * sell_threshold_ratio,
+            lower_band=limit.lower_band * buy_threshold_ratio,
+            upper_band=limit.upper_band * sell_threshold_ratio,
         )
         return TradeSignal.evaluate(
             symbol,

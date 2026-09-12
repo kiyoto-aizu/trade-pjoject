@@ -39,6 +39,7 @@ def test_paper_order_executor_applies_market_slippage_and_round_trip_fees():
     assert sell_result['Fee'] == pytest.approx(9.995)
     assert executor.cash == pytest.approx(19_970.0)
     assert executor.holdings == {}
+    assert executor.get_daily_realized_pnl() == pytest.approx(-30.0)
 
 
 def test_paper_order_executor_persists_fee_inclusive_average_cost(tmp_path):
@@ -53,6 +54,21 @@ def test_paper_order_executor_persists_fee_inclusive_average_cost(tmp_path):
 
     assert restarted.average_costs['7203'] == pytest.approx(100.15005)
     assert restarted.get_positions('unused')[0]['ProfitLoss'] == -15.0
+
+
+def test_paper_order_executor_persists_daily_realized_pnl(tmp_path):
+    state_path = tmp_path / 'paper_account_state.json'
+    executor = PaperOrderExecutor(
+        prices={'7203': 100.0}, cash=20_000.0, order_qty=100,
+        fee_rate=0.0, market_slippage_bps=0.0, state_path=state_path,
+    )
+    executor.place_market_order('unused', '7203', config.OrderSide.BUY.value)
+    executor.prices['7203'] = 90.0
+    executor.place_market_order('unused', '7203', config.OrderSide.SELL.value)
+
+    restarted = PaperOrderExecutor(prices={'7203': 90.0}, state_path=state_path)
+
+    assert restarted.get_daily_realized_pnl() == -1000.0
 
 
 def test_paper_order_executor_rejects_orders_without_changing_state():

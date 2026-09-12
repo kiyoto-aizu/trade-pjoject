@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import date
 from typing import Dict, List, Optional
 from pathlib import Path
 
@@ -21,6 +22,8 @@ class PaperOrderExecutor:
     holdings: Dict[str, int] = field(default_factory=dict)
     average_costs: Dict[str, float] = field(default_factory=dict)
     orders: List[dict] = field(default_factory=list)
+    realized_pnl: float = 0.0
+    realized_pnl_date: str = field(default_factory=lambda: date.today().isoformat())
     state_path: Optional[Path] = None
     _next_order_id: int = 1
 
@@ -42,6 +45,8 @@ class PaperOrderExecutor:
             if symbol in self.holdings
         }
         self._next_order_id = max(1, int(state.get('next_order_id', self._next_order_id)))
+        self.realized_pnl_date = state.get('realized_pnl_date', self.realized_pnl_date)
+        self.realized_pnl = float(state.get('realized_pnl', 0.0)) if self.realized_pnl_date == date.today().isoformat() else 0.0
 
     def _save_state(self) -> None:
         if self.state_path is not None:
@@ -50,6 +55,8 @@ class PaperOrderExecutor:
                 'holdings': self.holdings,
                 'average_costs': self.average_costs,
                 'next_order_id': self._next_order_id,
+                'realized_pnl': self.realized_pnl,
+                'realized_pnl_date': self.realized_pnl_date,
             })
 
     def set_price(self, symbol: str, price: float) -> None:
@@ -80,6 +87,8 @@ class PaperOrderExecutor:
                 return None
             execution_price = price * (1.0 - slippage_rate)
             fee = execution_price * quantity * self.fee_rate
+            self._reset_daily_realized_pnl_if_needed()
+            self.realized_pnl += (execution_price - self.average_costs.get(symbol, 0.0)) * quantity - fee
             self.cash += execution_price * quantity - fee
             remaining_quantity = held_quantity - quantity
             if remaining_quantity:
@@ -110,6 +119,16 @@ class PaperOrderExecutor:
     def get_wallet_cash(self, token: str) -> dict:
         del token
         return {'StockAccountWallet': self.cash}
+
+    def _reset_daily_realized_pnl_if_needed(self) -> None:
+        today = date.today().isoformat()
+        if self.realized_pnl_date != today:
+            self.realized_pnl_date = today
+            self.realized_pnl = 0.0
+
+    def get_daily_realized_pnl(self) -> float:
+        self._reset_daily_realized_pnl_if_needed()
+        return round(self.realized_pnl, 2)
 
     def get_positions(self, token: str) -> list[dict]:
         del token

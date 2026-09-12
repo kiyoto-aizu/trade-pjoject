@@ -20,13 +20,13 @@ logger = logging.getLogger(__name__)
 
 def calculate_price_limit(closes: List[float], period: int = 5) -> Optional[PriceLimit]:
     """
-    過去の終値から移動平均を計算し、買い/売り基準値を決定します。
+    過去の終値から移動平均を計算し、上下バンドを決定します。
     
     Args:
         closes: 過去の終値のリスト
         
     Returns:
-        買い基準値（移動平均の99%）と売り基準値（移動平均の101%）を含むPriceLimitオブジェクト
+        下側バンド（移動平均の99%）と上側バンド（移動平均の101%）を含むPriceLimitオブジェクト
         データ不足の場合はNone
     """
     if not closes or len(closes) < period:
@@ -34,8 +34,8 @@ def calculate_price_limit(closes: List[float], period: int = 5) -> Optional[Pric
 
     moving_average = sum(closes[-period:]) / period
     return PriceLimit(
-        buy=round(moving_average * 0.99, 1),
-        sell=round(moving_average * 1.01, 1),
+        lower_band=round(moving_average * 0.99, 1),
+        upper_band=round(moving_average * 1.01, 1),
     )
 
 

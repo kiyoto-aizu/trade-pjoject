@@ -9,6 +9,7 @@ from src.domain.rules import calculate_rsi
 from src.entrypoints.run_backtest import fetch_yahoo_history, load_history, save_backtest_result
 from src.infrastructure.analysis.daily_analyzer import OpenAIDailyAnalyzer
 from src.domain.models import MinuteBar
+from src.domain.volatility import DailyBar
 from src.entrypoints.run_monthly_analysis import build_monthly_summary
 from src.infrastructure.persistence.minute_bar_repository import MinuteBarRepository
 
@@ -156,6 +157,37 @@ def test_simulate_backtest_buys_then_sells_on_signal():
     assert result["cash"] == 10_400.0
     assert result["final_position"] == 0
     assert result["total_pnl"] == 400.0
+
+
+def test_simulate_backtest_exits_on_atr_stop_loss(monkeypatch):
+    monkeypatch.setattr(config, "RSI_PERIOD", 2)
+    monkeypatch.setattr(config, "RSI_MINIMUM_CLOSES", 5)
+    monkeypatch.setattr(config, "RSI_ENTRY_THRESHOLD", 50.0)
+    monkeypatch.setattr(config, "RSI_EXIT_THRESHOLD", 0.0)
+    monkeypatch.setattr(config, "ATR_PERIOD", 3)
+    monkeypatch.setattr(config, "ATR_CAUTION_RATIO", 1.5)
+    monkeypatch.setattr(config, "ATR_DANGER_RATIO", 2.0)
+    monkeypatch.setattr(config, "ATR_STOP_NORMAL_MULTIPLIER", 1.5)
+    monkeypatch.setattr(config, "ATR_STOP_CAUTION_MULTIPLIER", 1.0)
+    monkeypatch.setattr(config, "ATR_STOP_DANGER_MULTIPLIER", 0.7)
+
+    history = {"7203": [100.0, 100.0, 100.0, 100.0, 100.0, 102.0, 90.0]}
+    ohlc = {
+        "7203": [DailyBar(101.0, 99.0, 100.0)] * 6
+        + [DailyBar(91.0, 89.0, 90.0)],
+    }
+
+    result = simulate_backtest(
+        ["7203"],
+        history,
+        starting_cash=20_000.0,
+        qty_per_trade=100,
+        ohlc_history_by_symbol=ohlc,
+        close_at_eod=False,
+    )
+
+    assert any(signal.get("note") == "atr_stop_loss" for signal in result["signals"])
+    assert result["final_position"] == 0
 
 
 def test_simulate_timeseries_backtest_uses_daily_symbol_sets():

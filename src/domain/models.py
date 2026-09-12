@@ -131,6 +131,9 @@ class TradeSignal:
         rsi: Optional[float],
         rsi_entry_threshold: float = 55.0,
         rsi_exit_threshold: float = 45.0,
+        entry_price: Optional[float] = None,
+        atr: Optional[float] = None,
+        stop_loss_multiplier: Optional[float] = None,
     ) -> Optional['TradeSignal']:
         """
         上昇トレンドへの追随と、その失速時の決済シグナルを生成します。
@@ -143,11 +146,16 @@ class TradeSignal:
         Returns:
             TradeSignalインスタンス（シグナルがない場合はNone）
         """
-        if rsi is None:
-            return None
-        if current_price >= limit.upper_band and rsi >= rsi_entry_threshold:
+        if rsi is not None and current_price >= limit.upper_band and rsi >= rsi_entry_threshold:
             return cls(symbol=symbol, side=OrderSide.BUY, price=current_price, qty=0)
-        if current_price <= limit.lower_band and rsi <= rsi_exit_threshold:
+        regular_exit = rsi is not None and current_price <= limit.lower_band and rsi <= rsi_exit_threshold
+        atr_exit = (
+            entry_price is not None
+            and atr is not None
+            and stop_loss_multiplier is not None
+            and current_price <= entry_price - atr * stop_loss_multiplier
+        )
+        if regular_exit or atr_exit:
             return cls(symbol=symbol, side=OrderSide.SELL, price=current_price, qty=0)
         return None
 

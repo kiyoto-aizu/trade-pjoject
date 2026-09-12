@@ -17,7 +17,7 @@ from src.config import config
 from src.application.allocate_budget import allocate_budget
 from src.domain.models import Candidate, OrderHistoryEntry, PriceLimit, TradeSignal
 from src.domain.rules import calculate_buy_quantity, calculate_price_limit, calculate_rsi, check_kill_switch, is_buy_order_amount_allowed, is_market_closed, is_safe_to_order
-from src.domain.volatility import DailyBar, adjust_quantity_for_volatility, assess_volatility
+from src.domain.volatility import DailyBar, adjust_quantity_for_volatility, assess_volatility, stop_loss_multiplier
 from src.infrastructure.kabu.get_board import get_current_board
 from src.infrastructure.kabu.get_positions import get_positions
 from src.infrastructure.kabu.get_wallet import get_wallet_cash
@@ -236,6 +236,15 @@ class TradingUseCase:
             getter = getattr(self.market_data_client, 'get_yahoo_daily_bars', None)
             return getter(symbol) if getter else None
         return get_yahoo_daily_bars(symbol)
+
+    @staticmethod
+    def _get_position_entry_price(position: dict) -> float | None:
+        """証券会社・ペーパー実装の平均取得価格フィールドを吸収します。"""
+        for key in ('AveragePrice', 'AvgPrice', 'EntryPrice'):
+            value = position.get(key)
+            if value is not None and float(value) > 0:
+                return float(value)
+        return None
 
     def collect_preflight_market_data(self, symbols: list[str]) -> dict[str, dict] | None:
         """初回の売買判断に必要な確定終値と板価格を取得します。"""
@@ -456,7 +465,7 @@ class TradingUseCase:
                         closes = get_yahoo_daily_closes(symbol)
                     limit = calculate_price_limit(closes)
                     rsi = calculate_rsi(closes, config.RSI_PERIOD, config.RSI_MINIMUM_CLOSES)
-                    if limit is None or rsi is None:
+                    if limit is None:
                         continue
                     # リアルタイム株価を取得
                     board = snapshot['board'] if snapshot else (
@@ -465,6 +474,13 @@ class TradingUseCase:
                     )
                     if not board or board.get('current_price') is None:
                         continue
+                    daily_bars = snapshot.get('daily_bars') if snapshot else self._get_daily_bars(symbol)
+                    assessment = assess_volatility(
+                        daily_bars,
+                        config.ATR_PERIOD,
+                        config.ATR_CAUTION_RATIO,
+                        config.ATR_DANGER_RATIO,
+                    ) if daily_bars else None
                     # 売買シグナルを生成
                     signal = TradeSignal.evaluate(
                         symbol,
@@ -474,6 +490,35 @@ class TradingUseCase:
                         config.RSI_ENTRY_THRESHOLD,
                         config.RSI_EXIT_THRESHOLD,
                     )
+                    if signal is None and assessment is not None:
+                        _, current_positions = self._load_account_state()
+                        position = next(
+                            (
+                                position for position in current_positions
+                                if position.get('Symbol') == symbol
+                                and position.get('Side') == config.OrderSide.SELL.value
+                                and int(position.get('HoldQty', 0) or 0) > 0
+                            ),
+                            None,
+                        )
+                        entry_price = self._get_position_entry_price(position) if position else None
+                        if entry_price is not None:
+                            signal = TradeSignal.evaluate(
+                                symbol,
+                                board['current_price'],
+                                limit,
+                                rsi,
+                                config.RSI_ENTRY_THRESHOLD,
+                                config.RSI_EXIT_THRESHOLD,
+                                entry_price,
+                                assessment.atr,
+                                stop_loss_multiplier(
+                                    assessment.level,
+                                    config.ATR_STOP_NORMAL_MULTIPLIER,
+                                    config.ATR_STOP_CAUTION_MULTIPLIER,
+                                    config.ATR_STOP_DANGER_MULTIPLIER,
+                                ),
+                            )
                     logger.info(
                         "売買判定: 銘柄=%s | 現在値=%.1f | エントリー基準=%.1f | 決済基準=%.1f | RSI=%.1f | エントリーRSI基準=%.1f | 決済RSI基準=%.1f | 判定=%s",
                         symbol,
@@ -503,14 +548,7 @@ class TradingUseCase:
                             min(config.MAX_ORDER_AMOUNT_PER_TRADE, self.api_soft_limit),
                             config.ORDER_UNIT,
                         ))
-                        daily_bars = snapshot.get('daily_bars') if snapshot else self._get_daily_bars(symbol)
                         if daily_bars:
-                            assessment = assess_volatility(
-                                daily_bars,
-                                config.ATR_PERIOD,
-                                config.ATR_CAUTION_RATIO,
-                                config.ATR_DANGER_RATIO,
-                            )
                             if assessment:
                                 original_qty = signal.qty
                                 signal.qty = adjust_quantity_for_volatility(

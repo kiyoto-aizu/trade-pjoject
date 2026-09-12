@@ -7,7 +7,13 @@ from src.config import config
 from src.domain.enums import OrderSide
 from src.domain.models import TradeSignal
 from src.domain.rules import calculate_price_limit, calculate_rsi
-from src.domain.volatility import DailyBar, adjust_quantity_for_volatility, assess_volatility
+from src.domain.volatility import (
+    DailyBar,
+    adjust_quantity_for_volatility,
+    assess_volatility,
+    is_atr_stop_loss_triggered,
+    stop_loss_multiplier,
+)
 from src.infrastructure.persistence.minute_bar_repository import MinuteBarRepository
 
 
@@ -43,8 +49,13 @@ def _validate_execution_assumptions(
         raise ValueError("order_type は 'market' または 'limit' を指定してください")
 
 
-def _adjust_backtest_quantity(base_quantity: int, bars: list[DailyBar] | None) -> int:
-    if not bars:
+def _adjust_backtest_quantity(
+    base_quantity: int,
+    bars: list[DailyBar] | None,
+    enabled: bool = True,
+    stats: dict[str, int] | None = None,
+) -> int:
+    if not enabled or not bars:
         return base_quantity
     assessment = assess_volatility(
         bars,
@@ -54,13 +65,23 @@ def _adjust_backtest_quantity(base_quantity: int, bars: list[DailyBar] | None) -
     )
     if assessment is None:
         return base_quantity
-    return adjust_quantity_for_volatility(
+    if stats is not None:
+        stats["assessed"] = stats.get("assessed", 0) + 1
+        stats[assessment.level.value.lower()] = stats.get(assessment.level.value.lower(), 0) + 1
+    adjusted_quantity = adjust_quantity_for_volatility(
         base_quantity,
         assessment.level,
         config.ORDER_UNIT,
         config.ATR_CAUTION_LOT_RATIO,
         config.ATR_DANGER_ACTION,
     )
+    if stats is not None:
+        if adjusted_quantity == 0:
+            stats["skipped"] = stats.get("skipped", 0) + 1
+        elif adjusted_quantity < base_quantity:
+            stats["reduced"] = stats.get("reduced", 0) + 1
+            stats["reduced_quantity"] = stats.get("reduced_quantity", 0) + base_quantity - adjusted_quantity
+    return adjusted_quantity
 
 
 def _calculate_metrics(trade_results: List[float], starting_cash: float) -> dict:
@@ -91,6 +112,122 @@ def _calculate_metrics(trade_results: List[float], starting_cash: float) -> dict
     }
 
 
+def _atr_trade_diagnostic(
+    entry_price: float,
+    prices: list[float],
+    entry_index: int,
+    exit_index: int,
+    bars: list[DailyBar],
+) -> dict | None:
+    """保有期間中のATR損切りラインとの最短距離を集計します。"""
+    if not bars or exit_index < entry_index:
+        return None
+    observations = []
+    for index in range(max(entry_index, 0), min(exit_index + 1, len(bars))):
+        assessment = assess_volatility(
+            bars[:index + 1],
+            config.ATR_PERIOD,
+            config.ATR_CAUTION_RATIO,
+            config.ATR_DANGER_RATIO,
+        )
+        if assessment is None:
+            continue
+        multiplier = stop_loss_multiplier(
+            assessment.level,
+            config.ATR_STOP_NORMAL_MULTIPLIER,
+            config.ATR_STOP_CAUTION_MULTIPLIER,
+            config.ATR_STOP_DANGER_MULTIPLIER,
+        )
+        stop_price = entry_price - assessment.atr * multiplier
+        price = prices[index] if index < len(prices) else None
+        if price is not None:
+            observations.append({
+                "index": index,
+                "price": price,
+                "atr": assessment.atr,
+                "level": assessment.level.value,
+                "multiplier": multiplier,
+                "stop_price": stop_price,
+                "distance": price - stop_price,
+            })
+    if not observations:
+        return None
+    closest = min(observations, key=lambda item: item["distance"])
+    return {
+        "entry_price": entry_price,
+        "exit_price": prices[exit_index] if exit_index < len(prices) else None,
+        "entry_atr": observations[0]["atr"],
+        "exit_atr": observations[-1]["atr"],
+        "exit_level": observations[-1]["level"],
+        "exit_multiplier": observations[-1]["multiplier"],
+        "exit_stop_price": observations[-1]["stop_price"],
+        "closest_distance": closest["distance"],
+        "closest_price": closest["price"],
+        "closest_atr": closest["atr"],
+        "closest_level": closest["level"],
+        "closest_stop_price": closest["stop_price"],
+        "closest_index": closest["index"],
+    }
+
+
+def _dated_atr_trade_diagnostic(
+    entry_price: float,
+    entry_date: str,
+    exit_date: str,
+    dated_prices: dict[str, float],
+    dated_bars: dict[str, DailyBar],
+) -> dict | None:
+    all_dates = [date_text for date_text in sorted(dated_bars) if date_text <= exit_date]
+    dates = [date_text for date_text in all_dates if entry_date <= date_text <= exit_date]
+    observations = []
+    for date_text in dates:
+        bars = [dated_bars[item] for item in all_dates[:all_dates.index(date_text) + 1]]
+        assessment = assess_volatility(
+            bars,
+            config.ATR_PERIOD,
+            config.ATR_CAUTION_RATIO,
+            config.ATR_DANGER_RATIO,
+        )
+        price = dated_prices.get(date_text)
+        if assessment is None or price is None:
+            continue
+        multiplier = stop_loss_multiplier(
+            assessment.level,
+            config.ATR_STOP_NORMAL_MULTIPLIER,
+            config.ATR_STOP_CAUTION_MULTIPLIER,
+            config.ATR_STOP_DANGER_MULTIPLIER,
+        )
+        stop_price = entry_price - assessment.atr * multiplier
+        observations.append({
+            "date": date_text,
+            "price": price,
+            "atr": assessment.atr,
+            "level": assessment.level.value,
+            "multiplier": multiplier,
+            "stop_price": stop_price,
+            "distance": price - stop_price,
+        })
+    if not observations:
+        return None
+    closest = min(observations, key=lambda item: item["distance"])
+    last = observations[-1]
+    return {
+        "entry_price": entry_price,
+        "exit_price": dated_prices.get(exit_date),
+        "entry_atr": observations[0]["atr"],
+        "exit_atr": last["atr"],
+        "exit_level": last["level"],
+        "exit_multiplier": last["multiplier"],
+        "exit_stop_price": last["stop_price"],
+        "closest_distance": closest["distance"],
+        "closest_price": closest["price"],
+        "closest_atr": closest["atr"],
+        "closest_level": closest["level"],
+        "closest_stop_price": closest["stop_price"],
+        "closest_date": closest["date"],
+    }
+
+
 def simulate_backtest(
     symbols: List[str],
     history_by_symbol: Dict[str, List[float]],
@@ -107,6 +244,9 @@ def simulate_backtest(
     noise_band_ratio: float = 0.0,
     stop_loss_ratio: float = 0.0,
     trend_strength_ratio: float = 0.0,
+    enable_volatility_adjustment: bool = True,
+    enable_volatility_sizing: bool | None = None,
+    enable_atr_stop_loss: bool | None = None,
 ) -> dict:
     """
     シンプルなバックテストを実行します。
@@ -122,6 +262,10 @@ def simulate_backtest(
     execution_delay_bars = config.BACKTEST_EXECUTION_DELAY_BARS if execution_delay_bars is None else execution_delay_bars
     order_type = config.BACKTEST_ORDER_TYPE if order_type is None else order_type
     _validate_execution_assumptions(fee_rate, market_slippage_bps, execution_delay_bars, order_type)
+    if enable_volatility_sizing is None:
+        enable_volatility_sizing = enable_volatility_adjustment
+    if enable_atr_stop_loss is None:
+        enable_atr_stop_loss = enable_volatility_adjustment
     # 現金・保有数・平均取得単価を初期化
     cash = float(starting_cash)
     holdings: dict[str, int] = {symbol: 0 for symbol in symbols}
@@ -134,6 +278,15 @@ def simulate_backtest(
     trade_results: List[float] = []
     trade_history: list[dict] = []
     symbols_visited: set[str] = set()
+    volatility_stats = {
+        "assessed": 0,
+        "normal": 0,
+        "caution": 0,
+        "danger": 0,
+        "reduced": 0,
+        "skipped": 0,
+        "reduced_quantity": 0,
+    }
 
     for symbol in symbols:
         closes = history_by_symbol.get(symbol, [])
@@ -166,6 +319,13 @@ def simulate_backtest(
                     "entry_day": buy_index[symbol],
                     "exit_day": index,
                     "holding_days": max(0, index - buy_index[symbol]),
+                    "atr_diagnostic": _atr_trade_diagnostic(
+                        entry_prices[symbol],
+                        closes,
+                        buy_index[symbol],
+                        index,
+                        (ohlc_history_by_symbol or {}).get(symbol, []),
+                    ),
                 })
                 symbols_visited.add(symbol)
                 holdings[symbol] = 0
@@ -186,9 +346,31 @@ def simulate_backtest(
                     "note": "close_at_eod",
                 })
 
-            if holdings[symbol] > 0 and stop_loss_ratio > 0:
-                stop_limit = avg_cost[symbol] * (1.0 - stop_loss_ratio)
-                if price <= stop_limit:
+            daily_bars = (ohlc_history_by_symbol or {}).get(symbol, [])[:index + 1]
+            atr_stop_triggered = False
+            if enable_atr_stop_loss and holdings[symbol] > 0 and daily_bars:
+                assessment = assess_volatility(
+                    daily_bars,
+                    config.ATR_PERIOD,
+                    config.ATR_CAUTION_RATIO,
+                    config.ATR_DANGER_RATIO,
+                )
+                if assessment is not None:
+                    atr_stop_triggered = is_atr_stop_loss_triggered(
+                        price,
+                        entry_prices[symbol],
+                        assessment.atr,
+                        assessment.level,
+                        config.ATR_STOP_NORMAL_MULTIPLIER,
+                        config.ATR_STOP_CAUTION_MULTIPLIER,
+                        config.ATR_STOP_DANGER_MULTIPLIER,
+                    )
+            regular_stop_triggered = (
+                holdings[symbol] > 0
+                and stop_loss_ratio > 0
+                and price <= avg_cost[symbol] * (1.0 - stop_loss_ratio)
+            )
+            if holdings[symbol] > 0 and (regular_stop_triggered or atr_stop_triggered):
                     qty = holdings[symbol]
                     execution_price, delayed_price = _calculate_execution_price(
                         OrderSide.SELL, price, closes, index, execution_delay_bars, order_type, market_slippage_bps,
@@ -212,6 +394,13 @@ def simulate_backtest(
                         "entry_day": buy_index[symbol],
                         "exit_day": index,
                         "holding_days": max(0, index - buy_index[symbol]),
+                        "atr_diagnostic": _atr_trade_diagnostic(
+                            entry_prices[symbol],
+                            closes,
+                            buy_index[symbol],
+                            index,
+                            (ohlc_history_by_symbol or {}).get(symbol, []),
+                        ),
                     })
                     symbols_visited.add(symbol)
                     holdings[symbol] = 0
@@ -229,7 +418,7 @@ def simulate_backtest(
                         "qty": qty,
                         "fee": fee,
                         "realized_pnl": round(realized_pnl, 2),
-                        "note": "stop_loss",
+                        "note": "atr_stop_loss" if atr_stop_triggered else "stop_loss",
                     })
                     continue
 
@@ -275,7 +464,12 @@ def simulate_backtest(
             )
             if signal.side == OrderSide.BUY and holdings[symbol] == 0:
                 daily_bars = (ohlc_history_by_symbol or {}).get(symbol, [])[:index + 1]
-                qty = _adjust_backtest_quantity(qty_per_trade, daily_bars)
+                qty = _adjust_backtest_quantity(
+                    qty_per_trade,
+                    daily_bars,
+                    enable_volatility_sizing,
+                    volatility_stats,
+                )
                 if qty <= 0 or cash < execution_price * qty * (1.0 + fee_rate):
                     continue
                 fee = execution_price * qty * fee_rate
@@ -317,6 +511,13 @@ def simulate_backtest(
                     "entry_day": buy_index[symbol],
                     "exit_day": index,
                     "holding_days": holding_days,
+                    "atr_diagnostic": _atr_trade_diagnostic(
+                        entry_prices[symbol],
+                        closes,
+                        buy_index[symbol],
+                        index,
+                        (ohlc_history_by_symbol or {}).get(symbol, []),
+                    ),
                 })
                 symbols_visited.add(symbol)
                 holdings[symbol] = 0
@@ -417,6 +618,7 @@ def simulate_backtest(
             "market_slippage_bps": market_slippage_bps,
             "execution_delay_bars": execution_delay_bars,
         },
+        "volatility_adjustment": volatility_stats,
         # 日本語で読みやすくした主要指標
         "現金残高": round(cash, 2),
         "最終保有数": final_position,
@@ -451,6 +653,9 @@ def simulate_timeseries_backtest(
     minute_bar_repository: MinuteBarRepository | None = None,
     indicator_source: str = "daily",
     close_at_eod: bool = True,
+    enable_volatility_adjustment: bool = True,
+    enable_volatility_sizing: bool | None = None,
+    enable_atr_stop_loss: bool | None = None,
 ) -> dict:
     """日付ごとのフィルタリング結果を、日足または分足で再生します。"""
     if indicator_source not in {"daily", "minute"}:
@@ -461,6 +666,10 @@ def simulate_timeseries_backtest(
     execution_delay_bars = config.BACKTEST_EXECUTION_DELAY_BARS if execution_delay_bars is None else execution_delay_bars
     order_type = config.BACKTEST_ORDER_TYPE if order_type is None else order_type
     _validate_execution_assumptions(fee_rate, market_slippage_bps, execution_delay_bars, order_type)
+    if enable_volatility_sizing is None:
+        enable_volatility_sizing = enable_volatility_adjustment
+    if enable_atr_stop_loss is None:
+        enable_atr_stop_loss = enable_volatility_adjustment
     cash = float(starting_cash)
     holdings: dict[str, int] = {}
     avg_cost: dict[str, float] = {}
@@ -478,6 +687,15 @@ def simulate_timeseries_backtest(
     last_prices: dict[str, float] = {}
     minute_signal_evaluations = 0
     daily_close_signal_evaluations = 0
+    volatility_stats = {
+        "assessed": 0,
+        "normal": 0,
+        "caution": 0,
+        "danger": 0,
+        "reduced": 0,
+        "skipped": 0,
+        "reduced_quantity": 0,
+    }
 
     def close_position(
         symbol: str,
@@ -505,6 +723,15 @@ def simulate_timeseries_backtest(
         trade_results.append(realized_pnl)
         entry_date = buy_dates[symbol]
         holding_days = max(0, (date.fromisoformat(date_text) - date.fromisoformat(entry_date)).days)
+        dated_prices = dated_history_by_symbol.get(symbol, {})
+        dated_bars = (ohlc_history_by_symbol_date or {}).get(symbol, {})
+        atr_diagnostic = _dated_atr_trade_diagnostic(
+            entry_prices[symbol],
+            entry_date,
+            date_text,
+            dated_prices,
+            dated_bars,
+        )
         trade_history.append({
             "symbol": symbol,
             "buy_price": entry_prices[symbol],
@@ -519,6 +746,7 @@ def simulate_timeseries_backtest(
             "entry_date": entry_date,
             "exit_date": date_text,
             "holding_days": holding_days,
+            "atr_diagnostic": atr_diagnostic,
         })
         if symbol in buy_times:
             trade_history[-1]["entry_time"] = buy_times[symbol]
@@ -613,9 +841,43 @@ def simulate_timeseries_backtest(
             for symbol, price, time_text in sorted(ticks):
                 current_bar_indices[symbol] = current_bar_indices.get(symbol, -1) + 1
                 last_prices[symbol] = price
-                if holdings.get(symbol, 0) > 0 and stop_loss_ratio > 0:
-                    if price <= avg_cost[symbol] * (1.0 - stop_loss_ratio):
-                        close_position(symbol, date_text, price, time_text, "stop_loss")
+                daily_bars = [
+                    bar for bar_date, bar in sorted(
+                        (ohlc_history_by_symbol_date or {}).get(symbol, {}).items()
+                    )
+                    if bar_date <= date_text
+                ]
+                atr_stop_triggered = False
+                if enable_atr_stop_loss and holdings.get(symbol, 0) > 0 and daily_bars:
+                    assessment = assess_volatility(
+                        daily_bars,
+                        config.ATR_PERIOD,
+                        config.ATR_CAUTION_RATIO,
+                        config.ATR_DANGER_RATIO,
+                    )
+                    if assessment is not None:
+                        atr_stop_triggered = is_atr_stop_loss_triggered(
+                            price,
+                            entry_prices[symbol],
+                            assessment.atr,
+                            assessment.level,
+                            config.ATR_STOP_NORMAL_MULTIPLIER,
+                            config.ATR_STOP_CAUTION_MULTIPLIER,
+                            config.ATR_STOP_DANGER_MULTIPLIER,
+                        )
+                regular_stop_triggered = (
+                    holdings.get(symbol, 0) > 0
+                    and stop_loss_ratio > 0
+                    and price <= avg_cost[symbol] * (1.0 - stop_loss_ratio)
+                )
+                if holdings.get(symbol, 0) > 0 and (regular_stop_triggered or atr_stop_triggered):
+                        close_position(
+                            symbol,
+                            date_text,
+                            price,
+                            time_text,
+                            "atr_stop_loss" if atr_stop_triggered else "stop_loss",
+                        )
                         stopped_out_symbols.add(symbol)
                 if symbol in active_symbols and symbol not in stopped_out_symbols:
                     signal = evaluate_signal(symbol, date_text, time_text, price)
@@ -632,7 +894,12 @@ def simulate_timeseries_backtest(
                         bar for bar_date, bar in sorted(dated_bars.items())
                         if bar_date <= date_text
                     ]
-                    qty = _adjust_backtest_quantity(qty_per_trade, daily_bars)
+                    qty = _adjust_backtest_quantity(
+                        qty_per_trade,
+                        daily_bars,
+                        enable_volatility_sizing,
+                        volatility_stats,
+                    )
                     if qty <= 0 or cash < price * qty:
                         continue
                     execution_price, delayed_price = _calculate_execution_price(
@@ -727,4 +994,5 @@ def simulate_timeseries_backtest(
             "market_slippage_bps": market_slippage_bps,
             "execution_delay_bars": execution_delay_bars,
         },
+        "volatility_adjustment": volatility_stats,
     }

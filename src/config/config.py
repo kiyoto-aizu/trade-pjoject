@@ -154,6 +154,12 @@ if not 0 < ATR_CAUTION_LOT_RATIO <= 1:
 if ATR_DANGER_ACTION not in {"skip", "minimum"}:
     raise ValueError("ATR_DANGER_ACTIONはskipまたはminimumを指定してください。")
 
+ATR_STOP_NORMAL_MULTIPLIER = float(os.getenv("ATR_STOP_NORMAL_MULTIPLIER", "1.5"))
+ATR_STOP_CAUTION_MULTIPLIER = float(os.getenv("ATR_STOP_CAUTION_MULTIPLIER", "1.0"))
+ATR_STOP_DANGER_MULTIPLIER = float(os.getenv("ATR_STOP_DANGER_MULTIPLIER", "0.7"))
+if min(ATR_STOP_NORMAL_MULTIPLIER, ATR_STOP_CAUTION_MULTIPLIER, ATR_STOP_DANGER_MULTIPLIER) <= 0:
+    raise ValueError("ATR損切り倍率は正数を指定してください。")
+
 # バックテストの約定コスト。各値は証券会社の料金プラン・運用実績に合わせて環境変数で調整する。
 BACKTEST_FEE_RATE = float(os.getenv("BACKTEST_FEE_RATE", "0.00055"))
 BACKTEST_MARKET_SLIPPAGE_BPS = float(os.getenv("BACKTEST_MARKET_SLIPPAGE_BPS", "5"))

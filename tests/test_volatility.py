@@ -7,7 +7,10 @@ from src.domain.volatility import (
     assess_volatility,
     calculate_atr,
     calculate_true_range,
+    is_atr_stop_loss_triggered,
+    stop_loss_multiplier,
 )
+from src.domain.models import PriceLimit, TradeSignal
 from src.application.backtest_usecase import _adjust_backtest_quantity
 
 
@@ -52,3 +55,32 @@ def test_backtest_quantity_uses_the_same_atr_adjustment():
     bars.append(DailyBar(high=105, low=95, close=100))
 
     assert _adjust_backtest_quantity(300, bars) == 0
+
+
+@pytest.mark.parametrize(
+    ("level", "multiplier"),
+    [
+        (VolatilityLevel.NORMAL, 1.5),
+        (VolatilityLevel.CAUTION, 1.0),
+        (VolatilityLevel.DANGER, 0.7),
+    ],
+)
+def test_atr_stop_loss_uses_level_specific_multiplier(level, multiplier):
+    assert stop_loss_multiplier(level, 1.5, 1.0, 0.7) == multiplier
+    stop_price = 100.0 - 10.0 * multiplier
+    assert is_atr_stop_loss_triggered(stop_price, 100.0, 10.0, level, 1.5, 1.0, 0.7)
+    assert not is_atr_stop_loss_triggered(stop_price + 0.01, 100.0, 10.0, level, 1.5, 1.0, 0.7)
+
+
+def test_trade_signal_combines_regular_exit_and_atr_stop_with_or():
+    limit = PriceLimit(lower_band=95.0, upper_band=105.0)
+
+    regular_only = TradeSignal.evaluate("7203", 94.0, limit, 40.0, 55.0, 45.0)
+    atr_only = TradeSignal.evaluate("7203", 94.0, limit, 50.0, 55.0, 45.0, 100.0, 5.0, 1.0)
+    both = TradeSignal.evaluate("7203", 94.0, limit, 40.0, 55.0, 45.0, 100.0, 5.0, 1.0)
+    neither = TradeSignal.evaluate("7203", 101.0, limit, 50.0, 55.0, 45.0, 100.0, 5.0, 1.0)
+
+    assert regular_only is not None
+    assert atr_only is not None
+    assert both is not None
+    assert neither is None

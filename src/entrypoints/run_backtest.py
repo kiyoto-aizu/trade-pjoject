@@ -11,6 +11,7 @@ import requests
 
 from src.application.backtest_usecase import simulate_backtest, simulate_timeseries_backtest
 from src.config import config
+from src.domain.volatility import DailyBar
 from src.infrastructure.analysis.daily_analyzer import create_daily_analyzer
 from src.infrastructure.notification.line_notify import process_notification, send_line_notify
 from src.infrastructure.persistence.minute_bar_repository import MinuteBarRepository
@@ -143,6 +144,56 @@ def fetch_yahoo_dated_history(symbols: list[str], days: int = 90) -> dict[str, d
     return dated_history
 
 
+def fetch_yahoo_dated_ohlc(symbols: list[str], days: int = 90) -> dict[str, dict[str, DailyBar]]:
+    """Yahoo Financeから日付付きの日足OHLCを取得します。"""
+    ohlc_history: dict[str, dict[str, DailyBar]] = {}
+    for symbol in symbols:
+        ticker = _to_yahoo_ticker(str(symbol))
+        try:
+            response = requests.get(
+                f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}",
+                params={"interval": "1d", "range": f"{days}d"},
+                headers={"User-Agent": "Mozilla/5.0"},
+                timeout=30,
+            )
+            response.raise_for_status()
+            result = response.json().get("chart", {}).get("result", [])
+            if not result:
+                continue
+            chart = result[0]
+            timestamps = chart.get("timestamp", [])
+            quote = chart.get("indicators", {}).get("quote", [{}])[0]
+            highs = quote.get("high", [])
+            lows = quote.get("low", [])
+            closes = quote.get("close", [])
+            history = {
+                datetime.fromtimestamp(timestamp, tz=timezone.utc).date().isoformat(): DailyBar(
+                    high=float(high), low=float(low), close=float(close),
+                )
+                for timestamp, high, low, close in zip(timestamps, highs, lows, closes)
+                if high is not None and low is not None and close is not None
+            }
+            if history:
+                ohlc_history[str(symbol)] = history
+        except (requests.RequestException, KeyError, TypeError, ValueError, OverflowError) as exc:
+            logger.warning("%s の日付付きOHLC取得に失敗しました: %s", symbol, exc)
+    return ohlc_history
+
+
+def _comparison_summary(result: dict) -> dict:
+    signals = result.get("signals", [])
+    return {
+        "total_pnl": result.get("total_pnl", 0.0),
+        "total_trades": result.get("total_trades", 0),
+        "final_position": result.get("final_position", 0),
+        "cash": result.get("cash", 0.0),
+        "volatility_adjustment": result.get("volatility_adjustment", {}),
+        "atr_stop_loss_count": sum(1 for signal in signals if signal.get("note") == "atr_stop_loss"),
+        "fixed_stop_loss_count": sum(1 for signal in signals if signal.get("note") == "stop_loss"),
+        "trade_history": result.get("trade_history", []),
+    }
+
+
 def load_history(path: Path) -> dict[str, list[float]]:
     if not path.exists():
         raise FileNotFoundError(f"価格履歴ファイルが見つかりません: {path}")
@@ -230,8 +281,18 @@ def main() -> None:
             help="SMA5/RSIの算出元（既定: daily）",
         )
         parser.add_argument("--output", type=Path, default=None, help="結果JSONの保存先")
+        parser.add_argument(
+            "--compare-atr",
+            action="store_true",
+            help="同じOHLCデータでATRなし・ありを比較する（--liveが必要）",
+        )
         args = parser.parse_args()
         minute_bar_repository = MinuteBarRepository(args.minute_bars_dir) if args.minute_bars_dir else None
+
+        if args.compare_atr and not args.live:
+            raise ValueError("--compare-atr を使う場合は --live を指定してください")
+
+        atr_comparison = None
 
         if args.indicator_source == "minute" and minute_bar_repository is None:
             raise ValueError("--indicator-source minute を使う場合は --minute-bars-dir を指定してください")
@@ -250,6 +311,7 @@ def main() -> None:
                 }
             symbols = sorted({symbol for symbols_on_day in daily_symbols.values() for symbol in symbols_on_day})
             history = fetch_yahoo_dated_history(symbols, days=args.days + 5)
+            ohlc_history = fetch_yahoo_dated_ohlc(symbols, days=args.days + 5) if args.compare_atr else None
             result = simulate_timeseries_backtest(
                 daily_symbols,
                 history,
@@ -262,7 +324,37 @@ def main() -> None:
                 minute_bar_repository=minute_bar_repository,
                 indicator_source=args.indicator_source,
                 close_at_eod=not args.allow_overnight,
+                ohlc_history_by_symbol_date=ohlc_history,
             )
+            if args.compare_atr:
+                baseline = simulate_timeseries_backtest(
+                    daily_symbols,
+                    history,
+                    starting_cash=args.cash,
+                    qty_per_trade=args.qty,
+                    fee_rate=args.fee,
+                    market_slippage_bps=args.market_slippage_bps,
+                    execution_delay_bars=args.execution_delay_bars,
+                    order_type=args.order_type,
+                    minute_bar_repository=minute_bar_repository,
+                    indicator_source=args.indicator_source,
+                    close_at_eod=not args.allow_overnight,
+                    ohlc_history_by_symbol_date=ohlc_history,
+                    enable_volatility_adjustment=False,
+                )
+                lot_only = simulate_timeseries_backtest(
+                    daily_symbols, history, starting_cash=args.cash, qty_per_trade=args.qty,
+                    fee_rate=args.fee, market_slippage_bps=args.market_slippage_bps,
+                    execution_delay_bars=args.execution_delay_bars, order_type=args.order_type,
+                    minute_bar_repository=minute_bar_repository, indicator_source=args.indicator_source,
+                    close_at_eod=not args.allow_overnight, ohlc_history_by_symbol_date=ohlc_history,
+                    enable_volatility_sizing=True, enable_atr_stop_loss=False,
+                )
+                atr_comparison = {
+                    "without_atr": _comparison_summary(baseline),
+                    "lot_adjustment_only": _comparison_summary(lot_only),
+                    "lot_adjustment_and_stop": _comparison_summary(result),
+                }
         else:
             symbols = load_symbols(args.symbols)
             history = load_history(args.history) if args.history.exists() else {}
@@ -273,6 +365,7 @@ def main() -> None:
                 if not args.live:
                     raise ValueError("--minute-bars-dir を使う固定銘柄モードでは --live を指定してください")
                 dated_history = fetch_yahoo_dated_history(symbols, days=args.days + 5)
+                ohlc_history = fetch_yahoo_dated_ohlc(symbols, days=args.days + 5) if args.compare_atr else None
                 daily_symbols = {
                     date_text: symbols
                     for date_text in sorted({
@@ -293,8 +386,39 @@ def main() -> None:
                     minute_bar_repository=minute_bar_repository,
                     indicator_source=args.indicator_source,
                     close_at_eod=not args.allow_overnight,
+                    ohlc_history_by_symbol_date=ohlc_history,
                 )
+                if args.compare_atr:
+                    baseline = simulate_timeseries_backtest(
+                        daily_symbols,
+                        dated_history,
+                        starting_cash=args.cash,
+                        qty_per_trade=args.qty,
+                        fee_rate=args.fee,
+                        market_slippage_bps=args.market_slippage_bps,
+                        execution_delay_bars=args.execution_delay_bars,
+                        order_type=args.order_type,
+                        minute_bar_repository=minute_bar_repository,
+                        indicator_source=args.indicator_source,
+                        close_at_eod=not args.allow_overnight,
+                        ohlc_history_by_symbol_date=ohlc_history,
+                        enable_volatility_adjustment=False,
+                    )
+                    lot_only = simulate_timeseries_backtest(
+                        daily_symbols, dated_history, starting_cash=args.cash, qty_per_trade=args.qty,
+                        fee_rate=args.fee, market_slippage_bps=args.market_slippage_bps,
+                        execution_delay_bars=args.execution_delay_bars, order_type=args.order_type,
+                        minute_bar_repository=minute_bar_repository, indicator_source=args.indicator_source,
+                        close_at_eod=not args.allow_overnight, ohlc_history_by_symbol_date=ohlc_history,
+                        enable_volatility_sizing=True, enable_atr_stop_loss=False,
+                    )
+                    atr_comparison = {
+                        "without_atr": _comparison_summary(baseline),
+                        "lot_adjustment_only": _comparison_summary(lot_only),
+                        "lot_adjustment_and_stop": _comparison_summary(result),
+                    }
             else:
+                ohlc_history = fetch_yahoo_dated_ohlc(symbols, days=args.days) if args.compare_atr else None
                 result = simulate_backtest(
                     symbols,
                     history,
@@ -305,7 +429,40 @@ def main() -> None:
                     execution_delay_bars=args.execution_delay_bars,
                     order_type=args.order_type,
                     close_at_eod=not args.allow_overnight,
+                    ohlc_history_by_symbol={
+                        symbol: [bar for _, bar in sorted((ohlc_history or {}).get(symbol, {}).items())]
+                        for symbol in symbols
+                    } if ohlc_history else None,
                 )
+                if args.compare_atr:
+                    baseline = simulate_backtest(
+                        symbols,
+                        history,
+                        starting_cash=args.cash,
+                        qty_per_trade=args.qty,
+                        fee_rate=args.fee,
+                        market_slippage_bps=args.market_slippage_bps,
+                        execution_delay_bars=args.execution_delay_bars,
+                        order_type=args.order_type,
+                        close_at_eod=not args.allow_overnight,
+                        enable_volatility_adjustment=False,
+                    )
+                    lot_only = simulate_backtest(
+                        symbols, history, starting_cash=args.cash, qty_per_trade=args.qty,
+                        fee_rate=args.fee, market_slippage_bps=args.market_slippage_bps,
+                        execution_delay_bars=args.execution_delay_bars, order_type=args.order_type,
+                        close_at_eod=not args.allow_overnight,
+                        ohlc_history_by_symbol={
+                            symbol: [bar for _, bar in sorted((ohlc_history or {}).get(symbol, {}).items())]
+                            for symbol in symbols
+                        } if ohlc_history else None,
+                        enable_volatility_sizing=True, enable_atr_stop_loss=False,
+                    )
+                    atr_comparison = {
+                        "without_atr": _comparison_summary(baseline),
+                        "lot_adjustment_only": _comparison_summary(lot_only),
+                        "lot_adjustment_and_stop": _comparison_summary(result),
+                    }
 
         # CLI 出力は日本語ラベルを優先して見やすくする
         display_result = {
@@ -322,9 +479,13 @@ def main() -> None:
             "保有期間別要約": result.get("保有期間別要約", result.get("holding_bucket_summary", [])),
             "対象期間": f"{result['period_start']} - {result['period_end']}" if result.get("period_start") else None,
         }
+        if atr_comparison:
+            display_result["ATR比較"] = atr_comparison
         analyzer = create_daily_analyzer()
         llm_analysis = analyzer.analyze_backtest(display_result) if analyzer else None
         result["generated_at"] = datetime.now().isoformat(timespec="seconds")
+        if atr_comparison:
+            result["atr_comparison"] = atr_comparison
         if llm_analysis:
             result["llm_analysis"] = llm_analysis
 

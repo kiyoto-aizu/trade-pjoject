@@ -27,6 +27,45 @@ class VolatilityAssessment:
     level: VolatilityLevel
 
 
+def stop_loss_multiplier(
+    level: VolatilityLevel,
+    normal_multiplier: float,
+    caution_multiplier: float,
+    danger_multiplier: float,
+) -> float:
+    """ボラティリティレベルに対応するATR損切り倍率を返します。"""
+    multipliers = {
+        VolatilityLevel.NORMAL: normal_multiplier,
+        VolatilityLevel.CAUTION: caution_multiplier,
+        VolatilityLevel.DANGER: danger_multiplier,
+    }
+    multiplier = multipliers[level]
+    if multiplier <= 0:
+        raise ValueError("ATR損切り倍率は正数で指定してください")
+    return multiplier
+
+
+def is_atr_stop_loss_triggered(
+    current_price: float,
+    entry_price: float,
+    atr: float,
+    level: VolatilityLevel,
+    normal_multiplier: float,
+    caution_multiplier: float,
+    danger_multiplier: float,
+) -> bool:
+    """現在価格がレベル別ATR損切り価格以下かを判定します。"""
+    if current_price <= 0 or entry_price <= 0 or atr < 0:
+        raise ValueError("価格は正数、ATRは0以上で指定してください")
+    multiplier = stop_loss_multiplier(
+        level,
+        normal_multiplier,
+        caution_multiplier,
+        danger_multiplier,
+    )
+    return current_price <= entry_price - atr * multiplier
+
+
 def _validate_bar(bar: DailyBar) -> None:
     if bar.high <= 0 or bar.low <= 0 or bar.close <= 0:
         raise ValueError("日足の価格は正数で指定してください")

@@ -18,6 +18,7 @@ from src.application.allocate_budget import allocate_budget
 from src.domain.models import Candidate, OrderHistoryEntry, PriceLimit, TradeSignal
 from src.domain.rules import calculate_buy_quantity, calculate_price_limit, calculate_rsi, check_kill_switch, is_buy_order_amount_allowed, is_market_closed, is_safe_to_order
 from src.domain.volatility import DailyBar, adjust_quantity_for_volatility, assess_volatility, stop_loss_multiplier
+from src.domain.market_regime import MarketRegime, resolve_rsi_entry_threshold
 from src.infrastructure.kabu.get_board import get_current_board
 from src.infrastructure.kabu.get_positions import get_positions
 from src.infrastructure.kabu.get_wallet import get_wallet_cash
@@ -56,6 +57,7 @@ class TradingUseCase:
         notifier=None,
         daily_analyzer=None,
         daily_report_directory: Optional[Path] = None,
+        market_regime_usecase=None,
     ):
         """
         TradingUseCaseを初期化します。
@@ -84,6 +86,9 @@ class TradingUseCase:
         self.notifier = notifier or send_line_notify
         self.daily_analyzer = daily_analyzer if daily_analyzer is not None else create_daily_analyzer()
         self.daily_report_directory = daily_report_directory or Path(__file__).resolve().parents[2] / "data" / "reports"
+        self.market_regime_usecase = market_regime_usecase
+        self.market_regime = MarketRegime.NORMAL
+        self.market_regime_assessment = None
         self.last_positions = []
         self.kill_switch_triggered = False
         self.emergency_stop_triggered = False
@@ -426,6 +431,16 @@ class TradingUseCase:
             logger.info("上位銘柄リストが空です。取引を行いません。")
             return
 
+        if self.market_regime_usecase is not None:
+            self.market_regime_assessment = self.market_regime_usecase.execute()
+            self.market_regime = self.market_regime_assessment.regime
+            logger.info(
+                "MarketRegimeを取得しました: レジーム=%s | データ取得=%s | 理由=%s",
+                self.market_regime.value,
+                self.market_regime_assessment.data_available,
+                self.market_regime_assessment.failure_reason or "なし",
+            )
+
         allocated_quantities = {}
         if self.filtering_result_repository and preflight_market_data:
             allocated_quantities = self._allocate_filtering_candidates(symbols, preflight_market_data)
@@ -481,13 +496,18 @@ class TradingUseCase:
                         config.ATR_CAUTION_RATIO,
                         config.ATR_DANGER_RATIO,
                     ) if daily_bars else None
+                    entry_threshold = resolve_rsi_entry_threshold(
+                        self.market_regime,
+                        config.RSI_ENTRY_THRESHOLD,
+                        config.RSI_ENTRY_THRESHOLD_CAUTION,
+                    )
                     # 売買シグナルを生成
                     signal = TradeSignal.evaluate(
                         symbol,
                         board['current_price'],
                         limit,
                         rsi,
-                        config.RSI_ENTRY_THRESHOLD,
+                        entry_threshold,
                         config.RSI_EXIT_THRESHOLD,
                     )
                     if signal is None and assessment is not None:
@@ -508,7 +528,7 @@ class TradingUseCase:
                                 board['current_price'],
                                 limit,
                                 rsi,
-                                config.RSI_ENTRY_THRESHOLD,
+                                entry_threshold,
                                 config.RSI_EXIT_THRESHOLD,
                                 entry_price,
                                 assessment.atr,
@@ -526,7 +546,7 @@ class TradingUseCase:
                         limit.lower_band,
                         limit.upper_band,
                         rsi,
-                        config.RSI_ENTRY_THRESHOLD,
+                        entry_threshold,
                         config.RSI_EXIT_THRESHOLD,
                         signal.side.name if signal else "なし",
                     )
@@ -568,6 +588,20 @@ class TradingUseCase:
                                     original_qty,
                                     signal.qty,
                                 )
+                        if self.market_regime == MarketRegime.DANGER:
+                            logger.info(
+                                "MarketRegimeにより新規買いを見送ります: 銘柄=%s | レジーム=%s",
+                                symbol,
+                                self.market_regime.value,
+                            )
+                            continue
+                        elif self.market_regime == MarketRegime.CAUTION:
+                            logger.info(
+                                "MarketRegimeによりエントリーRSI基準を引き上げました: 銘柄=%s | レジーム=%s | RSI基準=%.1f",
+                                symbol,
+                                self.market_regime.value,
+                                entry_threshold,
+                            )
                     else:
                         held_quantity = next(
                             (

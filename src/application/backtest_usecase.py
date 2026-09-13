@@ -5,6 +5,13 @@ from typing import Dict, List
 
 from src.config import config
 from src.domain.enums import OrderSide
+from src.domain.market_regime import (
+    MarketRegime,
+    MarketRegimeThresholds,
+    calculate_market_regime_series,
+    resolve_rsi_entry_threshold,
+)
+from src.domain.market_volatility import MarketDailyBar
 from src.domain.models import TradeSignal
 from src.domain.rules import calculate_price_limit, calculate_rsi
 from src.domain.volatility import (
@@ -656,6 +663,10 @@ def simulate_timeseries_backtest(
     enable_volatility_adjustment: bool = True,
     enable_volatility_sizing: bool | None = None,
     enable_atr_stop_loss: bool | None = None,
+    market_regime_by_date: dict[str, MarketRegime] | None = None,
+    nikkei_market_bars: list[MarketDailyBar] | None = None,
+    vix_market_bars: list[MarketDailyBar] | None = None,
+    market_regime_enabled: bool = True,
 ) -> dict:
     """日付ごとのフィルタリング結果を、日足または分足で再生します。"""
     if indicator_source not in {"daily", "minute"}:
@@ -670,6 +681,18 @@ def simulate_timeseries_backtest(
         enable_volatility_sizing = enable_volatility_adjustment
     if enable_atr_stop_loss is None:
         enable_atr_stop_loss = enable_volatility_adjustment
+    if market_regime_by_date is None and nikkei_market_bars is not None and vix_market_bars is not None:
+        market_regime_by_date = {
+            target_date.isoformat(): regime
+            for target_date, regime in calculate_market_regime_series(
+                nikkei_market_bars,
+                vix_market_bars,
+                config.MARKET_REGIME_REALIZED_VOL_WINDOW,
+                config.MARKET_REGIME_THRESHOLDS,
+            ).items()
+        }
+    if not market_regime_enabled:
+        market_regime_by_date = None
     cash = float(starting_cash)
     holdings: dict[str, int] = {}
     avg_cost: dict[str, float] = {}
@@ -695,6 +718,15 @@ def simulate_timeseries_backtest(
         "reduced": 0,
         "skipped": 0,
         "reduced_quantity": 0,
+    }
+    market_regime_stats = {
+        "enabled": market_regime_enabled and market_regime_by_date is not None,
+        "normal_days": 0,
+        "caution_days": 0,
+        "danger_days": 0,
+        "caution_rsi_filtered": 0,
+        "danger_skipped": 0,
+        "data_unavailable_days": 0,
     }
 
     def close_position(
@@ -774,7 +806,13 @@ def simulate_timeseries_backtest(
         buy_dates.pop(symbol, None)
         buy_times.pop(symbol, None)
 
-    def evaluate_signal(symbol: str, date_text: str, time_text: str | None, price: float) -> TradeSignal | None:
+    def evaluate_signal(
+        symbol: str,
+        date_text: str,
+        time_text: str | None,
+        price: float,
+        market_regime: MarketRegime,
+    ) -> TradeSignal | None:
         nonlocal minute_signal_evaluations, daily_close_signal_evaluations
         if time_text is None:
             daily_close_signal_evaluations += 1
@@ -804,7 +842,12 @@ def simulate_timeseries_backtest(
             lower_band=limit.lower_band * buy_threshold_ratio,
             upper_band=limit.upper_band * sell_threshold_ratio,
         )
-        return TradeSignal.evaluate(
+        entry_threshold = resolve_rsi_entry_threshold(
+            market_regime,
+            config.RSI_ENTRY_THRESHOLD,
+            config.RSI_ENTRY_THRESHOLD_CAUTION,
+        )
+        normal_signal = TradeSignal.evaluate(
             symbol,
             price,
             adjusted_limit,
@@ -812,8 +855,32 @@ def simulate_timeseries_backtest(
             config.RSI_ENTRY_THRESHOLD,
             config.RSI_EXIT_THRESHOLD,
         )
+        signal = TradeSignal.evaluate(
+            symbol,
+            price,
+            adjusted_limit,
+            rsi,
+            entry_threshold,
+            config.RSI_EXIT_THRESHOLD,
+        )
+        if (
+            market_regime == MarketRegime.CAUTION
+            and normal_signal is not None
+            and normal_signal.side == OrderSide.BUY
+            and signal is None
+        ):
+            market_regime_stats["caution_rsi_filtered"] += 1
+        return signal
 
     for date_text in sorted(daily_symbols):
+        daily_market_regime = (
+            market_regime_by_date.get(date_text, MarketRegime.DANGER)
+            if market_regime_by_date is not None
+            else MarketRegime.NORMAL
+        )
+        market_regime_stats[f"{daily_market_regime.value.lower()}_days"] += 1
+        if market_regime_by_date is not None and date_text not in market_regime_by_date:
+            market_regime_stats["data_unavailable_days"] += 1
         active_symbols = set(daily_symbols[date_text])
         ticks_by_time: dict[str, list[tuple[str, float, str | None]]] = {}
         prices_by_symbol: dict[str, list[float]] = {}
@@ -880,7 +947,7 @@ def simulate_timeseries_backtest(
                         )
                         stopped_out_symbols.add(symbol)
                 if symbol in active_symbols and symbol not in stopped_out_symbols:
-                    signal = evaluate_signal(symbol, date_text, time_text, price)
+                    signal = evaluate_signal(symbol, date_text, time_text, price, daily_market_regime)
                     if signal is not None:
                         signals_at_time.append((symbol, price, time_text, signal))
 
@@ -900,6 +967,10 @@ def simulate_timeseries_backtest(
                         enable_volatility_sizing,
                         volatility_stats,
                     )
+                    if market_regime_by_date is not None:
+                        if daily_market_regime == MarketRegime.DANGER:
+                            market_regime_stats["danger_skipped"] += 1
+                            continue
                     if qty <= 0 or cash < price * qty:
                         continue
                     execution_price, delayed_price = _calculate_execution_price(
@@ -931,6 +1002,8 @@ def simulate_timeseries_backtest(
                         "qty": qty,
                         "fee": fee,
                         "date": date_text,
+                        "market_regime": daily_market_regime.value,
+                            "atr_adjusted_quantity": qty,
                         **({"time": time_text} if time_text else {}),
                     })
 
@@ -995,4 +1068,33 @@ def simulate_timeseries_backtest(
             "execution_delay_bars": execution_delay_bars,
         },
         "volatility_adjustment": volatility_stats,
+        "market_regime_adjustment": market_regime_stats,
+    }
+
+
+def compare_market_regime_backtest(**kwargs) -> dict:
+    """MarketRegime導入前後を同一条件で比較します。"""
+    baseline_kwargs = dict(kwargs)
+    baseline_kwargs["market_regime_enabled"] = False
+    enabled_kwargs = dict(kwargs)
+    enabled_kwargs["market_regime_enabled"] = True
+    baseline = simulate_timeseries_backtest(**baseline_kwargs)
+    enabled = simulate_timeseries_backtest(**enabled_kwargs)
+    return {
+        "baseline": {
+            "total_pnl": baseline["total_pnl"],
+            "total_trades": baseline["total_trades"],
+            "max_drawdown": baseline["max_drawdown"],
+        },
+        "with_market_regime": {
+            "total_pnl": enabled["total_pnl"],
+            "total_trades": enabled["total_trades"],
+            "max_drawdown": enabled["max_drawdown"],
+        },
+        "delta": {
+            "total_pnl": round(enabled["total_pnl"] - baseline["total_pnl"], 2),
+            "total_trades": enabled["total_trades"] - baseline["total_trades"],
+            "max_drawdown": round(enabled["max_drawdown"] - baseline["max_drawdown"], 2),
+        },
+        "market_regime_adjustment": enabled["market_regime_adjustment"],
     }

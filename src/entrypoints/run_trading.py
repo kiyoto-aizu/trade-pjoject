@@ -10,6 +10,7 @@ from datetime import datetime
 from pathlib import Path
 
 from src.config import config
+from src.application.market_regime_usecase import MarketRegimeUseCase
 from src.application.trading_usecase import TradingUseCase
 from src.domain.rules import is_market_closed, is_trading_session
 from src.infrastructure.kabu.get_token import get_api_token
@@ -18,6 +19,7 @@ from src.infrastructure.persistence.filtering_result_repository import Filtering
 from src.infrastructure.execution_lock import market_workflow_lock
 from src.infrastructure.notification.line_notify import send_line_notify
 from src.infrastructure.paper.paper_order_executor import PaperOrderExecutor
+from src.infrastructure.market_data.yahoo_index_client import YahooIndexClient
 
 
 def create_trading_use_case(token: str) -> TradingUseCase:
@@ -40,6 +42,12 @@ def create_trading_use_case(token: str) -> TradingUseCase:
         order_sender=order_sender,
         filtering_result_repository=FilteringResultRepository(root / 'data' / 'filtering'),
         notifier=send_line_notify,
+        market_regime_usecase=MarketRegimeUseCase(
+            market_data_client=YahooIndexClient(),
+            thresholds=config.MARKET_REGIME_THRESHOLDS,
+            realized_volatility_window=config.MARKET_REGIME_REALIZED_VOL_WINDOW,
+            data_range=config.MARKET_REGIME_DATA_RANGE,
+        ),
     )
 
 

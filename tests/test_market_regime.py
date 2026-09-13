@@ -7,10 +7,12 @@ from src.domain.market_regime import (
     MarketRegime,
     MarketRegimeThresholds,
     calculate_market_regime,
+    calculate_market_regime_series,
     classify_realized_volatility,
     classify_vix,
+    resolve_rsi_entry_threshold,
 )
-from src.domain.market_volatility import MarketDailyBar
+from src.domain.market_volatility import DatedClose, MarketDailyBar
 
 
 THRESHOLDS = MarketRegimeThresholds()
@@ -80,6 +82,28 @@ def test_thresholds_reject_invalid_order():
         MarketRegimeThresholds(realized_vol_caution=30.0, realized_vol_danger=29.0)
     with pytest.raises(ValueError):
         MarketRegimeThresholds(vix_caution=28.0, vix_danger=27.0)
+
+
+@pytest.mark.parametrize(
+    ("regime", "expected"),
+    [
+        (MarketRegime.NORMAL, 55.0),
+        (MarketRegime.CAUTION, 60.0),
+        (MarketRegime.DANGER, 60.0),
+    ],
+)
+def test_resolve_rsi_entry_threshold(regime, expected):
+    assert resolve_rsi_entry_threshold(regime, 55.0, 60.0) == expected
+
+
+def test_market_regime_series_uses_latest_vix_without_looking_ahead():
+    nikkei = _bars([100.0 + index for index in range(22)])
+    vix = _bars([10.0, 30.0])
+    vix[1] = MarketDailyBar(date(2026, 1, 25), 30.0, 30.0, 30.0, 30.0)
+
+    result = calculate_market_regime_series(nikkei, vix, 20, THRESHOLDS)
+
+    assert result[date(2026, 1, 21)] == MarketRegime.NORMAL
 
 
 class FakeMarketDataClient:

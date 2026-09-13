@@ -137,6 +137,7 @@ SCREENING_BATCH_SIZE = 50
 # 売買シグナルのトレンド確認（Wilder方式のRSI）
 RSI_PERIOD = int(os.getenv("RSI_PERIOD", "14"))
 RSI_ENTRY_THRESHOLD = float(os.getenv("RSI_ENTRY_THRESHOLD", os.getenv("RSI_BUY_THRESHOLD", "55")))
+RSI_ENTRY_THRESHOLD_CAUTION = float(os.getenv("RSI_ENTRY_THRESHOLD_CAUTION", "60"))
 RSI_EXIT_THRESHOLD = float(os.getenv("RSI_EXIT_THRESHOLD", os.getenv("RSI_SELL_THRESHOLD", "45")))
 RSI_MINIMUM_CLOSES = int(os.getenv("RSI_MINIMUM_CLOSES", "30"))
 

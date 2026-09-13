@@ -1,11 +1,13 @@
 import json
 from datetime import datetime, time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from src.config import config
 from src.domain.models import PriceLimit, TradeSignal
+from src.domain.market_regime import MarketRegime
 from src.domain.rules import is_market_closed
 from src.application.trading_usecase import TradingUseCase
 from src.infrastructure.paper.paper_order_executor import PaperOrderExecutor
@@ -164,7 +166,19 @@ def test_end_of_day_report_appends_daily_llm_analysis(tmp_path):
     assert report['llm_analysis'] == '今日の評価\n- 参考評価です。'
 
 
-def test_trading_use_case_places_and_records_buy_order_without_live_api(monkeypatch, tmp_path):
+@pytest.mark.parametrize(
+    ("regime", "expected_order_count"),
+    [
+        (MarketRegime.NORMAL, 1),
+        (MarketRegime.CAUTION, 0),
+    ],
+)
+def test_trading_use_case_applies_market_regime_to_entry_threshold(
+    monkeypatch,
+    tmp_path,
+    regime,
+    expected_order_count,
+):
     monkeypatch.setattr(config, 'IS_DEMO', True)
     symbols_path = tmp_path / 'top_symbols.json'
     symbols_path.write_text(json.dumps(['7203']), encoding='utf-8')
@@ -196,6 +210,20 @@ def test_trading_use_case_places_and_records_buy_order_without_live_api(monkeypa
             calls.append((token, symbol, side))
             return {'Result': 0, 'OrderId': 'paper-order-1'}
 
+    class MarketRegimeProvider:
+        def __init__(self):
+            self.calls = 0
+
+        def execute(self):
+            self.calls += 1
+            return SimpleNamespace(
+                regime=regime,
+                data_available=True,
+                failure_reason=None,
+            )
+
+    market_regime_provider = MarketRegimeProvider()
+
     current_times = iter([datetime(2026, 9, 4, 10, 0), datetime(2026, 9, 4, 15, 30)])
     monkeypatch.setattr(config, 'API_SOFT_LIMIT', 100_000.0)
     monkeypatch.setattr(
@@ -212,6 +240,7 @@ def test_trading_use_case_places_and_records_buy_order_without_live_api(monkeypa
         positions_client=PositionsClient(),
         order_sender=OrderSender(),
         notifier=lambda message: None,
+        market_regime_usecase=market_regime_provider,
     )
     use_case.run(
         top_symbols_path=symbols_path,
@@ -219,10 +248,13 @@ def test_trading_use_case_places_and_records_buy_order_without_live_api(monkeypa
         sleep=lambda seconds: None,
     )
 
-    assert calls == [('dummy', '7203', config.OrderSide.BUY.value)]
-    assert len(use_case.order_history) == 1
-    assert use_case.order_history[0].result_code == 0
-    assert use_case.order_history[0].order_id == 'paper-order-1'
+    assert len(calls) == expected_order_count
+    assert len(use_case.order_history) == expected_order_count
+    if expected_order_count:
+        assert calls == [('dummy', '7203', config.OrderSide.BUY.value)]
+        assert use_case.order_history[0].result_code == 0
+        assert use_case.order_history[0].order_id == 'paper-order-1'
+    assert market_regime_provider.calls == 1
 
 
 def test_trading_use_case_collects_complete_preflight_market_data(tmp_path):

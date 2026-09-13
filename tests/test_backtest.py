@@ -3,7 +3,12 @@ from datetime import date
 
 import pytest
 
-from src.application.backtest_usecase import simulate_backtest, simulate_timeseries_backtest
+from src.application.backtest_usecase import (
+    compare_market_regime_backtest,
+    simulate_backtest,
+    simulate_timeseries_backtest,
+)
+from src.domain.market_regime import MarketRegime
 from src.config import config
 from src.domain.rules import calculate_rsi
 from src.entrypoints.run_backtest import fetch_yahoo_history, load_history, save_backtest_result
@@ -230,6 +235,83 @@ def test_simulate_timeseries_backtest_uses_daily_symbol_sets():
         "win_count": 1,
         "avg_realized_pnl": 400.0,
     }]
+
+
+def test_timeseries_backtest_danger_skips_buy_but_does_not_change_sell_logic():
+    dated_history = {
+        "7203": {
+            "2026-09-01": 90.0,
+            "2026-09-02": 90.0,
+            "2026-09-03": 90.0,
+            "2026-09-04": 90.0,
+            "2026-09-05": 90.0,
+            "2026-09-06": 92.0,
+            "2026-09-07": 120.0,
+            "2026-09-08": 98.0,
+        },
+    }
+    regimes = {date_text: MarketRegime.DANGER for date_text in dated_history["7203"]}
+
+    result = simulate_timeseries_backtest(
+        {"2026-09-06": ["7203"], "2026-09-07": ["7203"]},
+        dated_history,
+        starting_cash=10_000.0,
+        qty_per_trade=100,
+        close_at_eod=False,
+        market_regime_by_date=regimes,
+    )
+
+    assert result["total_trades"] == 0
+    assert result["market_regime_adjustment"]["danger_skipped"] >= 1
+
+
+def test_timeseries_backtest_caution_filters_buy_by_rsi_threshold(monkeypatch):
+    dated_history = {
+        "7203": {
+            "2026-09-01": 90.0,
+            "2026-09-02": 90.0,
+            "2026-09-03": 90.0,
+            "2026-09-04": 90.0,
+            "2026-09-05": 90.0,
+            "2026-09-06": 92.0,
+        },
+    }
+    monkeypatch.setattr(config, "RSI_ENTRY_THRESHOLD_CAUTION", 100.0)
+    result = simulate_timeseries_backtest(
+        {"2026-09-06": ["7203"]},
+        dated_history,
+        starting_cash=100_000.0,
+        qty_per_trade=300,
+        close_at_eod=False,
+        market_regime_by_date={"2026-09-06": MarketRegime.CAUTION},
+    )
+
+    assert result["total_trades"] == 0
+    assert result["market_regime_adjustment"]["caution_rsi_filtered"] == 1
+
+
+def test_compare_market_regime_backtest_reports_before_and_after_metrics():
+    dated_history = {
+        "7203": {
+            "2026-09-01": 90.0,
+            "2026-09-02": 90.0,
+            "2026-09-03": 90.0,
+            "2026-09-04": 90.0,
+            "2026-09-05": 90.0,
+            "2026-09-06": 92.0,
+        },
+    }
+    comparison = compare_market_regime_backtest(
+        daily_symbols={"2026-09-06": ["7203"]},
+        dated_history_by_symbol=dated_history,
+        starting_cash=100_000.0,
+        qty_per_trade=300,
+        close_at_eod=False,
+        market_regime_by_date={"2026-09-06": MarketRegime.DANGER},
+    )
+
+    assert set(comparison) == {"baseline", "with_market_regime", "delta", "market_regime_adjustment"}
+    assert comparison["baseline"]["total_trades"] >= comparison["with_market_regime"]["total_trades"]
 
 
 def test_timeseries_backtest_evaluates_each_minute_with_daily_indicators(tmp_path):

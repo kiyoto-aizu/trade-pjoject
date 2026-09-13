@@ -12,6 +12,8 @@ import requests
 from src.application.backtest_usecase import simulate_backtest, simulate_timeseries_backtest
 from src.config import config
 from src.domain.volatility import DailyBar
+from src.domain.market_regime import calculate_market_regime_series
+from src.infrastructure.market_data.yahoo_index_client import YahooIndexClient
 from src.infrastructure.analysis.daily_analyzer import create_daily_analyzer
 from src.infrastructure.notification.line_notify import process_notification, send_line_notify
 from src.infrastructure.persistence.minute_bar_repository import MinuteBarRepository
@@ -194,6 +196,27 @@ def _comparison_summary(result: dict) -> dict:
     }
 
 
+def _market_regime_comparison_summary(baseline: dict, enabled: dict) -> dict:
+    return {
+        "baseline": {
+            "total_pnl": baseline.get("total_pnl", 0.0),
+            "total_trades": baseline.get("total_trades", 0),
+            "max_drawdown": baseline.get("max_drawdown", 0.0),
+        },
+        "with_market_regime": {
+            "total_pnl": enabled.get("total_pnl", 0.0),
+            "total_trades": enabled.get("total_trades", 0),
+            "max_drawdown": enabled.get("max_drawdown", 0.0),
+        },
+        "delta": {
+            "total_pnl": round(enabled.get("total_pnl", 0.0) - baseline.get("total_pnl", 0.0), 2),
+            "total_trades": enabled.get("total_trades", 0) - baseline.get("total_trades", 0),
+            "max_drawdown": round(enabled.get("max_drawdown", 0.0) - baseline.get("max_drawdown", 0.0), 2),
+        },
+        "market_regime_adjustment": enabled.get("market_regime_adjustment", {}),
+    }
+
+
 def load_history(path: Path) -> dict[str, list[float]]:
     if not path.exists():
         raise FileNotFoundError(f"価格履歴ファイルが見つかりません: {path}")
@@ -286,13 +309,21 @@ def main() -> None:
             action="store_true",
             help="同じOHLCデータでATRなし・ありを比較する（--liveが必要）",
         )
+        parser.add_argument(
+            "--compare-market-regime",
+            action="store_true",
+            help="MarketRegime導入前後を比較する（--liveの日付付きバックテストが必要）",
+        )
         args = parser.parse_args()
         minute_bar_repository = MinuteBarRepository(args.minute_bars_dir) if args.minute_bars_dir else None
 
         if args.compare_atr and not args.live:
             raise ValueError("--compare-atr を使う場合は --live を指定してください")
+        if args.compare_market_regime and not args.live:
+            raise ValueError("--compare-market-regime を使う場合は --live を指定してください")
 
         atr_comparison = None
+        market_regime_comparison = None
 
         if args.indicator_source == "minute" and minute_bar_repository is None:
             raise ValueError("--indicator-source minute を使う場合は --minute-bars-dir を指定してください")
@@ -312,6 +343,18 @@ def main() -> None:
             symbols = sorted({symbol for symbols_on_day in daily_symbols.values() for symbol in symbols_on_day})
             history = fetch_yahoo_dated_history(symbols, days=args.days + 5)
             ohlc_history = fetch_yahoo_dated_ohlc(symbols, days=args.days + 5) if args.compare_atr else None
+            market_regime_by_date = None
+            if args.compare_market_regime:
+                index_client = YahooIndexClient()
+                market_regime_by_date = {
+                    target_date.isoformat(): regime
+                    for target_date, regime in calculate_market_regime_series(
+                        index_client.get_daily_ohlc("^N225", range_=f"{args.days + 30}d"),
+                        index_client.get_daily_ohlc("^VIX", range_=f"{args.days + 30}d"),
+                        config.MARKET_REGIME_REALIZED_VOL_WINDOW,
+                        config.MARKET_REGIME_THRESHOLDS,
+                    ).items()
+                }
             result = simulate_timeseries_backtest(
                 daily_symbols,
                 history,
@@ -325,7 +368,25 @@ def main() -> None:
                 indicator_source=args.indicator_source,
                 close_at_eod=not args.allow_overnight,
                 ohlc_history_by_symbol_date=ohlc_history,
+                market_regime_by_date=market_regime_by_date,
             )
+            if args.compare_market_regime:
+                baseline = simulate_timeseries_backtest(
+                    daily_symbols,
+                    history,
+                    starting_cash=args.cash,
+                    qty_per_trade=args.qty,
+                    fee_rate=args.fee,
+                    market_slippage_bps=args.market_slippage_bps,
+                    execution_delay_bars=args.execution_delay_bars,
+                    order_type=args.order_type,
+                    minute_bar_repository=minute_bar_repository,
+                    indicator_source=args.indicator_source,
+                    close_at_eod=not args.allow_overnight,
+                    ohlc_history_by_symbol_date=ohlc_history,
+                    market_regime_enabled=False,
+                )
+                market_regime_comparison = _market_regime_comparison_summary(baseline, result)
             if args.compare_atr:
                 baseline = simulate_timeseries_backtest(
                     daily_symbols,
@@ -374,6 +435,18 @@ def main() -> None:
                         for date_text in symbol_history
                     })
                 }
+                market_regime_by_date = None
+                if args.compare_market_regime:
+                    index_client = YahooIndexClient()
+                    market_regime_by_date = {
+                        target_date.isoformat(): regime
+                        for target_date, regime in calculate_market_regime_series(
+                            index_client.get_daily_ohlc("^N225", range_=f"{args.days + 30}d"),
+                            index_client.get_daily_ohlc("^VIX", range_=f"{args.days + 30}d"),
+                            config.MARKET_REGIME_REALIZED_VOL_WINDOW,
+                            config.MARKET_REGIME_THRESHOLDS,
+                        ).items()
+                    }
                 result = simulate_timeseries_backtest(
                     daily_symbols,
                     dated_history,
@@ -387,7 +460,25 @@ def main() -> None:
                     indicator_source=args.indicator_source,
                     close_at_eod=not args.allow_overnight,
                     ohlc_history_by_symbol_date=ohlc_history,
+                    market_regime_by_date=market_regime_by_date,
                 )
+                if args.compare_market_regime:
+                    baseline = simulate_timeseries_backtest(
+                        daily_symbols,
+                        dated_history,
+                        starting_cash=args.cash,
+                        qty_per_trade=args.qty,
+                        fee_rate=args.fee,
+                        market_slippage_bps=args.market_slippage_bps,
+                        execution_delay_bars=args.execution_delay_bars,
+                        order_type=args.order_type,
+                        minute_bar_repository=minute_bar_repository,
+                        indicator_source=args.indicator_source,
+                        close_at_eod=not args.allow_overnight,
+                        ohlc_history_by_symbol_date=ohlc_history,
+                        market_regime_enabled=False,
+                    )
+                    market_regime_comparison = _market_regime_comparison_summary(baseline, result)
                 if args.compare_atr:
                     baseline = simulate_timeseries_backtest(
                         daily_symbols,
@@ -481,11 +572,15 @@ def main() -> None:
         }
         if atr_comparison:
             display_result["ATR比較"] = atr_comparison
+        if market_regime_comparison:
+            display_result["MarketRegime比較"] = market_regime_comparison
         analyzer = create_daily_analyzer()
         llm_analysis = analyzer.analyze_backtest(display_result) if analyzer else None
         result["generated_at"] = datetime.now().isoformat(timespec="seconds")
         if atr_comparison:
             result["atr_comparison"] = atr_comparison
+        if market_regime_comparison:
+            result["market_regime_comparison"] = market_regime_comparison
         if llm_analysis:
             result["llm_analysis"] = llm_analysis
 

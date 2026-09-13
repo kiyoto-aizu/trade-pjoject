@@ -47,6 +47,7 @@ def create_trading_use_case(token: str) -> TradingUseCase:
             thresholds=config.MARKET_REGIME_THRESHOLDS,
             realized_volatility_window=config.MARKET_REGIME_REALIZED_VOL_WINDOW,
             data_range=config.MARKET_REGIME_DATA_RANGE,
+            adx_threshold=config.MARKET_REGIME_ADX_TREND_THRESHOLD,
         ),
     )
 

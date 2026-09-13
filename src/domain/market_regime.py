@@ -11,6 +11,7 @@ from src.domain.market_volatility import (
     calculate_previous_day_changes,
     calculate_realized_volatility_series,
 )
+from src.domain.market_trend import calculate_adx_series
 
 
 class MarketRegime(str, Enum):
@@ -51,6 +52,14 @@ class MarketRegimeAssessment:
     nikkei_change_percent: float | None
     data_available: bool
     failure_reason: str | None = None
+    adx: float | None = None
+    trend_relief_applied: bool = False
+
+
+@dataclass(frozen=True)
+class MarketRegimeSeriesResult:
+    regimes: dict[date, MarketRegime]
+    trend_relief_dates: frozenset[date]
 
 
 def _validate_value(value: float, name: str) -> None:
@@ -116,6 +125,27 @@ def calculate_market_regime(
     return regime
 
 
+def apply_trend_relief(
+    market_regime: MarketRegime,
+    adx: float | None,
+    adx_threshold: float = 27.0,
+) -> MarketRegime:
+    """ADXが閾値以上の明確なトレンド時だけ市場レジームを1段階緩和します。"""
+    if adx_threshold < 0 or not isfinite(adx_threshold):
+        raise ValueError("ADX閾値は0以上の有限値で指定してください")
+    if adx is None:
+        return market_regime
+    if adx < 0 or not isfinite(adx):
+        raise ValueError("ADXは0以上の有限値で指定してください")
+    if adx < adx_threshold:
+        return market_regime
+    if market_regime == MarketRegime.DANGER:
+        return MarketRegime.CAUTION
+    if market_regime == MarketRegime.CAUTION:
+        return MarketRegime.NORMAL
+    return MarketRegime.NORMAL
+
+
 def resolve_rsi_entry_threshold(
     market_regime: MarketRegime,
     normal_threshold: float,
@@ -138,6 +168,19 @@ def calculate_market_regime_series(
     thresholds: MarketRegimeThresholds,
 ) -> dict[date, MarketRegime]:
     """未来データを使わず、対象日ごとのMarketRegimeを計算します。"""
+    return calculate_market_regime_series_with_details(
+        nikkei_bars, vix_bars, window, thresholds
+    ).regimes
+
+
+def calculate_market_regime_series_with_details(
+    nikkei_bars: Sequence[MarketDailyBar],
+    vix_bars: Sequence[MarketDailyBar],
+    window: int,
+    thresholds: MarketRegimeThresholds,
+    adx_threshold: float = 27.0,
+) -> MarketRegimeSeriesResult:
+    """ADX緩和情報を含む、未来データを使わないレジーム系列を返します。"""
     if window <= 0:
         raise ValueError("実現ボラティリティ期間は正数で指定してください")
     nikkei_closes = [DatedClose(bar.date, bar.close) for bar in nikkei_bars]
@@ -153,17 +196,28 @@ def calculate_market_regime_series(
         point.date: point.value_percent
         for point in calculate_previous_day_changes(nikkei_closes)
     }
+    adx_points = {
+        point.date: point.value
+        for point in calculate_adx_series(nikkei_bars)
+    }
     result: dict[date, MarketRegime] = {}
+    trend_relief_dates: set[date] = set()
     vix_index = 0
     latest_vix: float | None = None
     for target_date in sorted(volatility_points):
         while vix_index < len(vix_closes) and vix_closes[vix_index].date <= target_date:
             latest_vix = vix_closes[vix_index].close
             vix_index += 1
-        result[target_date] = calculate_market_regime(
+        base_regime = calculate_market_regime(
             volatility_points[target_date],
             latest_vix,
             changes.get(target_date),
             thresholds,
         )
-    return result
+        final_regime = apply_trend_relief(
+            base_regime, adx_points.get(target_date), adx_threshold
+        )
+        result[target_date] = final_regime
+        if final_regime != base_regime:
+            trend_relief_dates.add(target_date)
+    return MarketRegimeSeriesResult(result, frozenset(trend_relief_dates))

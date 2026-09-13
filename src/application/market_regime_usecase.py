@@ -2,11 +2,13 @@
 import logging
 
 from src.domain.market_regime import (
+    apply_trend_relief,
     MarketRegime,
     MarketRegimeAssessment,
     MarketRegimeThresholds,
     calculate_market_regime,
 )
+from src.domain.market_trend import calculate_adx
 from src.domain.market_volatility import (
     DatedClose,
     calculate_previous_day_changes,
@@ -23,6 +25,7 @@ class MarketRegimeUseCase:
         thresholds: MarketRegimeThresholds,
         realized_volatility_window: int = 20,
         data_range: str = "3mo",
+        adx_threshold: float = 27.0,
     ):
         if realized_volatility_window <= 0:
             raise ValueError("実現ボラティリティ期間は正数で指定してください")
@@ -30,6 +33,7 @@ class MarketRegimeUseCase:
         self.thresholds = thresholds
         self.realized_volatility_window = realized_volatility_window
         self.data_range = data_range
+        self.adx_threshold = adx_threshold
 
     def _unavailable(self, reason: str) -> MarketRegimeAssessment:
         logger.warning("MarketRegimeを安全側にフォールバックします: %s", reason)
@@ -71,12 +75,19 @@ class MarketRegimeUseCase:
                 nikkei_change,
                 self.thresholds,
             )
+            adx = calculate_adx(nikkei_bars)
+            final_regime = apply_trend_relief(regime, adx, self.adx_threshold)
+            relief_applied = final_regime != regime
+            if relief_applied:
+                logger.info("MarketRegime緩和: %s→%s(ADX=%.1f)", regime.value, final_regime.value, adx)
             return MarketRegimeAssessment(
-                regime=regime,
+                regime=final_regime,
                 realized_volatility_percent=realized_volatility,
                 vix=vix,
                 nikkei_change_percent=nikkei_change,
                 data_available=True,
+                adx=adx,
+                trend_relief_applied=relief_applied,
             )
         except Exception as exc:
             logger.exception("MarketRegime判定用データの取得または計算に失敗しました")

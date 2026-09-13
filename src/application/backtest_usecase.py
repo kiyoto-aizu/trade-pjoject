@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import date
 from typing import Dict, List
 
@@ -9,6 +10,7 @@ from src.domain.market_regime import (
     MarketRegime,
     MarketRegimeThresholds,
     calculate_market_regime_series,
+    calculate_market_regime_series_with_details,
     resolve_rsi_entry_threshold,
 )
 from src.domain.market_volatility import MarketDailyBar
@@ -22,6 +24,8 @@ from src.domain.volatility import (
     stop_loss_multiplier,
 )
 from src.infrastructure.persistence.minute_bar_repository import MinuteBarRepository
+
+logger = logging.getLogger(__name__)
 
 
 def _calculate_execution_price(
@@ -667,6 +671,7 @@ def simulate_timeseries_backtest(
     nikkei_market_bars: list[MarketDailyBar] | None = None,
     vix_market_bars: list[MarketDailyBar] | None = None,
     market_regime_enabled: bool = True,
+    market_regime_trend_relief_enabled: bool = True,
 ) -> dict:
     """日付ごとのフィルタリング結果を、日足または分足で再生します。"""
     if indicator_source not in {"daily", "minute"}:
@@ -681,16 +686,35 @@ def simulate_timeseries_backtest(
         enable_volatility_sizing = enable_volatility_adjustment
     if enable_atr_stop_loss is None:
         enable_atr_stop_loss = enable_volatility_adjustment
+    trend_relief_dates: set[str] = set()
     if market_regime_by_date is None and nikkei_market_bars is not None and vix_market_bars is not None:
-        market_regime_by_date = {
-            target_date.isoformat(): regime
-            for target_date, regime in calculate_market_regime_series(
+        if market_regime_trend_relief_enabled:
+            regime_result = calculate_market_regime_series_with_details(
                 nikkei_market_bars,
                 vix_market_bars,
                 config.MARKET_REGIME_REALIZED_VOL_WINDOW,
                 config.MARKET_REGIME_THRESHOLDS,
-            ).items()
-        }
+                config.MARKET_REGIME_ADX_TREND_THRESHOLD,
+            )
+            trend_relief_dates = {
+                target_date.isoformat() for target_date in regime_result.trend_relief_dates
+            }
+            if trend_relief_dates:
+                logger.info("MarketRegime緩和日数: %d", len(trend_relief_dates))
+            market_regime_by_date = {
+                target_date.isoformat(): regime
+                for target_date, regime in regime_result.regimes.items()
+            }
+        else:
+            market_regime_by_date = {
+                target_date.isoformat(): regime
+                for target_date, regime in calculate_market_regime_series(
+                    nikkei_market_bars,
+                    vix_market_bars,
+                    config.MARKET_REGIME_REALIZED_VOL_WINDOW,
+                    config.MARKET_REGIME_THRESHOLDS,
+                ).items()
+            }
     if not market_regime_enabled:
         market_regime_by_date = None
     cash = float(starting_cash)
@@ -727,6 +751,7 @@ def simulate_timeseries_backtest(
         "caution_rsi_filtered": 0,
         "danger_skipped": 0,
         "data_unavailable_days": 0,
+        "trend_relief_days": len(trend_relief_dates),
     }
 
     def close_position(
@@ -1097,4 +1122,32 @@ def compare_market_regime_backtest(**kwargs) -> dict:
             "max_drawdown": round(enabled["max_drawdown"] - baseline["max_drawdown"], 2),
         },
         "market_regime_adjustment": enabled["market_regime_adjustment"],
+    }
+
+
+def compare_trend_relief_backtest(**kwargs) -> dict:
+    """ADX緩和の有無を同一条件で比較します。"""
+    without_relief_kwargs = dict(kwargs)
+    without_relief_kwargs["market_regime_trend_relief_enabled"] = False
+    with_relief_kwargs = dict(kwargs)
+    with_relief_kwargs["market_regime_trend_relief_enabled"] = True
+    without_relief = simulate_timeseries_backtest(**without_relief_kwargs)
+    with_relief = simulate_timeseries_backtest(**with_relief_kwargs)
+    return {
+        "without_trend_relief": {
+            "total_pnl": without_relief["total_pnl"],
+            "total_trades": without_relief["total_trades"],
+            "max_drawdown": without_relief["max_drawdown"],
+        },
+        "with_trend_relief": {
+            "total_pnl": with_relief["total_pnl"],
+            "total_trades": with_relief["total_trades"],
+            "max_drawdown": with_relief["max_drawdown"],
+        },
+        "delta": {
+            "total_pnl": round(with_relief["total_pnl"] - without_relief["total_pnl"], 2),
+            "total_trades": with_relief["total_trades"] - without_relief["total_trades"],
+            "max_drawdown": round(with_relief["max_drawdown"] - without_relief["max_drawdown"], 2),
+        },
+        "trend_relief_days": with_relief["market_regime_adjustment"]["trend_relief_days"],
     }

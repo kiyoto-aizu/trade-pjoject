@@ -6,8 +6,10 @@ from src.application.market_regime_usecase import MarketRegimeUseCase
 from src.domain.market_regime import (
     MarketRegime,
     MarketRegimeThresholds,
+    apply_trend_relief,
     calculate_market_regime,
     calculate_market_regime_series,
+    calculate_market_regime_series_with_details,
     classify_realized_volatility,
     classify_vix,
     resolve_rsi_entry_threshold,
@@ -77,6 +79,21 @@ def test_missing_classification_input_is_safe_side_danger():
     assert calculate_market_regime(10.0, None, None, THRESHOLDS) == MarketRegime.DANGER
 
 
+@pytest.mark.parametrize(
+    ("regime", "adx", "expected"),
+    [
+        (MarketRegime.DANGER, 27.0, MarketRegime.CAUTION),
+        (MarketRegime.DANGER, 26.99, MarketRegime.DANGER),
+        (MarketRegime.CAUTION, 27.0, MarketRegime.NORMAL),
+        (MarketRegime.CAUTION, 20.0, MarketRegime.CAUTION),
+        (MarketRegime.NORMAL, 50.0, MarketRegime.NORMAL),
+        (MarketRegime.DANGER, None, MarketRegime.DANGER),
+    ],
+)
+def test_apply_trend_relief_uses_one_step_inclusive_threshold(regime, adx, expected):
+    assert apply_trend_relief(regime, adx, 27.0) == expected
+
+
 def test_thresholds_reject_invalid_order():
     with pytest.raises(ValueError):
         MarketRegimeThresholds(realized_vol_caution=30.0, realized_vol_danger=29.0)
@@ -104,6 +121,19 @@ def test_market_regime_series_uses_latest_vix_without_looking_ahead():
     result = calculate_market_regime_series(nikkei, vix, 20, THRESHOLDS)
 
     assert result[date(2026, 1, 21)] == MarketRegime.NORMAL
+
+
+def test_market_regime_series_records_adx_relief_without_looking_ahead():
+    nikkei = _bars([100.0 + index for index in range(40)])
+    vix = _bars([30.0] * 40)
+
+    result = calculate_market_regime_series_with_details(
+        nikkei, vix, 20, THRESHOLDS, adx_threshold=27.0
+    )
+
+    assert result.trend_relief_dates
+    assert all(target_date <= nikkei[-1].date for target_date in result.trend_relief_dates)
+    assert all(result.regimes[target_date] == MarketRegime.CAUTION for target_date in result.trend_relief_dates)
 
 
 class FakeMarketDataClient:
@@ -139,6 +169,20 @@ def test_use_case_returns_latest_market_regime_values():
     assert result.vix == 20.0
     assert result.nikkei_change_percent == pytest.approx((121 / 120 - 1) * 100)
     assert result.failure_reason is None
+
+
+def test_use_case_applies_adx_relief_to_danger_regime():
+    nikkei = _bars([100.0 + index for index in range(40)])
+    vix = _bars([30.0])
+
+    result = MarketRegimeUseCase(
+        FakeMarketDataClient(nikkei, vix), THRESHOLDS, realized_volatility_window=20
+    ).execute()
+
+    assert result.regime == MarketRegime.CAUTION
+    assert result.adx is not None
+    assert result.adx >= 27.0
+    assert result.trend_relief_applied is True
 
 
 def test_use_case_falls_back_to_danger_when_data_is_unavailable():

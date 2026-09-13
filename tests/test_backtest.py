@@ -5,6 +5,7 @@ import pytest
 
 from src.application.backtest_usecase import (
     compare_market_regime_backtest,
+    compare_trend_relief_backtest,
     simulate_backtest,
     simulate_timeseries_backtest,
 )
@@ -312,6 +313,35 @@ def test_compare_market_regime_backtest_reports_before_and_after_metrics():
 
     assert set(comparison) == {"baseline", "with_market_regime", "delta", "market_regime_adjustment"}
     assert comparison["baseline"]["total_trades"] >= comparison["with_market_regime"]["total_trades"]
+
+
+def test_compare_trend_relief_backtest_reports_relief_metrics():
+    dated_history = {
+        "7203": {
+            "2026-09-01": 90.0,
+            "2026-09-02": 90.0,
+            "2026-09-03": 90.0,
+            "2026-09-04": 90.0,
+            "2026-09-05": 90.0,
+            "2026-09-06": 92.0,
+        },
+    }
+    comparison = compare_trend_relief_backtest(
+        daily_symbols={"2026-09-06": ["7203"]},
+        dated_history_by_symbol=dated_history,
+        starting_cash=100_000.0,
+        qty_per_trade=300,
+        close_at_eod=False,
+        market_regime_by_date={"2026-09-06": MarketRegime.DANGER},
+    )
+
+    assert set(comparison) == {
+        "without_trend_relief",
+        "with_trend_relief",
+        "delta",
+        "trend_relief_days",
+    }
+    assert comparison["trend_relief_days"] == 0
 
 
 def test_timeseries_backtest_evaluates_each_minute_with_daily_indicators(tmp_path):

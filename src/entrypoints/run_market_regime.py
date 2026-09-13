@@ -14,6 +14,7 @@ def main() -> None:
         thresholds=config.MARKET_REGIME_THRESHOLDS,
         realized_volatility_window=config.MARKET_REGIME_REALIZED_VOL_WINDOW,
         data_range=config.MARKET_REGIME_DATA_RANGE,
+        adx_threshold=config.MARKET_REGIME_ADX_TREND_THRESHOLD,
     )
     assessment = use_case.execute()
     print(json.dumps(asdict(assessment), ensure_ascii=False, indent=2, default=str))

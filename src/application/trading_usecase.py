@@ -9,6 +9,7 @@ import logging
 import json
 import inspect
 import time
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
@@ -94,6 +95,8 @@ class TradingUseCase:
         self.emergency_stop_triggered = False
         self.api_soft_limit: Optional[float] = None
         self._missing_holding_warning_symbols: set[str] = set()
+        self._sell_condition_observations: dict[str, str] = {}
+        self._liquidation_results: list[dict] = []
 
     def _notify_safely(self, message: str) -> None:
         """通知失敗で取引制御自体を妨げないように通知します。"""
@@ -417,10 +420,29 @@ class TradingUseCase:
     # レポート送信
     # ================================================================================
 
+    def _daily_log_error_summary(self, today: str) -> dict:
+        """当日のログからエラーの有無と代表的な概要だけを集計します。"""
+        patterns = (" ERROR ", "異常終了", "予期しないエラー")
+        messages = []
+        for path in Path(config.LOG_DIRECTORY).glob("trade_project.log*"):
+            try:
+                for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+                    if line.startswith(today) and any(pattern in line for pattern in patterns):
+                        messages.append(line.split(": ", 1)[-1].strip())
+            except OSError:
+                logger.warning("日次ログを読み込めません: %s", path)
+        counts = Counter(messages)
+        return {
+            "has_errors": bool(messages),
+            "count": len(messages),
+            "summaries": [message for message, _ in counts.most_common(5)],
+        }
+
     def _send_end_of_day_report(self) -> None:
         """市場終了時に本日の取引レポートを送信します。"""
         self._load_order_history()
         today = datetime.now().date().isoformat()
+        log_error_summary = self._daily_log_error_summary(today)
         daily_orders = [entry for entry in self.order_history if entry.timestamp.startswith(today)]
         lines = [
             "【業務】取引運用",
@@ -453,6 +475,19 @@ class TradingUseCase:
                 )
             total_pnl = sum(float(position.get('ProfitLoss', 0) or 0) for position in self.last_positions)
             lines.append(f"合計損益: {total_pnl}円")
+        lines.append("--- エラー概要 ---")
+        if log_error_summary["has_errors"]:
+            lines.append(f"エラーあり: {log_error_summary['count']}件")
+            lines.extend(f"- {summary}" for summary in log_error_summary["summaries"])
+        else:
+            lines.append("エラーなし")
+        if self._liquidation_results:
+            lines.append("--- 強制売却確認 ---")
+            lines.extend(
+                f"{item['symbol']}: {item['status']}"
+                + (f" ({item['reason']})" if item.get("reason") else "")
+                for item in self._liquidation_results
+            )
 
         daily_summary = {
             "date": today,
@@ -494,6 +529,8 @@ class TradingUseCase:
             "total_profit_loss": sum(float(position.get("ProfitLoss", 0) or 0) for position in self.last_positions),
             "kill_switch_triggered": self.kill_switch_triggered,
             "emergency_stop_triggered": self.emergency_stop_triggered,
+            "log_errors": log_error_summary,
+            "liquidation_results": self._liquidation_results,
         }
         analysis = None
         if self.daily_analyzer:
@@ -514,6 +551,7 @@ class TradingUseCase:
 
     def _liquidate_all_positions(self) -> None:
         """持ち越しを防ぐため、現物の全保有を成行で売却します。"""
+        self._liquidation_results = []
         _, positions = self._load_account_state()
         self.last_positions = positions
         holdings: dict[str, int] = {}
@@ -550,10 +588,34 @@ class TradingUseCase:
                         order_result,
                         diagnostics={"decision_reason": "持ち越し防止"},
                     )
+                    self._liquidation_results.append({
+                        "symbol": symbol,
+                        "quantity": quantity,
+                        "status": "売却注文受付",
+                        "reason": self._sell_condition_observations.get(
+                            symbol, "通常SELL条件の観測なし（15:20以降の起動など）"
+                        ),
+                    })
                     logger.info("持ち越し防止売りを発注しました: 銘柄=%s | 数量=%s", symbol, quantity)
                 else:
+                    self._liquidation_results.append({
+                        "symbol": symbol,
+                        "quantity": quantity,
+                        "status": "売却注文失敗",
+                        "reason": self._sell_condition_observations.get(
+                            symbol, "通常SELL条件の観測なし（15:20以降の起動など）"
+                        ),
+                    })
                     logger.error("持ち越し防止売りに失敗しました: 銘柄=%s | 数量=%s", symbol, quantity)
             except Exception:
+                self._liquidation_results.append({
+                    "symbol": symbol,
+                    "quantity": quantity,
+                    "status": "売却処理エラー",
+                    "reason": self._sell_condition_observations.get(
+                        symbol, "通常SELL条件の観測なし（15:20以降の起動など）"
+                    ),
+                })
                 logger.exception("持ち越し防止売り中にエラーが発生しました: 銘柄=%s", symbol)
 
     # ================================================================================
@@ -717,6 +779,31 @@ class TradingUseCase:
                             )
                             if signal is not None:
                                 decision_reason = "ATR損切り基準到達"
+                    if signal is None:
+                        _, observed_positions = self._load_account_state()
+                        held_position = next(
+                            (
+                                position for position in observed_positions
+                                if position.get("Symbol") == symbol
+                                and position.get("Side") == config.OrderSide.SELL.value
+                                and int(position.get("HoldQty", 0) or 0) > 0
+                            ),
+                            None,
+                        )
+                        if held_position:
+                            price_reason = (
+                                f"現在値={board['current_price']:.1f} > 決済基準={limit.lower_band:.1f}"
+                                if board['current_price'] > limit.lower_band
+                                else "現在値条件は成立したがRSI条件未成立"
+                            )
+                            rsi_reason = (
+                                f"RSI={rsi:.1f} > 決済RSI基準={config.RSI_EXIT_THRESHOLD:.1f}"
+                                if rsi is not None and rsi > config.RSI_EXIT_THRESHOLD
+                                else "RSIが取得できない"
+                            )
+                            self._sell_condition_observations[symbol] = (
+                                f"通常SELL条件未成立: {price_reason}; {rsi_reason}"
+                            )
                     logger.info(
                         "売買判定: 銘柄=%s | 現在値=%.1f | エントリー基準=%.1f | 決済基準=%.1f | RSI=%.1f | エントリーRSI基準=%.1f | 決済RSI基準=%.1f | 判定=%s",
                         symbol,

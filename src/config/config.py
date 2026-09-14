@@ -101,8 +101,8 @@ ALLOW_OVERNIGHT_HOLDING = os.getenv("ALLOW_OVERNIGHT_HOLDING", "false").strip().
 # 同じ銘柄の重複注文を防ぐためのロック期間（秒）
 ORDER_LOCK_SECONDS = 60
 
-# 1回の取引あたりの最大注文金額（運用資金10万円の10%）
-MAX_ORDER_AMOUNT_PER_TRADE = float(os.getenv("MAX_ORDER_AMOUNT_PER_TRADE", "10000"))
+# 1回の取引あたりの最大注文金額（運用資金10万円の30%）
+MAX_ORDER_AMOUNT_PER_TRADE = float(os.getenv("MAX_ORDER_AMOUNT_PER_TRADE", "30000"))
 
 # フィルタリング候補から目指す分散ポジション数
 TARGET_POSITIONS = int(os.getenv("TARGET_POSITIONS", "3"))

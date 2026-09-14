@@ -233,6 +233,7 @@ class TradingUseCase:
             float(wallet_amount),
             config.TARGET_POSITIONS,
             config.ORDER_UNIT,
+            config.MAX_ORDER_AMOUNT_PER_TRADE,
         )
         return {allocation.symbol: allocation.quantity for allocation in allocations}
 

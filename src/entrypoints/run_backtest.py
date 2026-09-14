@@ -16,7 +16,7 @@ from src.domain.market_regime import calculate_market_regime_series
 from src.infrastructure.market_data.yahoo_index_client import YahooIndexClient
 from src.infrastructure.analysis.daily_analyzer import create_daily_analyzer
 from src.infrastructure.notification.line_notify import process_notification, send_line_notify
-from src.infrastructure.persistence.minute_bar_repository import MinuteBarRepository
+from src.infrastructure.persistence.parquet_minute_bar_repository import ParquetMinuteBarRepository
 
 logger = logging.getLogger(__name__)
 
@@ -315,7 +315,7 @@ def main() -> None:
             help="MarketRegime導入前後を比較する（--liveの日付付きバックテストが必要）",
         )
         args = parser.parse_args()
-        minute_bar_repository = MinuteBarRepository(args.minute_bars_dir) if args.minute_bars_dir else None
+        minute_bar_repository = ParquetMinuteBarRepository(args.minute_bars_dir) if args.minute_bars_dir else None
 
         if args.compare_atr and not args.live:
             raise ValueError("--compare-atr を使う場合は --live を指定してください")

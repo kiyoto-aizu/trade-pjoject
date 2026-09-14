@@ -1,15 +1,16 @@
 import json
-from datetime import datetime
+from datetime import date, datetime
 from unittest.mock import patch
 
 from src.domain.models import MinuteBar
 from src.entrypoints.run_minute_backfill import main
+from src.infrastructure.persistence.parquet_minute_bar_repository import ParquetMinuteBarRepository
 
 
 def test_run_minute_backfill_main_flow(tmp_path):
     data_dir = tmp_path / "data"
     filtering_dir = data_dir / "filtering"
-    minute_bars_dir = data_dir / "minute_bars"
+    minute_bars_dir = data_dir / "minute_bars_parquet"
     filtering_dir.mkdir(parents=True)
 
     # フィルタリング結果ファイル作成
@@ -38,8 +39,9 @@ def test_run_minute_backfill_main_flow(tmp_path):
         assert "対象銘柄数: 1" in mock_notify.call_args[0][0]
         assert "取り込んだ足の総数: 1" in mock_notify.call_args[0][0]
 
-    saved_file = minute_bars_dir / "2026-09-10" / "7203.json"
-    assert saved_file.exists()
-    saved_data = json.loads(saved_file.read_text(encoding="utf-8"))
-    assert len(saved_data["bars"]) == 1
-    assert saved_data["bars"][0]["source"] == "yahoo"
+    repository = ParquetMinuteBarRepository(minute_bars_dir)
+    saved_bars = repository.load_bars(date(2026, 9, 10), "7203")
+    assert len(saved_bars) == 1
+    assert saved_bars[0].source == "yahoo"
+    assert (minute_bars_dir / "symbol=7203" / "date=2026-09-10" / "data.parquet").exists()
+    assert not list((data_dir / "minute_bars").glob("**/*.json"))

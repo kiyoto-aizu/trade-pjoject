@@ -79,8 +79,8 @@ def test_volume_ratio_and_kill_switch():
 
 
 def test_order_amount_limit_applies_only_to_buy_orders():
-    assert is_buy_order_amount_allowed(10_000, config, api_soft_limit=1_000_000)
-    assert not is_buy_order_amount_allowed(10_001, config, api_soft_limit=1_000_000)
+    assert is_buy_order_amount_allowed(30_000, config, api_soft_limit=1_000_000)
+    assert not is_buy_order_amount_allowed(30_001, config, api_soft_limit=1_000_000)
     # 売り注文は保有株の決済であり、金額上限では止めない。
     assert check_kill_switch(0, 0, 100_000, config)
 

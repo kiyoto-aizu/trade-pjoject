@@ -132,7 +132,123 @@ class TradingUseCase:
         """現在の注文履歴をファイルに保存します。"""
         write_json(self.order_history_path, [entry.to_dict() for entry in self.order_history])
 
-    def _register_order(self, signal: TradeSignal, limit: PriceLimit, order_response: Optional[dict]) -> None:
+    def prepare_market_regime(self):
+        """取引開始前に市場レジームを取得し、通知・レポートで再利用します。"""
+        if self.market_regime_usecase is not None and self.market_regime_assessment is None:
+            self.market_regime_assessment = self.market_regime_usecase.execute()
+            self.market_regime = self.market_regime_assessment.regime
+        return self.market_regime_assessment
+
+    def market_conditions_summary(self) -> str:
+        """通知向けに市場状況を短く整形します。"""
+        assessment = self.market_regime_assessment
+        if assessment is None or not getattr(assessment, "data_available", False):
+            reason = getattr(assessment, "failure_reason", None) or "データ未取得"
+            return f"MarketRegime={self.market_regime.value} | 判定データなし: {reason}"
+
+        def format_metric(value, suffix=""):
+            return f"{value:.2f}{suffix}" if value is not None else "-"
+
+        return (
+            f"MarketRegime={self.market_regime.value} | "
+            f"日経前日比={format_metric(getattr(assessment, 'nikkei_change_percent', None), '%')} | "
+            f"実現ボラ={format_metric(getattr(assessment, 'realized_volatility_percent', None), '%')} | "
+            f"VIX={format_metric(getattr(assessment, 'vix', None))} | "
+            f"ADX={format_metric(getattr(assessment, 'adx', None))}"
+        )
+
+    def market_conditions_detail(self) -> list[str]:
+        """市場指標を意味と現在の状態付きで通知用に整形します。"""
+        assessment = self.market_regime_assessment
+        if assessment is None or not getattr(assessment, "data_available", False):
+            reason = getattr(assessment, "failure_reason", None) or "データ未取得"
+            return [f"MarketRegime: {self.market_regime.value}", f"現在の状態: 判定不能（{reason}）"]
+
+        realized_volatility = getattr(assessment, "realized_volatility_percent", None)
+        vix = getattr(assessment, "vix", None)
+        nikkei_change = getattr(assessment, "nikkei_change_percent", None)
+        adx = getattr(assessment, "adx", None)
+        if any(value is None for value in (realized_volatility, vix, nikkei_change, adx)):
+            return [self.market_conditions_summary(), "補足: 一部の市場指標を取得できませんでした。"]
+        thresholds = config.MARKET_REGIME_THRESHOLDS
+        lines = [
+            "MarketRegime: " + self.market_regime.value,
+            "意味: 市場全体の警戒度です。",
+            "現在の状態: " + {
+                MarketRegime.NORMAL: "通常",
+                MarketRegime.CAUTION: "やや警戒",
+                MarketRegime.DANGER: "危険・新規買い停止",
+            }[self.market_regime],
+            f"日経前日比: {nikkei_change:.2f}%（意味: 日経平均の前日からの変化率 / 状態: {'上昇' if nikkei_change >= 0 else '下落'}）",
+            f"実現ボラティリティ: {realized_volatility:.2f}%（意味: 市場全体の値動きの大きさ / 状態: {'危険' if realized_volatility >= thresholds.realized_vol_danger else '注意' if realized_volatility >= thresholds.realized_vol_caution else '通常'}）",
+            f"VIX: {vix:.2f}（意味: 市場の不安心理 / 状態: {'危険' if vix >= thresholds.vix_danger else '注意' if vix >= thresholds.vix_caution else '通常'}）",
+            f"ADX: {adx:.2f}（意味: トレンドの強さ / 状態: {'強いトレンド' if adx >= config.MARKET_REGIME_ADX_TREND_THRESHOLD else '強いトレンドなし'}）",
+        ]
+        return lines
+
+    @staticmethod
+    def _order_detail_lines(entry: OrderHistoryEntry) -> list[str]:
+        """注文履歴を判断理由と用語補足付きの通知行へ変換します。"""
+        lines = [
+            f"銘柄: {entry.symbol}",
+            f"売買: {'買い' if entry.side == config.OrderSide.BUY else '売り'}",
+            f"約定価格: {entry.price:.1f}円",
+            f"数量: {entry.qty}株",
+            f"判断理由: {entry.decision_reason or '注文条件成立'}",
+        ]
+        if entry.rsi is not None:
+            if entry.side == config.OrderSide.BUY and entry.rsi_entry_threshold is not None:
+                state = "買い基準以上" if entry.rsi >= entry.rsi_entry_threshold else "買い基準未満"
+            elif entry.side == config.OrderSide.SELL and entry.rsi_exit_threshold is not None:
+                state = "決済基準以下" if entry.rsi <= entry.rsi_exit_threshold else "決済基準超"
+            else:
+                state = "判定材料"
+            lines.append(f"RSI: {entry.rsi:.2f}（意味: 値動きの勢い / 状態: {state}）")
+        else:
+            lines.append("RSI: データなし")
+        if entry.rsi_entry_threshold is not None:
+            lines.append(f"RSI買い基準: {entry.rsi_entry_threshold:.2f}")
+        if entry.rsi_exit_threshold is not None:
+            lines.append(f"RSI決済基準: {entry.rsi_exit_threshold:.2f}")
+        if entry.current_price is not None:
+            lines.append(f"現在価格: {entry.current_price:.1f}円")
+        if entry.basis_lower_band is not None and entry.basis_upper_band is not None:
+            lines.append(
+                f"価格基準: 下側バンド={entry.basis_lower_band:.1f}円 / "
+                f"上側バンド={entry.basis_upper_band:.1f}円"
+            )
+        if entry.market_regime:
+            regime_state = {
+                "NORMAL": "通常",
+                "CAUTION": "やや警戒",
+                "DANGER": "危険",
+            }.get(entry.market_regime, "不明")
+            lines.append(f"MarketRegime: {entry.market_regime}（意味: 市場全体の警戒度 / 状態: {regime_state}）")
+        if entry.atr is not None:
+            atr_ratio = entry.atr_ratio or 0.0
+            atr_state = "危険" if atr_ratio >= config.ATR_DANGER_RATIO else "注意" if atr_ratio >= config.ATR_CAUTION_RATIO else "通常"
+            lines.extend([
+                f"ATR: {entry.atr:.3f}円（意味: 通常の値動き幅 / 状態: {atr_state}）",
+                f"TR: {entry.atr_true_range:.3f}円（意味: 直近の実際の値幅）",
+                f"ATR比率: {atr_ratio:.2f}（意味: 直近値幅÷ATR / 状態: {'通常より大きい' if atr_ratio >= 1 else '通常より小さい'}）",
+                f"ATRレベル: {entry.atr_level}",
+            ])
+            if entry.atr_stop_multiplier is not None:
+                lines.append(f"ATR損切り倍率: {entry.atr_stop_multiplier:.2f}倍")
+        else:
+            lines.append("ATR: データなし")
+        if entry.order_qty_before_atr is not None:
+            lines.append(f"ATR数量調整: {entry.order_qty_before_atr}株 → {entry.qty}株")
+        return lines
+
+    def _register_order(
+        self,
+        signal: TradeSignal,
+        limit: PriceLimit,
+        order_response: Optional[dict],
+        volatility_assessment=None,
+        diagnostics: Optional[dict] = None,
+    ) -> None:
         """
         実行した注文を履歴に記録します。
         
@@ -141,15 +257,37 @@ class TradingUseCase:
             limit: 発注根拠となった価格基準値
             order_response: kabu APIの発注応答（監査ログ用）
         """
-        self.order_history.append(signal.to_order_history_entry(limit, order_response))
+        order_diagnostics = {
+            "market_regime": self.market_regime.value,
+        }
+        order_diagnostics.update(diagnostics or {})
+        if volatility_assessment is not None:
+            order_diagnostics.update({
+                "atr": volatility_assessment.atr,
+                "atr_true_range": volatility_assessment.latest_true_range,
+                "atr_ratio": volatility_assessment.ratio,
+                "atr_level": volatility_assessment.level.value,
+                "atr_stop_multiplier": stop_loss_multiplier(
+                    volatility_assessment.level,
+                    config.ATR_STOP_NORMAL_MULTIPLIER,
+                    config.ATR_STOP_CAUTION_MULTIPLIER,
+                    config.ATR_STOP_DANGER_MULTIPLIER,
+                ),
+            })
+        self.order_history.append(signal.to_order_history_entry(limit, order_response, order_diagnostics))
         self._save_order_history()
         side_label = "買い" if signal.side == config.OrderSide.BUY else "売り"
-        message = (
-            f"【約定】{side_label} "
-            f"{signal.symbol} {signal.qty}株 @ {signal.price:.1f}円"
-        )
+        entry = self.order_history[-1]
+        message_lines = [
+            "【業務】取引運用",
+            "【機能】注文執行",
+            "【概要】",
+            f"{side_label}注文が成立しました。",
+            "【詳細】",
+            *self._order_detail_lines(entry),
+        ]
         try:
-            self.notifier(message)
+            self.notifier("\n".join(message_lines))
         except Exception:
             logger.exception("注文約定通知の送信に失敗しました: 銘柄=%s", signal.symbol)
 
@@ -281,20 +419,28 @@ class TradingUseCase:
 
     def _send_end_of_day_report(self) -> None:
         """市場終了時に本日の取引レポートを送信します。"""
+        self._load_order_history()
         today = datetime.now().date().isoformat()
         daily_orders = [entry for entry in self.order_history if entry.timestamp.startswith(today)]
         lines = [
-            f"【取引】結果（{config.TRADING_MODE_LABEL}）本日の自動売買レポート ({config.ORDER_HISTORY_FILE})",
-            f"発注件数: {len(daily_orders)}"
+            "【業務】取引運用",
+            "【機能】取引終了",
+            "【概要】",
+            f"{config.TRADING_MODE_LABEL}の本日の取引を終了しました。",
+            "【詳細】",
+            f"発注件数: {len(daily_orders)}",
+            "市場状況:",
         ]
+        lines.extend(self.market_conditions_detail())
         if self.kill_switch_triggered:
             lines.append("キルスイッチ: 発動")
         if self.emergency_stop_triggered:
             lines.append("手動緊急停止: 発動")
         if daily_orders:
-            lines.append("--- 注文履歴 ---")
+            lines.append("注文履歴:")
             for entry in daily_orders:
-                lines.append(f"{entry.symbol} {entry.side.value} {entry.qty}株 @ {entry.price:.1f}円")
+                lines.extend(self._order_detail_lines(entry))
+                lines.append("")
         else:
             lines.append("本日実行された注文はありませんでした。")
         if self.last_positions:
@@ -319,9 +465,24 @@ class TradingUseCase:
                     "price": entry.price,
                     "qty": entry.qty,
                     "result_code": entry.result_code,
+                    "atr": entry.atr,
+                    "atr_true_range": entry.atr_true_range,
+                    "atr_ratio": entry.atr_ratio,
+                    "atr_level": entry.atr_level,
+                    "atr_stop_multiplier": entry.atr_stop_multiplier,
+                    "market_regime": entry.market_regime,
                 }
                 for entry in daily_orders
             ],
+            "market_conditions": {
+                "regime": self.market_regime.value,
+                "realized_volatility_percent": getattr(self.market_regime_assessment, "realized_volatility_percent", None),
+                "vix": getattr(self.market_regime_assessment, "vix", None),
+                "nikkei_change_percent": getattr(self.market_regime_assessment, "nikkei_change_percent", None),
+                "adx": getattr(self.market_regime_assessment, "adx", None),
+                "data_available": getattr(self.market_regime_assessment, "data_available", False),
+                "failure_reason": getattr(self.market_regime_assessment, "failure_reason", None),
+            },
             "positions": [
                 {
                     "symbol": position.get("Symbol", ""),
@@ -383,7 +544,12 @@ class TradingUseCase:
                     order_args = order_args[:3]
                 order_result = order_method(*order_args)
                 if order_result and order_result.get('Result') == 0:
-                    self._register_order(signal, PriceLimit(price, price), order_result)
+                    self._register_order(
+                        signal,
+                        PriceLimit(price, price),
+                        order_result,
+                        diagnostics={"decision_reason": "持ち越し防止"},
+                    )
                     logger.info("持ち越し防止売りを発注しました: 銘柄=%s | 数量=%s", symbol, quantity)
                 else:
                     logger.error("持ち越し防止売りに失敗しました: 銘柄=%s | 数量=%s", symbol, quantity)
@@ -433,8 +599,7 @@ class TradingUseCase:
             return
 
         if self.market_regime_usecase is not None:
-            self.market_regime_assessment = self.market_regime_usecase.execute()
-            self.market_regime = self.market_regime_assessment.regime
+            self.prepare_market_regime()
             logger.info(
                 "MarketRegimeを取得しました: レジーム=%s | データ取得=%s | 理由=%s",
                 self.market_regime.value,
@@ -502,6 +667,9 @@ class TradingUseCase:
                         config.RSI_ENTRY_THRESHOLD,
                         config.RSI_ENTRY_THRESHOLD_CAUTION,
                     )
+                    entry_price = None
+                    atr_stop_multiplier = None
+                    decision_reason = None
                     # 売買シグナルを生成
                     signal = TradeSignal.evaluate(
                         symbol,
@@ -511,6 +679,12 @@ class TradingUseCase:
                         entry_threshold,
                         config.RSI_EXIT_THRESHOLD,
                     )
+                    if signal is not None:
+                        decision_reason = (
+                            "上側バンド突破・RSI条件成立"
+                            if signal.side == config.OrderSide.BUY
+                            else "下側バンド到達・RSI条件成立"
+                        )
                     if signal is None and assessment is not None:
                         _, current_positions = self._load_account_state()
                         position = next(
@@ -524,6 +698,12 @@ class TradingUseCase:
                         )
                         entry_price = self._get_position_entry_price(position) if position else None
                         if entry_price is not None:
+                            atr_stop_multiplier = stop_loss_multiplier(
+                                assessment.level,
+                                config.ATR_STOP_NORMAL_MULTIPLIER,
+                                config.ATR_STOP_CAUTION_MULTIPLIER,
+                                config.ATR_STOP_DANGER_MULTIPLIER,
+                            )
                             signal = TradeSignal.evaluate(
                                 symbol,
                                 board['current_price'],
@@ -533,13 +713,10 @@ class TradingUseCase:
                                 config.RSI_EXIT_THRESHOLD,
                                 entry_price,
                                 assessment.atr,
-                                stop_loss_multiplier(
-                                    assessment.level,
-                                    config.ATR_STOP_NORMAL_MULTIPLIER,
-                                    config.ATR_STOP_CAUTION_MULTIPLIER,
-                                    config.ATR_STOP_DANGER_MULTIPLIER,
-                                ),
+                                atr_stop_multiplier,
                             )
+                            if signal is not None:
+                                decision_reason = "ATR損切り基準到達"
                     logger.info(
                         "売買判定: 銘柄=%s | 現在値=%.1f | エントリー基準=%.1f | 決済基準=%.1f | RSI=%.1f | エントリーRSI基準=%.1f | 決済RSI基準=%.1f | 判定=%s",
                         symbol,
@@ -564,6 +741,7 @@ class TradingUseCase:
                         break
                     self.api_soft_limit = api_limit
                     if signal.side == config.OrderSide.BUY:
+                        original_qty = 0
                         signal.qty = allocated_quantities.get(symbol, calculate_buy_quantity(
                             signal.price,
                             min(config.MAX_ORDER_AMOUNT_PER_TRADE, self.api_soft_limit),
@@ -614,6 +792,7 @@ class TradingUseCase:
                             0,
                         )
                         signal.qty = held_quantity if held_quantity > 0 else config.ORDER_UNIT
+                        original_qty = signal.qty
                     if signal.qty <= 0:
                         logger.info("注文数量が0のため見送ります: 銘柄=%s", symbol)
                         continue
@@ -678,7 +857,20 @@ class TradingUseCase:
                         order_args = order_args[:3]
                     order_result = order_method(*order_args)
                     if order_result and order_result.get('Result') == 0:
-                        self._register_order(signal, limit, order_result)
+                        self._register_order(
+                            signal,
+                            limit,
+                            order_result,
+                            assessment,
+                            diagnostics={
+                                "decision_reason": decision_reason,
+                                "rsi": rsi,
+                                "rsi_entry_threshold": entry_threshold,
+                                "rsi_exit_threshold": config.RSI_EXIT_THRESHOLD,
+                                "current_price": board['current_price'],
+                                "order_qty_before_atr": original_qty,
+                            },
+                        )
                         logger.info(
                             "%s成立: 銘柄=%s | 約定価格=%.1f | 数量=%s | 注文受付番号=%s",
                             "買い" if signal.side == config.OrderSide.BUY else "売り",

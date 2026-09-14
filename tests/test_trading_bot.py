@@ -8,6 +8,7 @@ import pytest
 from src.config import config
 from src.domain.models import PriceLimit, TradeSignal
 from src.domain.market_regime import MarketRegime
+from src.domain.volatility import VolatilityLevel
 from src.domain.rules import is_market_closed
 from src.application.trading_usecase import TradingUseCase
 from src.infrastructure.paper.paper_order_executor import PaperOrderExecutor
@@ -82,7 +83,9 @@ def test_order_history_register_records_audit_fields(tmp_path):
     assert entry.order_id == 'abc123'
     assert entry.basis_lower_band == 990.0
     assert entry.basis_upper_band == 1010.0
-    assert messages == ['【約定】買い 1475 100株 @ 1000.0円']
+    assert messages[0].startswith('【業務】取引運用\n【機能】注文執行')
+    assert '買い注文が成立しました。' in messages[0]
+    assert '銘柄: 1475' in messages[0]
 
     # 再読み込みしても永続化されていること
     reloaded = TradingUseCase(token='dummy', order_history_path=history_file)
@@ -134,10 +137,57 @@ def test_end_of_day_report_identifies_paper_trading(monkeypatch, tmp_path):
 
     use_case._send_end_of_day_report()
 
-    assert messages[0].startswith('【取引】結果（ペーパートレード）')
+    assert messages[0].startswith('【業務】取引運用\n【機能】取引終了')
     report = json.loads((tmp_path / 'reports' / f'{datetime.now().date().isoformat()}.json').read_text(encoding='utf-8'))
     assert report['order_count'] == 0
     assert report['report_text'] == messages[0]
+
+
+def test_end_of_day_report_contains_market_conditions_and_order_atr(tmp_path):
+    messages = []
+    use_case = TradingUseCase(
+        token='dummy',
+        order_history_path=tmp_path / 'order_history.json',
+        notifier=messages.append,
+        daily_report_directory=tmp_path / 'reports',
+    )
+    use_case.market_regime = MarketRegime.CAUTION
+    use_case.market_regime_assessment = SimpleNamespace(
+        realized_volatility_percent=21.5,
+        vix=19.2,
+        nikkei_change_percent=-1.1,
+        adx=24.0,
+        data_available=True,
+        failure_reason=None,
+    )
+    use_case._register_order(
+        TradeSignal('7203', config.OrderSide.BUY, 100.0, 100),
+        PriceLimit(95.0, 105.0),
+        {'Result': 0, 'OrderId': 'order-1'},
+        SimpleNamespace(
+            atr=3.2,
+            latest_true_range=4.8,
+            ratio=1.5,
+            level=VolatilityLevel.CAUTION,
+        ),
+    )
+
+    use_case._send_end_of_day_report()
+
+    report = json.loads((tmp_path / 'reports' / f'{datetime.now().date().isoformat()}.json').read_text(encoding='utf-8'))
+    assert report['market_conditions'] == {
+        'regime': 'CAUTION',
+        'realized_volatility_percent': 21.5,
+        'vix': 19.2,
+        'nikkei_change_percent': -1.1,
+        'adx': 24.0,
+        'data_available': True,
+        'failure_reason': None,
+    }
+    assert report['orders'][0]['atr'] == 3.2
+    assert report['orders'][0]['atr_level'] == 'CAUTION'
+    assert 'MarketRegime: CAUTION' in messages[-1]
+    assert 'ATR: 3.200円' in messages[-1]
 
 
 def test_end_of_day_report_appends_daily_llm_analysis(tmp_path):

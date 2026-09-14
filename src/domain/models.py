@@ -41,6 +41,18 @@ class OrderHistoryEntry:
     order_id: Optional[str] = None
     basis_lower_band: Optional[float] = None
     basis_upper_band: Optional[float] = None
+    atr: Optional[float] = None
+    atr_true_range: Optional[float] = None
+    atr_ratio: Optional[float] = None
+    atr_level: Optional[str] = None
+    atr_stop_multiplier: Optional[float] = None
+    market_regime: Optional[str] = None
+    decision_reason: Optional[str] = None
+    rsi: Optional[float] = None
+    rsi_entry_threshold: Optional[float] = None
+    rsi_exit_threshold: Optional[float] = None
+    current_price: Optional[float] = None
+    order_qty_before_atr: Optional[int] = None
 
     @classmethod
     def from_dict(cls, data: Dict) -> 'OrderHistoryEntry':
@@ -63,6 +75,18 @@ class OrderHistoryEntry:
             order_id=data.get('order_id'),
             basis_lower_band=data.get('basis_lower_band', data.get('basis_buy_limit')),
             basis_upper_band=data.get('basis_upper_band', data.get('basis_sell_limit')),
+            atr=data.get('atr'),
+            atr_true_range=data.get('atr_true_range'),
+            atr_ratio=data.get('atr_ratio'),
+            atr_level=data.get('atr_level'),
+            atr_stop_multiplier=data.get('atr_stop_multiplier'),
+            market_regime=data.get('market_regime'),
+            decision_reason=data.get('decision_reason'),
+            rsi=data.get('rsi'),
+            rsi_entry_threshold=data.get('rsi_entry_threshold'),
+            rsi_exit_threshold=data.get('rsi_exit_threshold'),
+            current_price=data.get('current_price'),
+            order_qty_before_atr=data.get('order_qty_before_atr'),
         )
 
     def to_dict(self) -> Dict:
@@ -82,6 +106,18 @@ class OrderHistoryEntry:
             'order_id': self.order_id,
             'basis_lower_band': self.basis_lower_band,
             'basis_upper_band': self.basis_upper_band,
+            'atr': self.atr,
+            'atr_true_range': self.atr_true_range,
+            'atr_ratio': self.atr_ratio,
+            'atr_level': self.atr_level,
+            'atr_stop_multiplier': self.atr_stop_multiplier,
+            'market_regime': self.market_regime,
+            'decision_reason': self.decision_reason,
+            'rsi': self.rsi,
+            'rsi_entry_threshold': self.rsi_entry_threshold,
+            'rsi_exit_threshold': self.rsi_exit_threshold,
+            'current_price': self.current_price,
+            'order_qty_before_atr': self.order_qty_before_atr,
         }
 
 
@@ -159,7 +195,12 @@ class TradeSignal:
             return cls(symbol=symbol, side=OrderSide.SELL, price=current_price, qty=0)
         return None
 
-    def to_order_history_entry(self, limit: 'PriceLimit', order_response: Optional[Dict] = None) -> 'OrderHistoryEntry':
+    def to_order_history_entry(
+        self,
+        limit: 'PriceLimit',
+        order_response: Optional[Dict] = None,
+        diagnostics: Optional[Dict] = None,
+    ) -> 'OrderHistoryEntry':
         """
         TradeSignalを注文履歴エントリに変換します。
         
@@ -171,6 +212,7 @@ class TradeSignal:
             OrderHistoryEntryインスタンス
         """
         order_response = order_response or {}
+        diagnostics = diagnostics or {}
         return OrderHistoryEntry(
             symbol=self.symbol,
             side=self.side,
@@ -181,6 +223,18 @@ class TradeSignal:
             order_id=order_response.get('OrderId'),
             basis_lower_band=limit.lower_band,
             basis_upper_band=limit.upper_band,
+            atr=diagnostics.get('atr'),
+            atr_true_range=diagnostics.get('atr_true_range'),
+            atr_ratio=diagnostics.get('atr_ratio'),
+            atr_level=diagnostics.get('atr_level'),
+            atr_stop_multiplier=diagnostics.get('atr_stop_multiplier'),
+            market_regime=diagnostics.get('market_regime'),
+            decision_reason=diagnostics.get('decision_reason'),
+            rsi=diagnostics.get('rsi'),
+            rsi_entry_threshold=diagnostics.get('rsi_entry_threshold'),
+            rsi_exit_threshold=diagnostics.get('rsi_exit_threshold'),
+            current_price=diagnostics.get('current_price'),
+            order_qty_before_atr=diagnostics.get('order_qty_before_atr'),
         )
 
 

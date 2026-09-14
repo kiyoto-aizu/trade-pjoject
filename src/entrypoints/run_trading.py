@@ -92,6 +92,7 @@ def main(now_provider=None) -> None:
             return
         with process_notification(
             '取引',
+            notify_lifecycle=False,
             trigger='フィルタリング結果',
             start_detail=f'開始（{config.TRADING_MODE_LABEL}）',
         ):
@@ -117,6 +118,17 @@ def main(now_provider=None) -> None:
                 raise SystemExit('トークン取得に失敗しました。')
 
             use_case = create_trading_use_case(token)
+            if hasattr(use_case, 'prepare_market_regime'):
+                use_case.prepare_market_regime()
+                send_line_notify(
+                    "【業務】取引運用\n"
+                    "【機能】取引開始\n"
+                    "【概要】\n"
+                    f"{config.TRADING_MODE_LABEL}を開始しました。\n"
+                    "【詳細】\n"
+                    f"対象銘柄数: {len(filtering_result.symbols)}\n"
+                    + "\n".join(use_case.market_conditions_detail())
+                )
             if not config.ALLOW_OVERNIGHT_HOLDING and is_market_closed(
                 now.time(),
                 config.MARKET_LIQUIDATION_HOUR,

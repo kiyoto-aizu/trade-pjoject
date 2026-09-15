@@ -6,7 +6,7 @@ from pathlib import Path
 
 from src.infrastructure.analysis.daily_analyzer import create_daily_analyzer
 from src.infrastructure.analysis.summary_loader import load_backtest_summaries, load_daily_summaries
-from src.infrastructure.notification.line_notify import process_notification, send_line_notify
+from src.infrastructure.notification.line_notify import format_result_notification, process_notification, send_line_notify
 from src.infrastructure.persistence.storage import write_json
 
 logger = logging.getLogger(__name__)
@@ -75,15 +75,16 @@ def main() -> None:
         output_path = args.output / f"{month_text}.json"
         write_json(output_path, result)
         lines = [
-            "【月次総合分析】結果",
             f"対象月: {month_text}",
             f"ペーパートレード: {summary['daily']['report_count']}日 / {summary['daily']['order_count']}件",
             f"バックテスト: {summary['backtest']['run_count']}回 / 損益 {summary['backtest']['total_pnl']}",
             f"詳細: {output_path}",
         ]
         if analysis:
-            lines.extend(["--- LLM月次評価（参考） ---", analysis])
-        send_line_notify("\n".join(lines))
+            lines.extend(["LLM月次評価(参考):", analysis])
+        send_line_notify(format_result_notification(
+            "分析運用", "月次総合分析", "月次分析が完了しました。", lines
+        ))
 
 
 if __name__ == "__main__":

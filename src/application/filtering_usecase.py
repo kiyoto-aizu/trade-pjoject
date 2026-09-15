@@ -11,6 +11,7 @@ import logging
 from src.domain.models import FilteringResult, ScoredCandidate
 from src.domain.rules import calculate_volume_surge_ratio, select_top_n_by_surge_ratio
 from src.config import config
+from src.infrastructure.notification.line_notify import format_result_notification
 
 logger = logging.getLogger(__name__)
 
@@ -124,26 +125,37 @@ class FilteringUseCase:
 
     def _notify_completion(self, screening, symbols, scored, skipped_count: int = 0) -> None:
         if not screening:
-            message = "【フィルタリング】結果\n前日のスクリーニング結果がないため、0銘柄です"
+            message = format_result_notification(
+                "銘柄選定",
+                "フィルタリング",
+                "前日の結果がないため完了しました。",
+                ["採用銘柄数: 0件"],
+            )
         else:
             ratios_by_symbol = {candidate.symbol: candidate.surge_ratio for candidate in scored}
-            top_symbols = " / ".join(
-                f"{symbol}(20日平均売買代金の{ratios_by_symbol[symbol]:.1f}倍)" for symbol in symbols[:5]
-            )
-            message = (
-                "【フィルタリング】結果\n"
-                f"採用銘柄: {len(symbols)}銘柄\n"
-                f"スクリーニング結果からの入力: {len(screening.symbols)}件\n"
-                f"評価完了: {len(scored)}件\n"
-                f"評価対象外: {skipped_count}件"
-            )
-            if top_symbols:
-                message += "\n上位銘柄:\n" + "\n".join(
-                    f"- {symbol}(20日平均売買代金の{ratios_by_symbol[symbol]:.1f}倍)" for symbol in symbols[:5]
-                )
+            details = [
+                f"採用銘柄数: {len(symbols)}件",
+                f"入力銘柄数: {len(screening.symbols)}件",
+                f"評価完了数: {len(scored)}件",
+                f"評価対象外数: {skipped_count}件",
+            ]
+            if symbols:
+                details.extend([
+                    "上位銘柄:",
+                    *[
+                        f"- {symbol}(20日平均売買代金の{ratios_by_symbol[symbol]:.1f}倍)"
+                        for symbol in symbols[:5]
+                    ],
+                ])
             anomaly = self._analyze_anomaly_if_needed(screening, symbols, scored, skipped_count)
             if anomaly:
-                message += f"\n--- LLM異常検知（参考） ---\n{anomaly}"
+                details.extend(["LLM異常検知(参考):", anomaly])
+            message = format_result_notification(
+                "銘柄選定",
+                "フィルタリング",
+                "フィルタリングが完了しました。",
+                details,
+            )
         try:
             self.notifier(message)
         except Exception:

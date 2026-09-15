@@ -17,8 +17,8 @@ from typing import List, Optional
 from src.config import config
 from src.application.allocate_budget import allocate_budget
 from src.domain.models import Candidate, OrderHistoryEntry, PriceLimit, TradeSignal
-from src.domain.rules import calculate_buy_quantity, calculate_price_limit, calculate_rsi, check_kill_switch, is_buy_order_amount_allowed, is_market_closed, is_safe_to_order
-from src.domain.volatility import DailyBar, adjust_quantity_for_volatility, assess_volatility, stop_loss_multiplier
+from src.domain.rules import calculate_buy_quantity, calculate_price_limit, calculate_rsi, check_kill_switch, is_buy_order_amount_allowed, is_market_closed, is_safe_to_order, is_trading_session
+from src.domain.volatility import DailyBar, VolatilityLevel, adjust_quantity_for_volatility, assess_volatility, stop_loss_multiplier
 from src.domain.market_regime import MarketRegime, resolve_rsi_entry_threshold
 from src.infrastructure.kabu.get_board import get_current_board
 from src.infrastructure.kabu.get_positions import get_positions
@@ -97,6 +97,7 @@ class TradingUseCase:
         self._missing_holding_warning_symbols: set[str] = set()
         self._sell_condition_observations: dict[str, str] = {}
         self._liquidation_results: list[dict] = []
+        self._atr_danger_skips: dict[str, dict] = {}
 
     def _notify_safely(self, message: str) -> None:
         """通知失敗で取引制御自体を妨げないように通知します。"""
@@ -190,7 +191,7 @@ class TradingUseCase:
         return lines
 
     @staticmethod
-    def _order_detail_lines(entry: OrderHistoryEntry) -> list[str]:
+    def _order_detail_lines(entry: OrderHistoryEntry, include_market_regime: bool = True) -> list[str]:
         """注文履歴を判断理由と用語補足付きの通知行へ変換します。"""
         lines = [
             f"銘柄: {entry.symbol}",
@@ -220,7 +221,7 @@ class TradingUseCase:
                 f"価格基準: 下側バンド={entry.basis_lower_band:.1f}円 / "
                 f"上側バンド={entry.basis_upper_band:.1f}円"
             )
-        if entry.market_regime:
+        if include_market_regime and entry.market_regime:
             regime_state = {
                 "NORMAL": "通常",
                 "CAUTION": "やや警戒",
@@ -427,7 +428,19 @@ class TradingUseCase:
         for path in Path(config.LOG_DIRECTORY).glob("trade_project.log*"):
             try:
                 for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-                    if line.startswith(today) and any(pattern in line for pattern in patterns):
+                    if not line.startswith(today) or not any(pattern in line for pattern in patterns):
+                        continue
+                    try:
+                        logged_at = datetime.strptime(line[:19], "%Y-%m-%d %H:%M:%S")
+                    except ValueError:
+                        continue
+                    if is_trading_session(
+                        logged_at,
+                        config.MARKET_OPEN_HOUR,
+                        config.MARKET_OPEN_MINUTE,
+                        config.MARKET_CLOSE_HOUR,
+                        config.MARKET_CLOSE_MINUTE,
+                    ):
                         messages.append(line.split(": ", 1)[-1].strip())
             except OSError:
                 logger.warning("日次ログを読み込めません: %s", path)
@@ -438,12 +451,63 @@ class TradingUseCase:
             "summaries": [message for message, _ in counts.most_common(5)],
         }
 
+    def _record_atr_danger_skip(self, symbol: str, observed_at: datetime, price: float, assessment, quantity: int) -> None:
+        """ATR DANGERで見送った買いシグナルと、その後の観測価格を記録します。"""
+        if symbol in self._atr_danger_skips:
+            self._update_atr_danger_skip_observation(symbol, observed_at, price)
+            return
+        self._atr_danger_skips[symbol] = {
+            "symbol": symbol,
+            "skipped_at": observed_at.isoformat(timespec="seconds"),
+            "entry_price": price,
+            "quantity": quantity,
+            "atr": assessment.atr,
+            "true_range": assessment.latest_true_range,
+            "atr_ratio": assessment.ratio,
+            "lowest_price": price,
+            "highest_price": price,
+            "last_price": price,
+            "last_observed_at": observed_at.isoformat(timespec="seconds"),
+            "observation_count": 1,
+        }
+
+    def _update_atr_danger_skip_observation(self, symbol: str, observed_at: datetime, price: float) -> None:
+        observation = self._atr_danger_skips.get(symbol)
+        if observation is None:
+            return
+        observation["lowest_price"] = min(observation["lowest_price"], price)
+        observation["highest_price"] = max(observation["highest_price"], price)
+        observation["last_price"] = price
+        observation["last_observed_at"] = observed_at.isoformat(timespec="seconds")
+        observation["observation_count"] += 1
+
+    def _atr_danger_skip_summary(self) -> list[dict]:
+        summaries = []
+        for observation in self._atr_danger_skips.values():
+            entry_price = observation["entry_price"]
+            last_price = observation["last_price"]
+            change_percent = (last_price - entry_price) / entry_price * 100 if entry_price else 0.0
+            hypothetical_pnl = (last_price - entry_price) * observation["quantity"]
+            outcome = (
+                "損失回避の可能性" if hypothetical_pnl < 0
+                else "利益取り逃しの可能性" if hypothetical_pnl > 0
+                else "値動きなし"
+            )
+            summaries.append({
+                **observation,
+                "price_change_percent": change_percent,
+                "hypothetical_pnl_before_cost": hypothetical_pnl,
+                "outcome": outcome,
+            })
+        return summaries
+
     def _send_end_of_day_report(self) -> None:
         """市場終了時に本日の取引レポートを送信します。"""
         self._load_order_history()
         today = datetime.now().date().isoformat()
         log_error_summary = self._daily_log_error_summary(today)
         daily_orders = [entry for entry in self.order_history if entry.timestamp.startswith(today)]
+        atr_danger_skips = self._atr_danger_skip_summary()
         lines = [
             "【業務】取引運用",
             "【機能】取引終了",
@@ -451,9 +515,7 @@ class TradingUseCase:
             f"{config.TRADING_MODE_LABEL}の本日の取引を終了しました。",
             "【詳細】",
             f"発注件数: {len(daily_orders)}",
-            "市場状況:",
         ]
-        lines.extend(self.market_conditions_detail())
         if self.kill_switch_triggered:
             lines.append("キルスイッチ: 発動")
         if self.emergency_stop_triggered:
@@ -461,7 +523,7 @@ class TradingUseCase:
         if daily_orders:
             lines.append("注文履歴:")
             for entry in daily_orders:
-                lines.extend(self._order_detail_lines(entry))
+                lines.extend(self._order_detail_lines(entry, include_market_regime=False))
                 lines.append("")
         else:
             lines.append("本日実行された注文はありませんでした。")
@@ -481,6 +543,13 @@ class TradingUseCase:
             lines.extend(f"- {summary}" for summary in log_error_summary["summaries"])
         else:
             lines.append("エラーなし")
+        if atr_danger_skips:
+            lines.append("ATR DANGER見送り:")
+            for item in atr_danger_skips:
+                lines.append(
+                    f"{item['symbol']}: {item['outcome']} "
+                    f"({item['hypothetical_pnl_before_cost']:+.0f}円概算)"
+                )
         if self._liquidation_results:
             lines.append("--- 強制売却確認 ---")
             lines.extend(
@@ -530,6 +599,7 @@ class TradingUseCase:
             "kill_switch_triggered": self.kill_switch_triggered,
             "emergency_stop_triggered": self.emergency_stop_triggered,
             "log_errors": log_error_summary,
+            "atr_danger_skips": atr_danger_skips,
             "liquidation_results": self._liquidation_results,
         }
         analysis = None
@@ -644,6 +714,7 @@ class TradingUseCase:
         """
         self._load_order_history()
         self._missing_holding_warning_symbols.clear()
+        self._atr_danger_skips.clear()
         now_provider = now_provider or datetime.now
         sleep = sleep or time.sleep
         if self.filtering_result_repository:
@@ -717,6 +788,7 @@ class TradingUseCase:
                     )
                     if not board or board.get('current_price') is None:
                         continue
+                    self._update_atr_danger_skip_observation(symbol, now, float(board['current_price']))
                     daily_bars = snapshot.get('daily_bars') if snapshot else self._get_daily_bars(symbol)
                     assessment = assess_volatility(
                         daily_bars,
@@ -854,6 +926,19 @@ class TradingUseCase:
                                     original_qty,
                                     signal.qty,
                                 )
+                                if (
+                                    assessment.level == VolatilityLevel.DANGER
+                                    and config.ATR_DANGER_ACTION == "skip"
+                                    and signal.qty == 0
+                                    and original_qty > 0
+                                ):
+                                    self._record_atr_danger_skip(
+                                        symbol,
+                                        now,
+                                        float(board['current_price']),
+                                        assessment,
+                                        original_qty,
+                                    )
                         if self.market_regime == MarketRegime.DANGER:
                             logger.info(
                                 "MarketRegimeにより新規買いを見送ります: 銘柄=%s | レジーム=%s",

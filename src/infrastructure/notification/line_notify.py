@@ -1,9 +1,51 @@
 import logging
+import unicodedata
 from contextlib import contextmanager
 import requests
 from src.config import config
 
 logger = logging.getLogger(__name__)
+
+
+def format_result_notification(business: str, function: str, summary: str, details: list[str]) -> str:
+    """結果通知を共通の4見出しで組み立てます。"""
+    return "\n".join([
+        f"【業務】{business}",
+        f"【機能】{function}",
+        "【概要】",
+        summary,
+        "【詳細】",
+        *details,
+    ])
+
+
+def _display_width(character: str) -> int:
+    return 2 if unicodedata.east_asian_width(character) in "FWA" else 1
+
+
+def _wrap_line_for_line(line: str, max_width: int = 40) -> list[str]:
+    wrapped_lines = []
+    current_line = ""
+    current_width = 0
+    for character in line:
+        character_width = _display_width(character)
+        if current_line and current_width + character_width > max_width:
+            wrapped_lines.append(current_line)
+            current_line = ""
+            current_width = 0
+        current_line += character
+        current_width += character_width
+    wrapped_lines.append(current_line)
+    return wrapped_lines
+
+
+def wrap_for_line(message: str) -> str:
+    """LINEで不自然に折り返されないよう、各行を表示幅40までに収めます。"""
+    return "\n".join(
+        wrapped_line
+        for line in message.splitlines()
+        for wrapped_line in _wrap_line_for_line(line)
+    )
 
 
 def notify_process_start(process_name: str, detail: str = "開始") -> None:
@@ -106,7 +148,7 @@ def send_line_notify(message: str) -> bool:
         'messages': [
             {
                 'type': 'text',
-                'text': message
+                'text': wrap_for_line(message)
             }
         ]
     }

@@ -15,7 +15,7 @@ from src.domain.volatility import DailyBar
 from src.domain.market_regime import calculate_market_regime_series
 from src.infrastructure.market_data.yahoo_index_client import YahooIndexClient
 from src.infrastructure.analysis.daily_analyzer import create_daily_analyzer
-from src.infrastructure.notification.line_notify import process_notification, send_line_notify
+from src.infrastructure.notification.line_notify import format_result_notification, process_notification, send_line_notify
 from src.infrastructure.persistence.parquet_minute_bar_repository import ParquetMinuteBarRepository
 
 logger = logging.getLogger(__name__)
@@ -590,7 +590,6 @@ def main() -> None:
 
         print(json.dumps(display_result, ensure_ascii=False, indent=2))
         report_lines = [
-            "【バックテスト】結果",
             f"対象期間: {display_result['対象期間'] or '指定なし'}",
             f"総損益: {display_result['総損益']}",
             f"勝率: {display_result['勝率']}",
@@ -614,8 +613,10 @@ def main() -> None:
         if archive_path:
             report_lines.append(f"履歴: {archive_path}")
         if llm_analysis:
-            report_lines.extend(["--- LLMバックテスト評価（参考） ---", llm_analysis])
-        send_line_notify("\n".join(report_lines))
+            report_lines.extend(["LLMバックテスト評価(参考):", llm_analysis])
+        send_line_notify(format_result_notification(
+            "分析運用", "バックテスト", "バックテストが完了しました。", report_lines
+        ))
 
 
 if __name__ == "__main__":

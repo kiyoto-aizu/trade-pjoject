@@ -143,7 +143,7 @@ def test_end_of_day_report_identifies_paper_trading(monkeypatch, tmp_path):
     assert report['report_text'] == messages[0]
 
 
-def test_end_of_day_report_contains_market_conditions_and_order_atr(tmp_path):
+def test_end_of_day_report_keeps_market_conditions_in_data_but_not_notification(tmp_path):
     messages = []
     use_case = TradingUseCase(
         token='dummy',
@@ -186,8 +186,47 @@ def test_end_of_day_report_contains_market_conditions_and_order_atr(tmp_path):
     }
     assert report['orders'][0]['atr'] == 3.2
     assert report['orders'][0]['atr_level'] == 'CAUTION'
-    assert 'MarketRegime: CAUTION' in messages[-1]
+    assert 'MarketRegime: CAUTION' not in messages[-1]
     assert 'ATR: 3.200円' in messages[-1]
+
+
+def test_end_of_day_report_counts_only_errors_during_trading_session(monkeypatch, tmp_path):
+    monkeypatch.setattr(config, 'LOG_DIRECTORY', tmp_path)
+    today = datetime.now().date().isoformat()
+    (tmp_path / 'trade_project.log').write_text(
+        f"{today} 08:59:59 ERROR test: before market\n"
+        f"{today} 09:00:00 ERROR test: opening error\n"
+        f"{today} 15:29:59 ERROR test: closing error\n"
+        f"{today} 15:30:00 ERROR test: after market\n",
+        encoding='utf-8',
+    )
+    use_case = TradingUseCase(token='dummy', order_history_path=tmp_path / 'order_history.json')
+
+    summary = use_case._daily_log_error_summary(today)
+
+    assert summary['count'] == 2
+    assert summary['summaries'] == ['opening error', 'closing error']
+
+
+def test_end_of_day_report_includes_atr_danger_skip_outcome(tmp_path):
+    messages = []
+    use_case = TradingUseCase(
+        token='dummy',
+        order_history_path=tmp_path / 'order_history.json',
+        notifier=messages.append,
+        daily_report_directory=tmp_path / 'reports',
+    )
+    assessment = SimpleNamespace(atr=5.0, latest_true_range=12.0, ratio=2.4)
+    use_case._record_atr_danger_skip('3624', datetime(2026, 9, 15, 14, 55), 95.0, assessment, 300)
+    use_case._update_atr_danger_skip_observation('3624', datetime(2026, 9, 15, 15, 19), 97.0)
+
+    use_case._send_end_of_day_report()
+
+    report = json.loads((tmp_path / 'reports' / f'{datetime.now().date().isoformat()}.json').read_text(encoding='utf-8'))
+    skip = report['atr_danger_skips'][0]
+    assert skip['hypothetical_pnl_before_cost'] == 600.0
+    assert skip['outcome'] == '利益取り逃しの可能性'
+    assert '3624: 利益取り逃しの可能性 (+600円概算)' in messages[0]
 
 
 def test_end_of_day_report_appends_daily_llm_analysis(tmp_path):

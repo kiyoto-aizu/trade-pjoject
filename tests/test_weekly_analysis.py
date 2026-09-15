@@ -80,7 +80,7 @@ def test_main_force_writes_result_and_notifies(monkeypatch, tmp_path):
 
     output = tmp_path / "2026-09-07_2026-09-11.json"
     assert output.exists()
-    assert notifications[0].startswith("【週次分析】結果\n")
+    assert notifications[0].startswith("【業務】分析運用\n【機能】週次分析\n【概要】")
     assert "対象週: 2026-09-07～2026-09-11" in notifications[0]
 
 

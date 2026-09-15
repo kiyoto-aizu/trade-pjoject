@@ -17,6 +17,7 @@ from src.domain.rules import (
     limit_candidates,
     merge_ranking_candidates,
 )
+from src.infrastructure.notification.line_notify import format_result_notification
 
 logger = logging.getLogger(__name__)
 
@@ -69,7 +70,12 @@ class ScreeningUseCase:
         price_gain = self._collect_ranking(RankingType.PRICE_GAIN, target_date)
         if not turnover or not price_gain:
             if self.notifier:
-                self.notifier("ランキングが空のためスクリーニングを中止しました")
+                self.notifier(format_result_notification(
+                    "銘柄選定",
+                    "スクリーニング",
+                    "ランキングがないため中止しました。",
+                    ["採用銘柄数: 0件"],
+                ))
             raise RuntimeError("ランキングが空のためスクリーニングを中止しました")
         candidates = merge_ranking_candidates(turnover, price_gain)
         turnover_by_symbol = {entry.symbol: entry for entry in turnover}
@@ -183,14 +189,12 @@ class ScreeningUseCase:
         turnover_by_symbol,
         price_gain_by_symbol,
     ) -> None:
-        message = (
-            "【スクリーニング】結果\n"
-            f"採用銘柄: {len(symbols)}銘柄\n"
-            f"候補: {len(candidates)}件\n"
-            "除外:\n"
-            f"  規制: {exclusion_result.excluded_by_regulation_count}件\n"
-            f"  地方取引所: {exclusion_result.excluded_by_exchange_count}件"
-        )
+        details = [
+            f"採用銘柄数: {len(symbols)}件",
+            f"候補数: {len(candidates)}件",
+            f"規制除外数: {exclusion_result.excluded_by_regulation_count}件",
+            f"地方取引所除外数: {exclusion_result.excluded_by_exchange_count}件",
+        ]
         top_entries = []
         for symbol in exclusion_result.remaining[:3]:
             turnover_entry = turnover_by_symbol.get(symbol)
@@ -207,10 +211,16 @@ class ScreeningUseCase:
                 f"{symbol}(値上がり率 {price_gain}, 売買代金 {turnover})"
             )
         if top_entries:
-            message += "\n上位銘柄:\n" + "\n".join(f"- {entry}" for entry in top_entries)
+            details.extend(["上位銘柄:", *[f"- {entry}" for entry in top_entries]])
         anomaly = self._analyze_anomaly_if_needed(candidates, exclusion_result, symbols)
         if anomaly:
-            message += f"\n--- LLM異常検知（参考） ---\n{anomaly}"
+            details.extend(["LLM異常検知(参考):", anomaly])
+        message = format_result_notification(
+            "銘柄選定",
+            "スクリーニング",
+            "スクリーニングが完了しました。",
+            details,
+        )
         try:
             self.notifier(message)
         except Exception:

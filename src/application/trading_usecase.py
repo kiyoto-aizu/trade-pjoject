@@ -98,6 +98,7 @@ class TradingUseCase:
         self._sell_condition_observations: dict[str, str] = {}
         self._liquidation_results: list[dict] = []
         self._atr_danger_skips: dict[str, dict] = {}
+        self._atr_stop_exits: dict[str, dict] = {}
 
     def _notify_safely(self, message: str) -> None:
         """通知失敗で取引制御自体を妨げないように通知します。"""
@@ -501,6 +502,65 @@ class TradingUseCase:
             })
         return summaries
 
+    def _record_atr_stop_exit(
+        self,
+        symbol: str,
+        sold_at: datetime,
+        entry_price: float,
+        exit_price: float,
+        quantity: int,
+        assessment,
+        stop_multiplier: float,
+    ) -> None:
+        """ATR損切りで約定した売却と、その後の価格推移を記録します。"""
+        self._atr_stop_exits[symbol] = {
+            "symbol": symbol,
+            "sold_at": sold_at.isoformat(timespec="seconds"),
+            "entry_price": entry_price,
+            "exit_price": exit_price,
+            "quantity": quantity,
+            "atr": assessment.atr,
+            "atr_ratio": assessment.ratio,
+            "atr_level": assessment.level.value,
+            "stop_multiplier": stop_multiplier,
+            "stop_price": entry_price - assessment.atr * stop_multiplier,
+            "realized_pnl_before_cost": (exit_price - entry_price) * quantity,
+            "lowest_price_after_exit": exit_price,
+            "highest_price_after_exit": exit_price,
+            "last_price_after_exit": exit_price,
+            "last_observed_at": sold_at.isoformat(timespec="seconds"),
+            "observation_count": 1,
+        }
+
+    def _update_atr_stop_exit_observation(self, symbol: str, observed_at: datetime, price: float) -> None:
+        observation = self._atr_stop_exits.get(symbol)
+        if observation is None:
+            return
+        observation["lowest_price_after_exit"] = min(observation["lowest_price_after_exit"], price)
+        observation["highest_price_after_exit"] = max(observation["highest_price_after_exit"], price)
+        observation["last_price_after_exit"] = price
+        observation["last_observed_at"] = observed_at.isoformat(timespec="seconds")
+        observation["observation_count"] += 1
+
+    def _atr_stop_exit_summary(self) -> list[dict]:
+        summaries = []
+        for observation in self._atr_stop_exits.values():
+            exit_price = observation["exit_price"]
+            last_price = observation["last_price_after_exit"]
+            avoided_pnl = (exit_price - last_price) * observation["quantity"]
+            outcome = (
+                "下落回避の可能性" if avoided_pnl > 0
+                else "早すぎる決済の可能性" if avoided_pnl < 0
+                else "売却後の値動きなし"
+            )
+            summaries.append({
+                **observation,
+                "post_exit_change_percent": (last_price - exit_price) / exit_price * 100 if exit_price else 0.0,
+                "avoided_pnl_before_cost": avoided_pnl,
+                "outcome": outcome,
+            })
+        return summaries
+
     def _send_end_of_day_report(self) -> None:
         """市場終了時に本日の取引レポートを送信します。"""
         self._load_order_history()
@@ -508,6 +568,7 @@ class TradingUseCase:
         log_error_summary = self._daily_log_error_summary(today)
         daily_orders = [entry for entry in self.order_history if entry.timestamp.startswith(today)]
         atr_danger_skips = self._atr_danger_skip_summary()
+        atr_stop_exits = self._atr_stop_exit_summary()
         lines = [
             "【業務】取引運用",
             "【機能】取引終了",
@@ -549,6 +610,13 @@ class TradingUseCase:
                 lines.append(
                     f"{item['symbol']}: {item['outcome']} "
                     f"({item['hypothetical_pnl_before_cost']:+.0f}円概算)"
+                )
+        if atr_stop_exits:
+            lines.append("ATR損切り売却:")
+            for item in atr_stop_exits:
+                lines.append(
+                    f"{item['symbol']}: {item['outcome']} "
+                    f"({item['avoided_pnl_before_cost']:+.0f}円概算)"
                 )
         if self._liquidation_results:
             lines.append("--- 強制売却確認 ---")
@@ -600,6 +668,7 @@ class TradingUseCase:
             "emergency_stop_triggered": self.emergency_stop_triggered,
             "log_errors": log_error_summary,
             "atr_danger_skips": atr_danger_skips,
+            "atr_stop_exits": atr_stop_exits,
             "liquidation_results": self._liquidation_results,
         }
         analysis = None
@@ -715,6 +784,7 @@ class TradingUseCase:
         self._load_order_history()
         self._missing_holding_warning_symbols.clear()
         self._atr_danger_skips.clear()
+        self._atr_stop_exits.clear()
         now_provider = now_provider or datetime.now
         sleep = sleep or time.sleep
         if self.filtering_result_repository:
@@ -789,6 +859,7 @@ class TradingUseCase:
                     if not board or board.get('current_price') is None:
                         continue
                     self._update_atr_danger_skip_observation(symbol, now, float(board['current_price']))
+                    self._update_atr_stop_exit_observation(symbol, now, float(board['current_price']))
                     daily_bars = snapshot.get('daily_bars') if snapshot else self._get_daily_bars(symbol)
                     assessment = assess_volatility(
                         daily_bars,
@@ -1043,6 +1114,16 @@ class TradingUseCase:
                                 "order_qty_before_atr": original_qty,
                             },
                         )
+                        if decision_reason == "ATR損切り基準到達":
+                            self._record_atr_stop_exit(
+                                symbol,
+                                now,
+                                entry_price,
+                                float(signal.price),
+                                signal.qty,
+                                assessment,
+                                atr_stop_multiplier,
+                            )
                         logger.info(
                             "%s成立: 銘柄=%s | 約定価格=%.1f | 数量=%s | 注文受付番号=%s",
                             "買い" if signal.side == config.OrderSide.BUY else "売り",

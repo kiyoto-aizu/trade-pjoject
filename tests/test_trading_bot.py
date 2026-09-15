@@ -229,6 +229,29 @@ def test_end_of_day_report_includes_atr_danger_skip_outcome(tmp_path):
     assert '3624: 利益取り逃しの可能性 (+600円概算)' in messages[0]
 
 
+def test_end_of_day_report_includes_atr_stop_exit_outcome(tmp_path):
+    messages = []
+    use_case = TradingUseCase(
+        token='dummy',
+        order_history_path=tmp_path / 'order_history.json',
+        notifier=messages.append,
+        daily_report_directory=tmp_path / 'reports',
+    )
+    assessment = SimpleNamespace(atr=5.0, ratio=2.4, level=VolatilityLevel.DANGER)
+    use_case._record_atr_stop_exit(
+        '3624', datetime(2026, 9, 15, 14, 55), 100.0, 96.5, 300, assessment, 0.7
+    )
+    use_case._update_atr_stop_exit_observation('3624', datetime(2026, 9, 15, 15, 19), 94.5)
+
+    use_case._send_end_of_day_report()
+
+    report = json.loads((tmp_path / 'reports' / f'{datetime.now().date().isoformat()}.json').read_text(encoding='utf-8'))
+    exit_summary = report['atr_stop_exits'][0]
+    assert exit_summary['avoided_pnl_before_cost'] == 600.0
+    assert exit_summary['outcome'] == '下落回避の可能性'
+    assert '3624: 下落回避の可能性 (+600円概算)' in messages[0]
+
+
 def test_end_of_day_report_appends_daily_llm_analysis(tmp_path):
     messages = []
     summaries = []

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import logging
+import time
 from datetime import date
 from pathlib import Path
+from uuid import uuid4
 
 from src.domain.models import MinuteBar
 
@@ -13,6 +15,8 @@ class ParquetMinuteBarRepository:
     """銘柄・日付パーティションへ分足を保存するParquetリポジトリ。"""
 
     _COLUMNS = ("time", "price", "cumulative_volume", "volume", "source")
+    _REPLACE_ATTEMPTS = 5
+    _REPLACE_RETRY_SECONDS = 0.2
 
     def __init__(self, directory: Path):
         self.directory = Path(directory)
@@ -87,6 +91,31 @@ class ParquetMinuteBarRepository:
                 pa.field("source", pa.string()),
             ]),
         )
-        temporary_path = path.with_suffix(".parquet.tmp")
-        parquet.write_table(table, temporary_path)
-        temporary_path.replace(path)
+        temporary_path = path.with_name(f"{path.name}.{uuid4().hex}.tmp")
+        try:
+            parquet.write_table(table, temporary_path)
+            self._replace_with_retry(temporary_path, path)
+        except Exception:
+            try:
+                temporary_path.unlink(missing_ok=True)
+            except OSError:
+                logger.warning("置換に失敗した一時Parquetファイルを削除できませんでした: %s", temporary_path)
+            raise
+
+    def _replace_with_retry(self, temporary_path: Path, path: Path) -> None:
+        for attempt in range(1, self._REPLACE_ATTEMPTS + 1):
+            try:
+                temporary_path.replace(path)
+                return
+            except PermissionError:
+                if attempt == self._REPLACE_ATTEMPTS:
+                    raise
+                delay = self._REPLACE_RETRY_SECONDS * (2 ** (attempt - 1))
+                logger.warning(
+                    "Parquetファイルがロックされているため置換を再試行します: 対象=%s 試行=%d/%d 待機=%.1f秒",
+                    path,
+                    attempt,
+                    self._REPLACE_ATTEMPTS,
+                    delay,
+                )
+                time.sleep(delay)

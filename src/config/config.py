@@ -295,7 +295,8 @@ BASE_URL = f"http://localhost:{API_PORT}/kabusapi"
 # アプリケーションログの保存先
 LOG_DIRECTORY = _repo_root / "data" / "logs"
 LOG_DIRECTORY.mkdir(parents=True, exist_ok=True)
-LOG_FILE_PATH = str(LOG_DIRECTORY / "trade_project.log")
+_LOG_FILE_NAME = "pytest.log" if _is_test_runtime() else "trade_project.log"
+LOG_FILE_PATH = str(LOG_DIRECTORY / _LOG_FILE_NAME)
 
 # 保持する日次ログの世代数
 LOG_BACKUP_COUNT = int(os.getenv("LOG_BACKUP_COUNT", str(5)))

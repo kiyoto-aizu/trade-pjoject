@@ -34,7 +34,7 @@ def test_required_env_helper_raises_when_missing():
 
 
 def test_application_logs_are_stored_under_data_logs():
-    assert Path(config.LOG_FILE_PATH) == config.LOG_DIRECTORY / 'trade_project.log'
+    assert Path(config.LOG_FILE_PATH) == config.LOG_DIRECTORY / 'pytest.log'
     assert config.LOG_DIRECTORY.name == 'logs'
     assert config.LOG_DIRECTORY.parent.name == 'data'
 
@@ -794,6 +794,10 @@ def test_emergency_stop_liquidates_positions_and_stops_loop(monkeypatch, tmp_pat
         def get_positions(self, token):
             return [{'Symbol': '7203', 'Side': config.OrderSide.SELL.value, 'HoldQty': 100}]
 
+    class WalletClient:
+        def get_wallet_cash(self, token):
+            return {'StockAccountWallet': 100_000.0}
+
     class BoardClient:
         def get_current_board(self, token, symbol):
             return {'current_price': 92.0}
@@ -811,6 +815,7 @@ def test_emergency_stop_liquidates_positions_and_stops_loop(monkeypatch, tmp_pat
         token='dummy',
         order_history_path=tmp_path / 'order_history.json',
         positions_client=PositionsClient(),
+        wallet_client=WalletClient(),
         board_client=BoardClient(),
         order_sender=OrderSender(),
         notifier=messages.append,

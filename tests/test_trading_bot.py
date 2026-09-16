@@ -554,7 +554,7 @@ def test_trading_use_case_continues_when_filter_decision_storage_fails(monkeypat
         def load_open_events(self, execution_mode):
             raise OSError("storage unavailable")
 
-        def finalize_due_events(self, as_of, observation_days):
+        def finalize_due_events(self, as_of, observation_days, execution_mode=None):
             raise OSError("storage unavailable")
 
         def update_open_event_observations(self, observed_at, prices_by_symbol, execution_mode):

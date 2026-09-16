@@ -22,7 +22,7 @@ from src.domain.volatility import (
     is_atr_stop_loss_triggered,
     stop_loss_multiplier,
 )
-from src.infrastructure.persistence.minute_bar_repository import MinuteBarRepository
+from src.infrastructure.persistence.parquet_minute_bar_repository import ParquetMinuteBarRepository
 from src.infrastructure.persistence.filter_decision_repository import FilterDecisionRepository
 
 logger = logging.getLogger(__name__)
@@ -661,7 +661,7 @@ def simulate_timeseries_backtest(
     noise_band_ratio: float = 0.0,
     stop_loss_ratio: float = 0.0,
     trend_strength_ratio: float = 0.0,
-    minute_bar_repository: MinuteBarRepository | None = None,
+    minute_bar_repository: ParquetMinuteBarRepository | None = None,
     indicator_source: str = "daily",
     close_at_eod: bool = True,
     enable_volatility_adjustment: bool = True,
@@ -1113,6 +1113,7 @@ def simulate_timeseries_backtest(
             filter_decision_repository.finalize_due_events(
                 datetime.combine(date.fromisoformat(date_text), datetime.max.time()),
                 config.FILTER_DECISION_OBSERVATION_DAYS,
+                "backtest",
             )
 
     last_date = max(daily_symbols) if daily_symbols else ""

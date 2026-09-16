@@ -193,14 +193,19 @@ class FilterDecisionRepository:
                 updated += 1
         return updated
 
-    def finalize_due_events(self, as_of: datetime | date, observation_days: int) -> list[dict]:
+    def finalize_due_events(
+        self,
+        as_of: datetime | date,
+        observation_days: int,
+        execution_mode: str | None = None,
+    ) -> list[dict]:
         """指定営業日数を経過したイベントを確定し、確定済みデータを返します。"""
         if observation_days <= 0:
             raise ValueError("observation_daysは正数を指定してください")
         as_of_date = as_of.date() if isinstance(as_of, datetime) else as_of
         finalized_at = self._iso_datetime(as_of) if isinstance(as_of, datetime) else datetime.combine(as_of, datetime.min.time()).isoformat(timespec="seconds")
         finalized: list[dict] = []
-        for event in self.load_open_events():
+        for event in self.load_open_events(execution_mode):
             occurred_date = datetime.fromisoformat(event["occurred_at"]).date()
             if self._business_days_elapsed(occurred_date, as_of_date) < observation_days:
                 continue

@@ -17,7 +17,7 @@ from src.infrastructure.analysis.daily_analyzer import OpenAIDailyAnalyzer
 from src.domain.models import MinuteBar
 from src.domain.volatility import DailyBar
 from src.entrypoints.run_monthly_analysis import build_monthly_summary
-from src.infrastructure.persistence.minute_bar_repository import MinuteBarRepository
+from src.infrastructure.persistence.parquet_minute_bar_repository import ParquetMinuteBarRepository
 from src.infrastructure.persistence.filter_decision_repository import FilterDecisionRepository
 
 
@@ -361,7 +361,7 @@ def test_timeseries_backtest_evaluates_each_minute_with_daily_indicators(tmp_pat
             "2026-09-06": 90.0,
         },
     }
-    repository = MinuteBarRepository(tmp_path)
+    repository = ParquetMinuteBarRepository(tmp_path)
     repository.append_bar(date(2026, 9, 6), "7203", MinuteBar(
         time="2026-09-06T09:00:00", price=92.0, cumulative_volume=None, volume=100, source="yahoo",
     ))
@@ -391,7 +391,7 @@ def test_timeseries_backtest_evaluates_each_minute_with_daily_indicators(tmp_pat
 
 
 def test_timeseries_backtest_minute_indicator_does_not_use_current_bar(tmp_path):
-    repository = MinuteBarRepository(tmp_path)
+    repository = ParquetMinuteBarRepository(tmp_path)
     for minute, price in enumerate([90.0, 90.0, 90.0, 90.0, 90.0, 92.0, 120.0, 98.0, 96.0]):
         repository.append_bar(date(2026, 9, 6), "7203", MinuteBar(
             time=f"2026-09-06T09:{minute:02d}:00", price=price,
@@ -416,7 +416,7 @@ def test_timeseries_backtest_minute_indicator_does_not_use_current_bar(tmp_path)
 
 
 def test_timeseries_backtest_merges_symbols_in_minute_order(tmp_path):
-    repository = MinuteBarRepository(tmp_path)
+    repository = ParquetMinuteBarRepository(tmp_path)
     dated_history = {
         symbol: {
             "2026-09-01": 90.0,
@@ -506,7 +506,7 @@ def test_simulate_backtest_applies_delayed_market_slippage_and_round_trip_fees()
 
 
 def test_timeseries_backtest_applies_delayed_market_slippage_and_round_trip_fees(tmp_path):
-    repository = MinuteBarRepository(tmp_path)
+    repository = ParquetMinuteBarRepository(tmp_path)
     for minute, price in enumerate([90.0, 90.0, 90.0, 90.0, 90.0, 92.0, 120.0, 98.0, 96.0]):
         repository.append_bar(date(2026, 9, 6), "7203", MinuteBar(
             time=f"2026-09-06T09:{minute:02d}:00", price=price,

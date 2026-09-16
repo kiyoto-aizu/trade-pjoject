@@ -220,7 +220,7 @@ if PAPER_FEE_RATE < 0:
 if PAPER_MARKET_SLIPPAGE_BPS < 0:
     raise ValueError("PAPER_MARKET_SLIPPAGE_BPS は0以上を指定してください。")
 
-# 分足Parquetの保存先。旧JSON分足は移行完了まで削除しない。
+# 分足Parquetの保存先。
 MINUTE_BAR_PARQUET_DIR = Path(
     os.getenv("MINUTE_BAR_PARQUET_DIR", str(_repo_root / "data" / "minute_bars_parquet"))
 )

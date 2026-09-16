@@ -2,11 +2,11 @@ from datetime import date
 
 from src.application.minute_bar_backfill_usecase import MinuteBarBackfillUseCase
 from src.domain.models import MinuteBar
-from src.infrastructure.persistence.minute_bar_repository import MinuteBarRepository
+from src.infrastructure.persistence.parquet_minute_bar_repository import ParquetMinuteBarRepository
 
 
 def test_yahoo_bar_overwrites_poll_bar_for_same_minute(tmp_path):
-    repository = MinuteBarRepository(tmp_path)
+    repository = ParquetMinuteBarRepository(tmp_path)
     target_date = date(2026, 9, 10)
 
     repository.append_bar(target_date, "7203", MinuteBar(
@@ -23,7 +23,7 @@ def test_yahoo_bar_overwrites_poll_bar_for_same_minute(tmp_path):
 
 
 def test_poll_bar_does_not_downgrade_existing_yahoo_bar(tmp_path):
-    repository = MinuteBarRepository(tmp_path)
+    repository = ParquetMinuteBarRepository(tmp_path)
     target_date = date(2026, 9, 10)
 
     repository.append_bar(target_date, "7203", MinuteBar(
@@ -40,7 +40,7 @@ def test_poll_bar_does_not_downgrade_existing_yahoo_bar(tmp_path):
 
 
 def test_backfill_usecase_splits_bars_by_date_and_saves_them(tmp_path):
-    repository = MinuteBarRepository(tmp_path)
+    repository = ParquetMinuteBarRepository(tmp_path)
 
     def fake_fetch(symbol: str, days: int) -> list[MinuteBar]:
         return [
@@ -57,7 +57,7 @@ def test_backfill_usecase_splits_bars_by_date_and_saves_them(tmp_path):
 
 
 def test_backfill_usecase_records_zero_when_fetch_returns_nothing(tmp_path):
-    repository = MinuteBarRepository(tmp_path)
+    repository = ParquetMinuteBarRepository(tmp_path)
     usecase = MinuteBarBackfillUseCase(fetch_intraday_bars=lambda symbol, days: [], repository=repository)
 
     imported_counts = usecase.run(["9999"], days=7)

@@ -136,7 +136,7 @@ class TradingUseCase:
     def _finalize_filter_decisions_safely(self, as_of: datetime) -> None:
         try:
             self.filter_decision_repository.finalize_due_events(
-                as_of, config.FILTER_DECISION_OBSERVATION_DAYS
+                as_of, config.FILTER_DECISION_OBSERVATION_DAYS, self._execution_mode
             )
         except Exception:
             logger.exception("判定イベントの確定に失敗しました")
@@ -814,11 +814,6 @@ class TradingUseCase:
         self._missing_holding_warning_symbols.clear()
         now_provider = now_provider or datetime.now
         sleep = sleep or time.sleep
-        try:
-            open_events = self.filter_decision_repository.load_open_events(self._execution_mode)
-            logger.info("継続観測中の判定イベント: %d件", len(open_events))
-        except Exception:
-            logger.exception("判定イベントの継続観測初期化に失敗しました")
         if self.filtering_result_repository:
             result = self.filtering_result_repository.load_latest()
             today = now_provider().date().isoformat()

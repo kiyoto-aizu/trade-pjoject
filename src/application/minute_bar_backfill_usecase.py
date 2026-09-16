@@ -5,7 +5,7 @@ from datetime import date
 from typing import Callable
 
 from src.domain.models import MinuteBar
-from src.infrastructure.persistence.minute_bar_repository import MinuteBarRepository
+from src.infrastructure.persistence.parquet_minute_bar_repository import ParquetMinuteBarRepository
 
 logger = logging.getLogger(__name__)
 
@@ -14,12 +14,12 @@ class MinuteBarBackfillUseCase:
     """
     Yahoo Financeの分足で、自前ポーリングで貯めた分足データを補強（アップグレード）するユースケース。
 
-    Yahoo由来のデータはMinuteBarRepository側の優先度ルールにより、
+    Yahoo由来のデータはParquetMinuteBarRepository側の優先度ルールにより、
     同じ時刻に自前ポーリング(source="poll")のデータがあっても上書きする。
     Yahooが持っていない時刻（例: 7日より前の日付）は、既存の自前データがそのまま残る。
     """
 
-    def __init__(self, fetch_intraday_bars: Callable[[str, int], list[MinuteBar]], repository: MinuteBarRepository):
+    def __init__(self, fetch_intraday_bars: Callable[[str, int], list[MinuteBar]], repository: ParquetMinuteBarRepository):
         self.fetch_intraday_bars = fetch_intraday_bars
         self.repository = repository
 

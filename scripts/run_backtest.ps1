@@ -16,7 +16,7 @@ try {
         --filtering-dir data/filtering `
         --live `
         --days 730 `
-        --minute-bars-dir data/minute_bars `
+        --minute-bars-dir data/minute_bars_parquet `
         --indicator-source daily `
         --compare-market-regime `
         --output data/backtest/latest_timeseries.json

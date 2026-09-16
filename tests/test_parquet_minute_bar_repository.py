@@ -1,9 +1,7 @@
-import json
 from datetime import date
 from pathlib import Path
 
 from src.domain.models import MinuteBar
-from src.entrypoints.migrate_minute_bars_to_parquet import migrate
 from src.infrastructure.persistence.parquet_minute_bar_repository import ParquetMinuteBarRepository
 
 
@@ -64,38 +62,3 @@ def test_parquet_repository_retries_transient_replace_lock(tmp_path, monkeypatch
     assert attempts == 3
     assert [bar.price for bar in repository.load_bars(target_date, "7203")] == [99.0, 100.0]
 
-
-def test_migrate_json_minute_bars_keeps_json_and_reports_range(tmp_path):
-    input_directory = tmp_path / "minute_bars"
-    source_path = input_directory / "2026-09-10" / "7203.json"
-    source_path.parent.mkdir(parents=True)
-    source_path.write_text(
-        json.dumps({
-            "date": "2026-09-10",
-            "symbol": "7203",
-            "bars": [
-                {
-                    "time": "2026-09-10T09:31:00",
-                    "price": 100.0,
-                    "cumulative_volume": None,
-                    "volume": 10.0,
-                    "source": "yahoo",
-                }
-            ],
-        }),
-        encoding="utf-8",
-    )
-
-    output_directory = tmp_path / "parquet"
-    report = migrate(input_directory, output_directory)
-
-    assert report == {
-        "files": 1,
-        "bars": 1,
-        "symbols": {"7203": 1},
-        "date_start": "2026-09-10",
-        "date_end": "2026-09-10",
-        "errors": 0,
-    }
-    assert source_path.exists()
-    assert len(ParquetMinuteBarRepository(output_directory).load_bars(date(2026, 9, 10), "7203")) == 1

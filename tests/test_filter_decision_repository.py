@@ -42,6 +42,21 @@ def test_repository_finalizes_after_five_business_days_and_stops_observing(tmp_p
     assert repository.update_observation(event_id, datetime(2026, 9, 21, 10, 0), 90.0) is False
 
 
+def test_repository_finalizes_only_requested_execution_mode(tmp_path):
+    repository = FilterDecisionRepository(tmp_path / "filter_decisions.sqlite3")
+    paper_event_id = repository.record_event(
+        "ATR_DANGER_SKIP", "7203", datetime(2026, 9, 1, 14, 30), 100.0, 100, execution_mode="paper"
+    )
+    live_event_id = repository.record_event(
+        "ATR_DANGER_SKIP", "8306", datetime(2026, 9, 1, 14, 30), 100.0, 100, execution_mode="live"
+    )
+
+    finalized = repository.finalize_due_events(date(2026, 9, 8), 5, execution_mode="paper")
+
+    assert [event["id"] for event in finalized] == [paper_event_id]
+    assert [event["id"] for event in repository.load_open_events("live")] == [live_event_id]
+
+
 def test_repository_uses_event_specific_outcomes_and_filters_finalized_summaries(tmp_path):
     repository = FilterDecisionRepository(tmp_path / "filter_decisions.sqlite3")
     stop_id = repository.record_event(

@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import logging
-from datetime import date
+from datetime import date, datetime
 from typing import Dict, List
 
 from src.config import config
 from src.domain.enums import OrderSide
 from src.domain.market_regime import (
     MarketRegime,
-    MarketRegimeThresholds,
     calculate_market_regime_series,
     calculate_market_regime_series_with_details,
     resolve_rsi_entry_threshold,
@@ -24,6 +23,7 @@ from src.domain.volatility import (
     stop_loss_multiplier,
 )
 from src.infrastructure.persistence.minute_bar_repository import MinuteBarRepository
+from src.infrastructure.persistence.filter_decision_repository import FilterDecisionRepository
 
 logger = logging.getLogger(__name__)
 
@@ -672,6 +672,7 @@ def simulate_timeseries_backtest(
     vix_market_bars: list[MarketDailyBar] | None = None,
     market_regime_enabled: bool = True,
     market_regime_trend_relief_enabled: bool = True,
+    filter_decision_repository: FilterDecisionRepository | None = None,
 ) -> dict:
     """日付ごとのフィルタリング結果を、日足または分足で再生します。"""
     if indicator_source not in {"daily", "minute"}:
@@ -754,6 +755,22 @@ def simulate_timeseries_backtest(
         "trend_relief_days": len(trend_relief_dates),
     }
 
+    def event_time(date_text: str, time_text: str | None = None) -> datetime:
+        if time_text:
+            return datetime.fromisoformat(time_text)
+        return datetime.combine(date.fromisoformat(date_text), datetime.min.time())
+
+    def record_filter_decision(
+        event_type: str, symbol: str, date_text: str, price: float, quantity: int,
+        inputs: dict, time_text: str | None = None,
+    ) -> None:
+        if filter_decision_repository is None or quantity <= 0:
+            return
+        filter_decision_repository.record_event(
+            event_type, symbol, event_time(date_text, time_text), price, quantity,
+            inputs, execution_mode="backtest",
+        )
+
     def close_position(
         symbol: str,
         date_text: str,
@@ -824,6 +841,18 @@ def simulate_timeseries_backtest(
         if note:
             signal["note"] = note
         signals.append(signal)
+        if note == "atr_stop_loss" and atr_diagnostic is not None:
+            record_filter_decision(
+                "ATR_STOP_EXIT", symbol, date_text, execution_price, qty,
+                {
+                    "entry_price": entry_prices[symbol],
+                    "atr": atr_diagnostic.get("exit_atr"),
+                    "atr_level": atr_diagnostic.get("exit_level"),
+                    "stop_multiplier": atr_diagnostic.get("exit_multiplier"),
+                    "stop_price": atr_diagnostic.get("exit_stop_price"),
+                    "realized_pnl_before_cost": (execution_price - entry_prices[symbol]) * qty,
+                }, time_text,
+            )
         holdings[symbol] = 0
         avg_cost[symbol] = 0.0
         entry_prices.pop(symbol, None)
@@ -895,6 +924,15 @@ def simulate_timeseries_backtest(
             and signal is None
         ):
             market_regime_stats["caution_rsi_filtered"] += 1
+            record_filter_decision(
+                "MARKET_REGIME_CAUTION_RSI_FILTER", symbol, date_text, price, qty_per_trade,
+                {
+                    "market_regime": market_regime.value,
+                    "rsi": rsi,
+                    "rsi_normal_threshold": config.RSI_ENTRY_THRESHOLD,
+                    "rsi_applied_threshold": entry_threshold,
+                }, time_text,
+            )
         return signal
 
     for date_text in sorted(daily_symbols):
@@ -933,6 +971,10 @@ def simulate_timeseries_backtest(
             for symbol, price, time_text in sorted(ticks):
                 current_bar_indices[symbol] = current_bar_indices.get(symbol, -1) + 1
                 last_prices[symbol] = price
+                if filter_decision_repository is not None:
+                    filter_decision_repository.update_open_event_observations(
+                        event_time(date_text, time_text), {symbol: price}, "backtest"
+                    )
                 daily_bars = [
                     bar for bar_date, bar in sorted(
                         (ohlc_history_by_symbol_date or {}).get(symbol, {}).items()
@@ -992,9 +1034,29 @@ def simulate_timeseries_backtest(
                         enable_volatility_sizing,
                         volatility_stats,
                     )
+                    assessment = assess_volatility(
+                        daily_bars,
+                        config.ATR_PERIOD,
+                        config.ATR_CAUTION_RATIO,
+                        config.ATR_DANGER_RATIO,
+                    ) if daily_bars else None
+                    if qty == 0 and assessment is not None and qty_per_trade > 0:
+                        record_filter_decision(
+                            "ATR_DANGER_SKIP", symbol, date_text, price, qty_per_trade,
+                            {
+                                "atr": assessment.atr,
+                                "true_range": assessment.latest_true_range,
+                                "atr_ratio": assessment.ratio,
+                                "atr_level": assessment.level.value,
+                            }, time_text,
+                        )
                     if market_regime_by_date is not None:
                         if daily_market_regime == MarketRegime.DANGER:
                             market_regime_stats["danger_skipped"] += 1
+                            record_filter_decision(
+                                "MARKET_REGIME_DANGER_SKIP", symbol, date_text, price, qty,
+                                {"market_regime": daily_market_regime.value}, time_text,
+                            )
                             continue
                     if qty <= 0 or cash < price * qty:
                         continue
@@ -1018,6 +1080,11 @@ def simulate_timeseries_backtest(
                     buy_dates[symbol] = date_text
                     if time_text:
                         buy_times[symbol] = time_text
+                    if date_text in trend_relief_dates:
+                        record_filter_decision(
+                            "ADX_TREND_RELIEF", symbol, date_text, execution_price, qty,
+                            {"market_regime": daily_market_regime.value}, time_text,
+                        )
                     signals.append({
                         "symbol": symbol,
                         "side": OrderSide.BUY.value,
@@ -1042,6 +1109,11 @@ def simulate_timeseries_backtest(
                 if quantity > 0 and symbol in closing_prices:
                     price, time_text = closing_prices[symbol]
                     close_position(symbol, date_text, price, time_text, "close_at_eod")
+        if filter_decision_repository is not None:
+            filter_decision_repository.finalize_due_events(
+                datetime.combine(date.fromisoformat(date_text), datetime.max.time()),
+                config.FILTER_DECISION_OBSERVATION_DAYS,
+            )
 
     last_date = max(daily_symbols) if daily_symbols else ""
     equity = cash

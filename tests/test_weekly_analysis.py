@@ -107,3 +107,26 @@ def test_weekly_analyzer_uses_required_review_prompt(monkeypatch):
     assert "観測事実" in prompt
     assert "投資判断を命令せず" in prompt
     assert "参考意見" in prompt
+
+
+def test_daily_analyzer_prompt_includes_all_filter_decision_event_types(monkeypatch):
+    captured = {}
+
+    class DummyResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"choices": [{"message": {"content": "今日の評価\n- 参考評価"}}]}
+
+    def post(url, **kwargs):
+        captured["payload"] = kwargs["json"]
+        return DummyResponse()
+
+    monkeypatch.setattr("src.infrastructure.analysis.daily_analyzer.requests.post", post)
+    OpenAIDailyAnalyzer("key", "model", "https://example.test").analyze({"order_count": 0})
+
+    prompt = captured["payload"]["messages"][1]["content"]
+    assert "market_regime_danger_skips" in prompt
+    assert "market_regime_caution_rsi_filters" in prompt
+    assert "adx_trend_reliefs" in prompt

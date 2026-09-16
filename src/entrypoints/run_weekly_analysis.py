@@ -1,4 +1,5 @@
 import argparse
+import logging
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -6,7 +7,9 @@ from src.infrastructure.analysis.daily_analyzer import create_daily_analyzer
 from src.infrastructure.analysis.summary_loader import load_backtest_summaries, load_daily_summaries
 from src.infrastructure.notification.line_notify import format_result_notification, process_notification, send_line_notify
 from src.infrastructure.persistence.storage import write_json
-
+from src.infrastructure.persistence.filter_decision_repository import FilterDecisionRepository
+from src.infrastructure.notification.line_notify import process_notification, send_line_notify
+from src.infrastructure.notification.slack_notify import notify_analysis
 
 def _week_bounds(reference_date: date) -> tuple[date, date]:
     week_start = reference_date - timedelta(days=reference_date.weekday())
@@ -14,7 +17,8 @@ def _week_bounds(reference_date: date) -> tuple[date, date]:
 
 
 def build_weekly_summary(
-    week_start: date, week_end: date, report_directory: Path, backtest_directory: Path
+    week_start: date, week_end: date, report_directory: Path, backtest_directory: Path,
+    filter_decision_repository: FilterDecisionRepository | None = None,
 ) -> dict:
     daily = load_daily_summaries(report_directory, week_start, week_end)
     backtests = load_backtest_summaries(backtest_directory, week_start, week_end)
@@ -34,6 +38,10 @@ def build_weekly_summary(
             "total_trades": sum(int(item["total_trades"] or 0) for item in backtests),
             "runs": backtests,
         },
+        "filter_decision_events": (
+            filter_decision_repository.summarize_finalized_events(week_start, week_end)
+            if filter_decision_repository else {"count": 0, "by_event_type": {}}
+        ),
     }
 
 
@@ -55,7 +63,10 @@ def main() -> None:
         week_start, _ = _week_bounds(today)
     week_end = week_start + timedelta(days=4)
     with process_notification("週次分析", notify_lifecycle=False, trigger="土曜または手動実行"):
-        summary = build_weekly_summary(week_start, week_end, args.reports, args.backtests)
+        summary = build_weekly_summary(
+            week_start, week_end, args.reports, args.backtests,
+            FilterDecisionRepository(Path("data/filter_decision_events.sqlite3")),
+        )
         analyzer = create_daily_analyzer()
         analysis = analyzer.analyze_weekly(summary) if analyzer else None
         result = {**summary, "generated_at": datetime.now().isoformat(timespec="seconds"), "llm_analysis": analysis}

@@ -8,6 +8,7 @@ from src.infrastructure.analysis.daily_analyzer import create_daily_analyzer
 from src.infrastructure.analysis.summary_loader import load_backtest_summaries, load_daily_summaries
 from src.infrastructure.notification.line_notify import format_result_notification, process_notification, send_line_notify
 from src.infrastructure.persistence.storage import write_json
+from src.infrastructure.persistence.filter_decision_repository import FilterDecisionRepository
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +31,10 @@ def _load_backtest_summaries(backtest_directory: Path, start: date, end: date) -
     return load_backtest_summaries(backtest_directory, start, end)
 
 
-def build_monthly_summary(month_text: str, report_directory: Path, backtest_directory: Path) -> dict:
+def build_monthly_summary(
+    month_text: str, report_directory: Path, backtest_directory: Path,
+    filter_decision_repository: FilterDecisionRepository | None = None,
+) -> dict:
     start, end = _month_bounds(month_text)
     daily = _load_daily_summaries(report_directory, month_text)
     backtests = _load_backtest_summaries(backtest_directory, start, end)
@@ -49,6 +53,10 @@ def build_monthly_summary(month_text: str, report_directory: Path, backtest_dire
             "total_trades": sum(int(item["total_trades"] or 0) for item in backtests),
             "runs": backtests,
         },
+        "filter_decision_events": (
+            filter_decision_repository.summarize_finalized_events(start, end)
+            if filter_decision_repository else {"count": 0, "by_event_type": {}}
+        ),
     }
 
 
@@ -67,7 +75,10 @@ def main() -> None:
         logger.info("月末ではないため月次分析をスキップします")
         return
     with process_notification("月次総合分析", notify_lifecycle=False, trigger="月末または手動実行"):
-        summary = build_monthly_summary(month_text, args.reports, args.backtests)
+        summary = build_monthly_summary(
+            month_text, args.reports, args.backtests,
+            FilterDecisionRepository(Path("data/filter_decision_events.sqlite3")),
+        )
         analyzer = create_daily_analyzer()
         analysis = analyzer.analyze_monthly(summary) if analyzer else None
         result = {**summary, "generated_at": datetime.now().isoformat(timespec="seconds"), "llm_analysis": analysis}

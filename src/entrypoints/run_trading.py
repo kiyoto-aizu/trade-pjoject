@@ -16,6 +16,7 @@ from src.domain.rules import is_market_closed, is_trading_session
 from src.infrastructure.kabu.get_token import get_api_token
 from src.infrastructure.notification.line_notify import process_notification
 from src.infrastructure.persistence.filtering_result_repository import FilteringResultRepository
+from src.infrastructure.persistence.filter_decision_repository import FilterDecisionRepository
 from src.infrastructure.execution_lock import market_workflow_lock
 from src.infrastructure.notification.line_notify import send_line_notify
 from src.infrastructure.paper.paper_order_executor import PaperOrderExecutor
@@ -41,6 +42,7 @@ def create_trading_use_case(token: str) -> TradingUseCase:
         order_history_path=root / config.ORDER_HISTORY_FILE,
         order_sender=order_sender,
         filtering_result_repository=FilteringResultRepository(root / 'data' / 'filtering'),
+        filter_decision_repository=FilterDecisionRepository(root / 'data' / 'filter_decision_events.sqlite3'),
         notifier=send_line_notify,
         market_regime_usecase=MarketRegimeUseCase(
             market_data_client=YahooIndexClient(),

@@ -8,6 +8,7 @@ import pytest
 from src.config import config
 from src.domain.models import PriceLimit, TradeSignal
 from src.domain.market_regime import MarketRegime
+from src.infrastructure.persistence.filter_decision_repository import FilterDecisionRepository
 from src.domain.volatility import VolatilityLevel
 from src.domain.rules import is_market_closed
 from src.application.trading_usecase import TradingUseCase
@@ -449,6 +450,7 @@ def test_trading_use_case_applies_market_regime_to_entry_threshold(
             )
 
     market_regime_provider = MarketRegimeProvider()
+    filter_decision_repository = FilterDecisionRepository(tmp_path / "filter_decisions.sqlite3")
 
     current_times = iter([datetime(2026, 9, 4, 10, 0), datetime(2026, 9, 4, 15, 30)])
     monkeypatch.setattr(config, 'API_SOFT_LIMIT', 100_000.0)
@@ -467,6 +469,7 @@ def test_trading_use_case_applies_market_regime_to_entry_threshold(
         order_sender=OrderSender(),
         notifier=lambda message: None,
         market_regime_usecase=market_regime_provider,
+        filter_decision_repository=filter_decision_repository,
     )
     use_case.run(
         top_symbols_path=symbols_path,
@@ -480,7 +483,122 @@ def test_trading_use_case_applies_market_regime_to_entry_threshold(
         assert calls == [('dummy', '7203', config.OrderSide.BUY.value)]
         assert use_case.order_history[0].result_code == 0
         assert use_case.order_history[0].order_id == 'paper-order-1'
+    event_types = [
+        item["event_type"]
+        for item in filter_decision_repository.load_summaries(execution_mode="paper")
+    ]
+    if regime == MarketRegime.CAUTION:
+        assert event_types == ["MARKET_REGIME_CAUTION_RSI_FILTER"]
+    else:
+        assert event_types == []
     assert market_regime_provider.calls == 1
+
+
+def test_trading_use_case_records_adx_relief_after_successful_buy(monkeypatch, tmp_path):
+    monkeypatch.setattr(config, "IS_DEMO", True)
+    symbols_path = tmp_path / "top_symbols.json"
+    symbols_path.write_text(json.dumps(["7203"]), encoding="utf-8")
+    filter_decision_repository = FilterDecisionRepository(tmp_path / "filter_decisions.sqlite3")
+
+    class MarketDataClient:
+        def get_yahoo_daily_closes(self, symbol):
+            return [90.0] * 5
+
+    class BoardClient:
+        def get_current_board(self, token, symbol):
+            return {"current_price": 92.0}
+
+    class WalletClient:
+        def get_wallet_cash(self, token):
+            return {"StockAccountWallet": 100_000.0}
+
+    class PositionsClient:
+        def get_positions(self, token):
+            return []
+
+    class OrderSender:
+        def place_market_order(self, token, symbol, side):
+            return {"Result": 0, "OrderId": "paper-order-1"}
+
+    class MarketRegimeProvider:
+        def execute(self):
+            return SimpleNamespace(
+                regime=MarketRegime.NORMAL, data_available=True, failure_reason=None,
+                trend_relief_applied=True, adx=30.0,
+            )
+
+    current_times = iter([datetime(2026, 9, 4, 10, 0), datetime(2026, 9, 4, 15, 30)])
+    monkeypatch.setattr(config, "API_SOFT_LIMIT", 100_000.0)
+    use_case = TradingUseCase(
+        token="dummy", order_history_path=tmp_path / "order_history.json",
+        market_data_client=MarketDataClient(), board_client=BoardClient(), wallet_client=WalletClient(),
+        positions_client=PositionsClient(), order_sender=OrderSender(), notifier=lambda message: None,
+        market_regime_usecase=MarketRegimeProvider(), filter_decision_repository=filter_decision_repository,
+    )
+
+    use_case.run(top_symbols_path=symbols_path, now_provider=lambda: next(current_times), sleep=lambda seconds: None)
+
+    events = filter_decision_repository.load_summaries(execution_mode="paper")
+    assert [(item["event_type"], item["symbol"], item["adx"]) for item in events] == [
+        ("ADX_TREND_RELIEF", "7203", 30.0)
+    ]
+
+
+def test_trading_use_case_continues_when_filter_decision_storage_fails(monkeypatch, tmp_path):
+    monkeypatch.setattr(config, "IS_DEMO", True)
+    symbols_path = tmp_path / "top_symbols.json"
+    symbols_path.write_text(json.dumps(["7203"]), encoding="utf-8")
+    orders = []
+
+    class FailingRepository:
+        def load_open_events(self, execution_mode):
+            raise OSError("storage unavailable")
+
+        def finalize_due_events(self, as_of, observation_days):
+            raise OSError("storage unavailable")
+
+        def update_open_event_observations(self, observed_at, prices_by_symbol, execution_mode):
+            raise OSError("storage unavailable")
+
+        def record_event(self, *args, **kwargs):
+            raise OSError("storage unavailable")
+
+        def load_summaries(self, **kwargs):
+            raise OSError("storage unavailable")
+
+    class MarketDataClient:
+        def get_yahoo_daily_closes(self, symbol):
+            return [90.0] * 5
+
+    class BoardClient:
+        def get_current_board(self, token, symbol):
+            return {"current_price": 92.0}
+
+    class WalletClient:
+        def get_wallet_cash(self, token):
+            return {"StockAccountWallet": 100_000.0}
+
+    class PositionsClient:
+        def get_positions(self, token):
+            return []
+
+    class OrderSender:
+        def place_market_order(self, token, symbol, side):
+            orders.append((symbol, side))
+            return {"Result": 0, "OrderId": "paper-order-1"}
+
+    current_times = iter([datetime(2026, 9, 16, 10, 0), datetime(2026, 9, 16, 15, 30)])
+    monkeypatch.setattr(config, "API_SOFT_LIMIT", 100_000.0)
+    use_case = TradingUseCase(
+        token="dummy", order_history_path=tmp_path / "order_history.json",
+        market_data_client=MarketDataClient(), board_client=BoardClient(), wallet_client=WalletClient(),
+        positions_client=PositionsClient(), order_sender=OrderSender(), notifier=lambda message: None,
+        filter_decision_repository=FailingRepository(),
+    )
+
+    use_case.run(top_symbols_path=symbols_path, now_provider=lambda: next(current_times), sleep=lambda seconds: None)
+
+    assert orders == [("7203", config.OrderSide.BUY.value)]
 
 
 def test_trading_use_case_collects_complete_preflight_market_data(tmp_path):

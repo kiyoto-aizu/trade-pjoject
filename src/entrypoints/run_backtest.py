@@ -17,6 +17,7 @@ from src.infrastructure.market_data.yahoo_index_client import YahooIndexClient
 from src.infrastructure.analysis.daily_analyzer import create_daily_analyzer
 from src.infrastructure.notification.line_notify import format_result_notification, process_notification, send_line_notify
 from src.infrastructure.persistence.parquet_minute_bar_repository import ParquetMinuteBarRepository
+from src.infrastructure.persistence.filter_decision_repository import FilterDecisionRepository
 
 logger = logging.getLogger(__name__)
 
@@ -369,6 +370,9 @@ def main() -> None:
                 close_at_eod=not args.allow_overnight,
                 ohlc_history_by_symbol_date=ohlc_history,
                 market_regime_by_date=market_regime_by_date,
+                filter_decision_repository=FilterDecisionRepository(
+                    Path(__file__).resolve().parents[2] / "data" / "filter_decision_events.sqlite3"
+                ),
             )
             if args.compare_market_regime:
                 baseline = simulate_timeseries_backtest(

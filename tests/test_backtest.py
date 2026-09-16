@@ -18,6 +18,7 @@ from src.domain.models import MinuteBar
 from src.domain.volatility import DailyBar
 from src.entrypoints.run_monthly_analysis import build_monthly_summary
 from src.infrastructure.persistence.minute_bar_repository import MinuteBarRepository
+from src.infrastructure.persistence.filter_decision_repository import FilterDecisionRepository
 
 
 @pytest.fixture(autouse=True)
@@ -238,7 +239,7 @@ def test_simulate_timeseries_backtest_uses_daily_symbol_sets():
     }]
 
 
-def test_timeseries_backtest_danger_skips_buy_but_does_not_change_sell_logic():
+def test_timeseries_backtest_danger_skips_buy_but_does_not_change_sell_logic(tmp_path):
     dated_history = {
         "7203": {
             "2026-09-01": 90.0,
@@ -253,6 +254,7 @@ def test_timeseries_backtest_danger_skips_buy_but_does_not_change_sell_logic():
     }
     regimes = {date_text: MarketRegime.DANGER for date_text in dated_history["7203"]}
 
+    repository = FilterDecisionRepository(tmp_path / "filter_decisions.sqlite3")
     result = simulate_timeseries_backtest(
         {"2026-09-06": ["7203"], "2026-09-07": ["7203"]},
         dated_history,
@@ -260,10 +262,14 @@ def test_timeseries_backtest_danger_skips_buy_but_does_not_change_sell_logic():
         qty_per_trade=100,
         close_at_eod=False,
         market_regime_by_date=regimes,
+        filter_decision_repository=repository,
     )
 
     assert result["total_trades"] == 0
     assert result["market_regime_adjustment"]["danger_skipped"] >= 1
+    assert [item["event_type"] for item in repository.load_open_events("backtest")] == [
+        "MARKET_REGIME_DANGER_SKIP"
+    ]
 
 
 def test_timeseries_backtest_caution_filters_buy_by_rsi_threshold(monkeypatch):

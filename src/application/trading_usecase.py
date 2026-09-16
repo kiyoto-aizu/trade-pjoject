@@ -27,6 +27,7 @@ from src.infrastructure.kabu.send_order import place_market_order
 from src.infrastructure.market_data.get_daily_closes import get_yahoo_daily_bars, get_yahoo_daily_closes
 from src.infrastructure.notification.line_notify import send_line_notify
 from src.infrastructure.persistence.storage import read_json, write_json
+from src.infrastructure.persistence.filter_decision_repository import FilterDecisionRepository
 from src.infrastructure.analysis.daily_analyzer import create_daily_analyzer
 
 logger = logging.getLogger(__name__)
@@ -58,6 +59,7 @@ class TradingUseCase:
         daily_analyzer=None,
         daily_report_directory: Optional[Path] = None,
         market_regime_usecase=None,
+        filter_decision_repository: FilterDecisionRepository | None = None,
     ):
         """
         TradingUseCaseを初期化します。
@@ -86,6 +88,9 @@ class TradingUseCase:
         self.notifier = notifier or send_line_notify
         self.daily_analyzer = daily_analyzer if daily_analyzer is not None else create_daily_analyzer()
         self.daily_report_directory = daily_report_directory or Path(__file__).resolve().parents[2] / "data" / "reports"
+        self.filter_decision_repository = filter_decision_repository or FilterDecisionRepository(
+            order_history_path.parent / "filter_decision_events.sqlite3"
+        )
         self.market_regime_usecase = market_regime_usecase
         self.market_regime = MarketRegime.NORMAL
         self.market_regime_assessment = None
@@ -96,8 +101,74 @@ class TradingUseCase:
         self._missing_holding_warning_symbols: set[str] = set()
         self._sell_condition_observations: dict[str, str] = {}
         self._liquidation_results: list[dict] = []
-        self._atr_danger_skips: dict[str, dict] = {}
-        self._atr_stop_exits: dict[str, dict] = {}
+
+    @property
+    def _execution_mode(self) -> str:
+        return config.TRADING_MODE
+
+    def _record_filter_decision_safely(
+        self,
+        event_type: str,
+        symbol: str,
+        occurred_at: datetime,
+        reference_price: float,
+        quantity: int,
+        inputs: dict,
+    ) -> int | None:
+        try:
+            return self.filter_decision_repository.record_event(
+                event_type, symbol, occurred_at, reference_price, quantity, inputs, self._execution_mode
+            )
+        except Exception:
+            logger.exception("判定イベントの保存に失敗しました: 種別=%s 銘柄=%s", event_type, symbol)
+            return None
+
+    def _update_filter_decision_observations_safely(
+        self, observed_at: datetime, prices_by_symbol: dict[str, float]
+    ) -> None:
+        try:
+            self.filter_decision_repository.update_open_event_observations(
+                observed_at, prices_by_symbol, self._execution_mode
+            )
+        except Exception:
+            logger.exception("判定イベントの観測更新に失敗しました")
+
+    def _finalize_filter_decisions_safely(self, as_of: datetime) -> None:
+        try:
+            self.filter_decision_repository.finalize_due_events(
+                as_of, config.FILTER_DECISION_OBSERVATION_DAYS
+            )
+        except Exception:
+            logger.exception("判定イベントの確定に失敗しました")
+
+    def _market_regime_event_inputs(self, rsi, entry_threshold: float, assessment=None) -> dict:
+        market_assessment = self.market_regime_assessment
+        return {
+            "atr": getattr(assessment, "atr", None),
+            "true_range": getattr(assessment, "latest_true_range", None),
+            "atr_ratio": getattr(assessment, "ratio", None),
+            "atr_level": getattr(getattr(assessment, "level", None), "value", None),
+            "market_regime": self.market_regime.value,
+            "realized_volatility_percent": getattr(market_assessment, "realized_volatility_percent", None),
+            "vix": getattr(market_assessment, "vix", None),
+            "nikkei_change_percent": getattr(market_assessment, "nikkei_change_percent", None),
+            "adx": getattr(market_assessment, "adx", None),
+            "rsi": rsi,
+            "rsi_normal_threshold": config.RSI_ENTRY_THRESHOLD,
+            "rsi_applied_threshold": entry_threshold,
+        }
+
+    def _filter_decision_summaries(self, event_type: str) -> list[dict]:
+        try:
+            return [
+                item for item in self.filter_decision_repository.load_summaries(
+                    execution_mode=self._execution_mode
+                )
+                if item["event_type"] == event_type
+            ]
+        except Exception:
+            logger.exception("判定イベントのサマリー取得に失敗しました: 種別=%s", event_type)
+            return []
 
     def _notify_safely(self, message: str) -> None:
         """通知失敗で取引制御自体を妨げないように通知します。"""
@@ -446,52 +517,21 @@ class TradingUseCase:
 
     def _record_atr_danger_skip(self, symbol: str, observed_at: datetime, price: float, assessment, quantity: int) -> None:
         """ATR DANGERで見送った買いシグナルと、その後の観測価格を記録します。"""
-        if symbol in self._atr_danger_skips:
-            self._update_atr_danger_skip_observation(symbol, observed_at, price)
-            return
-        self._atr_danger_skips[symbol] = {
-            "symbol": symbol,
-            "skipped_at": observed_at.isoformat(timespec="seconds"),
-            "entry_price": price,
-            "quantity": quantity,
+        self._record_filter_decision_safely("ATR_DANGER_SKIP", symbol, observed_at, price, quantity, {
             "atr": assessment.atr,
             "true_range": assessment.latest_true_range,
             "atr_ratio": assessment.ratio,
-            "lowest_price": price,
-            "highest_price": price,
-            "last_price": price,
-            "last_observed_at": observed_at.isoformat(timespec="seconds"),
-            "observation_count": 1,
-        }
+            "atr_level": getattr(getattr(assessment, "level", None), "value", None),
+        })
 
     def _update_atr_danger_skip_observation(self, symbol: str, observed_at: datetime, price: float) -> None:
-        observation = self._atr_danger_skips.get(symbol)
-        if observation is None:
-            return
-        observation["lowest_price"] = min(observation["lowest_price"], price)
-        observation["highest_price"] = max(observation["highest_price"], price)
-        observation["last_price"] = price
-        observation["last_observed_at"] = observed_at.isoformat(timespec="seconds")
-        observation["observation_count"] += 1
+        self._update_filter_decision_observations_safely(observed_at, {symbol: price})
 
     def _atr_danger_skip_summary(self) -> list[dict]:
-        summaries = []
-        for observation in self._atr_danger_skips.values():
-            entry_price = observation["entry_price"]
-            last_price = observation["last_price"]
-            change_percent = (last_price - entry_price) / entry_price * 100 if entry_price else 0.0
-            hypothetical_pnl = (last_price - entry_price) * observation["quantity"]
-            outcome = (
-                "損失回避の可能性" if hypothetical_pnl < 0
-                else "利益取り逃しの可能性" if hypothetical_pnl > 0
-                else "値動きなし"
-            )
-            summaries.append({
-                **observation,
-                "price_change_percent": change_percent,
-                "hypothetical_pnl_before_cost": hypothetical_pnl,
-                "outcome": outcome,
-            })
+        summaries = self._filter_decision_summaries("ATR_DANGER_SKIP")
+        for item in summaries:
+            item["skipped_at"] = item["occurred_at"]
+            item["entry_price"] = item["reference_price"]
         return summaries
 
     def _record_atr_stop_exit(
@@ -505,52 +545,32 @@ class TradingUseCase:
         stop_multiplier: float,
     ) -> None:
         """ATR損切りで約定した売却と、その後の価格推移を記録します。"""
-        self._atr_stop_exits[symbol] = {
-            "symbol": symbol,
-            "sold_at": sold_at.isoformat(timespec="seconds"),
+        self._record_filter_decision_safely("ATR_STOP_EXIT", symbol, sold_at, exit_price, quantity, {
             "entry_price": entry_price,
-            "exit_price": exit_price,
-            "quantity": quantity,
             "atr": assessment.atr,
             "atr_ratio": assessment.ratio,
             "atr_level": assessment.level.value,
             "stop_multiplier": stop_multiplier,
             "stop_price": entry_price - assessment.atr * stop_multiplier,
             "realized_pnl_before_cost": (exit_price - entry_price) * quantity,
-            "lowest_price_after_exit": exit_price,
-            "highest_price_after_exit": exit_price,
-            "last_price_after_exit": exit_price,
-            "last_observed_at": sold_at.isoformat(timespec="seconds"),
-            "observation_count": 1,
-        }
+        })
 
     def _update_atr_stop_exit_observation(self, symbol: str, observed_at: datetime, price: float) -> None:
-        observation = self._atr_stop_exits.get(symbol)
-        if observation is None:
-            return
-        observation["lowest_price_after_exit"] = min(observation["lowest_price_after_exit"], price)
-        observation["highest_price_after_exit"] = max(observation["highest_price_after_exit"], price)
-        observation["last_price_after_exit"] = price
-        observation["last_observed_at"] = observed_at.isoformat(timespec="seconds")
-        observation["observation_count"] += 1
+        self._update_filter_decision_observations_safely(observed_at, {symbol: price})
 
     def _atr_stop_exit_summary(self) -> list[dict]:
-        summaries = []
-        for observation in self._atr_stop_exits.values():
-            exit_price = observation["exit_price"]
-            last_price = observation["last_price_after_exit"]
-            avoided_pnl = (exit_price - last_price) * observation["quantity"]
-            outcome = (
-                "下落回避の可能性" if avoided_pnl > 0
-                else "早すぎる決済の可能性" if avoided_pnl < 0
-                else "売却後の値動きなし"
-            )
-            summaries.append({
-                **observation,
-                "post_exit_change_percent": (last_price - exit_price) / exit_price * 100 if exit_price else 0.0,
-                "avoided_pnl_before_cost": avoided_pnl,
-                "outcome": outcome,
-            })
+        summaries = self._filter_decision_summaries("ATR_STOP_EXIT")
+        for item in summaries:
+            item["sold_at"] = item["occurred_at"]
+            item["exit_price"] = item["reference_price"]
+            item["entry_price"] = item["inputs"].get("entry_price")
+            item["stop_price"] = item["inputs"].get("stop_price")
+            item["realized_pnl_before_cost"] = item["inputs"].get("realized_pnl_before_cost")
+            item["lowest_price_after_exit"] = item["lowest_price"]
+            item["highest_price_after_exit"] = item["highest_price"]
+            item["last_price_after_exit"] = item["last_price"]
+            item["post_exit_change_percent"] = item["price_change_percent"]
+            item["avoided_pnl_before_cost"] = item["hypothetical_pnl_before_cost"]
         return summaries
 
     def _send_end_of_day_report(self) -> None:
@@ -559,8 +579,12 @@ class TradingUseCase:
         today = datetime.now().date().isoformat()
         log_error_summary = self._daily_log_error_summary(today)
         daily_orders = [entry for entry in self.order_history if entry.timestamp.startswith(today)]
+        self._finalize_filter_decisions_safely(datetime.now())
         atr_danger_skips = self._atr_danger_skip_summary()
         atr_stop_exits = self._atr_stop_exit_summary()
+        market_regime_danger_skips = self._filter_decision_summaries("MARKET_REGIME_DANGER_SKIP")
+        market_regime_caution_rsi_filters = self._filter_decision_summaries("MARKET_REGIME_CAUTION_RSI_FILTER")
+        adx_trend_reliefs = self._filter_decision_summaries("ADX_TREND_RELIEF")
         lines = [
             "【業務】取引運用",
             "【機能】取引終了",
@@ -661,6 +685,9 @@ class TradingUseCase:
             "log_errors": log_error_summary,
             "atr_danger_skips": atr_danger_skips,
             "atr_stop_exits": atr_stop_exits,
+            "market_regime_danger_skips": market_regime_danger_skips,
+            "market_regime_caution_rsi_filters": market_regime_caution_rsi_filters,
+            "adx_trend_reliefs": adx_trend_reliefs,
             "liquidation_results": self._liquidation_results,
         }
         analysis = None
@@ -775,10 +802,13 @@ class TradingUseCase:
         """
         self._load_order_history()
         self._missing_holding_warning_symbols.clear()
-        self._atr_danger_skips.clear()
-        self._atr_stop_exits.clear()
         now_provider = now_provider or datetime.now
         sleep = sleep or time.sleep
+        try:
+            open_events = self.filter_decision_repository.load_open_events(self._execution_mode)
+            logger.info("継続観測中の判定イベント: %d件", len(open_events))
+        except Exception:
+            logger.exception("判定イベントの継続観測初期化に失敗しました")
         if self.filtering_result_repository:
             result = self.filtering_result_repository.load_latest()
             today = now_provider().date().isoformat()
@@ -803,6 +833,7 @@ class TradingUseCase:
             )
 
         kill_switch_triggered = False
+        filter_decisions_initialized = False
         # 市場終了時刻まで取引ループを実行
         use_preflight_market_data = bool(preflight_market_data)
         while not kill_switch_triggered:
@@ -812,6 +843,9 @@ class TradingUseCase:
                 self._liquidate_all_positions()
                 break
             now = now_provider()
+            if not filter_decisions_initialized:
+                self._finalize_filter_decisions_safely(now)
+                filter_decisions_initialized = True
             if is_market_closed(now.time(), config.MARKET_CLOSE_HOUR, config.MARKET_CLOSE_MINUTE):
                 break
             if not config.ALLOW_OVERNIGHT_HOLDING and is_market_closed(
@@ -842,8 +876,9 @@ class TradingUseCase:
                     )
                     if not board or board.get('current_price') is None:
                         continue
-                    self._update_atr_danger_skip_observation(symbol, now, float(board['current_price']))
-                    self._update_atr_stop_exit_observation(symbol, now, float(board['current_price']))
+                    self._update_filter_decision_observations_safely(
+                        now, {symbol: float(board['current_price'])}
+                    )
                     daily_bars = snapshot.get('daily_bars') if snapshot else self._get_daily_bars(symbol)
                     assessment = assess_volatility(
                         daily_bars,
@@ -931,6 +966,27 @@ class TradingUseCase:
                             self._sell_condition_observations[symbol] = (
                                 f"通常SELL条件未成立: {price_reason}; {rsi_reason}"
                             )
+                        if self.market_regime == MarketRegime.CAUTION:
+                            normal_signal = TradeSignal.evaluate(
+                                symbol, board['current_price'], limit, rsi,
+                                config.RSI_ENTRY_THRESHOLD, config.RSI_EXIT_THRESHOLD,
+                            )
+                            if normal_signal is not None and normal_signal.side == config.OrderSide.BUY:
+                                wallet_amount, _ = self._load_account_state()
+                                if wallet_amount is not None:
+                                    estimated_budget = min(
+                                        wallet_amount / config.TARGET_POSITIONS,
+                                        config.MAX_ORDER_AMOUNT_PER_TRADE,
+                                    )
+                                    estimated_quantity = calculate_buy_quantity(
+                                        normal_signal.price, estimated_budget, config.ORDER_UNIT
+                                    )
+                                    if estimated_quantity > 0:
+                                        self._record_filter_decision_safely(
+                                            "MARKET_REGIME_CAUTION_RSI_FILTER", symbol, now,
+                                            float(board['current_price']), estimated_quantity,
+                                            self._market_regime_event_inputs(rsi, entry_threshold),
+                                        )
                     logger.info(
                         "売買判定: 銘柄=%s | 現在値=%.1f | エントリー基準=%.1f | 決済基準=%.1f | RSI=%.1f | エントリーRSI基準=%.1f | 決済RSI基準=%.1f | 判定=%s",
                         symbol,
@@ -1013,6 +1069,12 @@ class TradingUseCase:
                                         original_qty,
                                     )
                         if self.market_regime == MarketRegime.DANGER:
+                            if signal.qty > 0:
+                                self._record_filter_decision_safely(
+                                    "MARKET_REGIME_DANGER_SKIP", symbol, now,
+                                    float(board['current_price']), signal.qty,
+                                    self._market_regime_event_inputs(rsi, entry_threshold, assessment),
+                                )
                             logger.info(
                                 "MarketRegimeにより新規買いを見送ります: 銘柄=%s | レジーム=%s",
                                 symbol,
@@ -1125,6 +1187,14 @@ class TradingUseCase:
                                 signal.qty,
                                 assessment,
                                 atr_stop_multiplier,
+                            )
+                        if (
+                            signal.side == config.OrderSide.BUY
+                            and getattr(self.market_regime_assessment, "trend_relief_applied", False)
+                        ):
+                            self._record_filter_decision_safely(
+                                "ADX_TREND_RELIEF", symbol, now, float(signal.price), signal.qty,
+                                self._market_regime_event_inputs(rsi, entry_threshold, assessment),
                             )
                         logger.info(
                             "%s成立: 銘柄=%s | 約定価格=%.1f | 数量=%s | 注文受付番号=%s",

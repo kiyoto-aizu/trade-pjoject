@@ -176,6 +176,10 @@ ATR_STOP_DANGER_MULTIPLIER = float(os.getenv("ATR_STOP_DANGER_MULTIPLIER", "0.7"
 if min(ATR_STOP_NORMAL_MULTIPLIER, ATR_STOP_CAUTION_MULTIPLIER, ATR_STOP_DANGER_MULTIPLIER) <= 0:
     raise ValueError("ATR損切り倍率は正数を指定してください。")
 
+FILTER_DECISION_OBSERVATION_DAYS = int(os.getenv("FILTER_DECISION_OBSERVATION_DAYS", "5"))
+if FILTER_DECISION_OBSERVATION_DAYS <= 0:
+    raise ValueError("判定イベントの観測継続営業日数は正数を指定してください。")
+
 # 市場全体の荒れ具合（MarketRegime）
 MARKET_REGIME_THRESHOLDS = MarketRegimeThresholds(
     realized_vol_caution=float(os.getenv("MARKET_REGIME_REALIZED_VOL_CAUTION", "17.0")),
@@ -307,3 +311,19 @@ LOG_BACKUP_COUNT = int(os.getenv("LOG_BACKUP_COUNT", str(5)))
 
 # ログレベル (DEBUG, INFO, WARNING, ERROR, CRITICAL)
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").strip().upper()
+
+
+
+# ================================================================================
+# Slack通知設定（段階移行中：LINEと並行運用）
+# ================================================================================
+
+# チャンネル別Incoming Webhook URL（緊急度別に3分割）
+# critical: 約定・キルスイッチ・例外 / daily: 定型の日次ログ / analysis: 週次・月次分析等
+# NOTE: 段階移行中はまだどこからも呼び出されないため、LINEと同様に未設定=空文字（警告ログのみ）とする。
+#       フェーズ3〜4で実際に運用へ組み込む際に _load_required_env による fail-fast へ切り替える。
+SLACK_WEBHOOK_CRITICAL = os.getenv("SLACK_WEBHOOK_CRITICAL", "")
+SLACK_WEBHOOK_DAILY = os.getenv("SLACK_WEBHOOK_DAILY", "")
+SLACK_WEBHOOK_ANALYSIS = os.getenv("SLACK_WEBHOOK_ANALYSIS", "")
+# SLACK_WEBHOOK_WEEKLY = os.getenv("SLACK_WEBHOOK_WEEKLY", "")
+# SLACK_WEBHOOK_MONTHLY = os.getenv("SLACK_WEBHOOK_MONTHLY", "")

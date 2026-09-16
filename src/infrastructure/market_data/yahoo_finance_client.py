@@ -2,11 +2,51 @@ import logging
 from datetime import date, datetime, timezone
 
 from src.api import request_handler
+from src.domain.atr_ratio_analysis import DatedDailyBar
+from src.domain.volatility import DailyBar
 
 logger = logging.getLogger(__name__)
 
 
 class YahooFinanceClient:
+    def get_daily_ohlc_history(self, symbol: str, range_: str = "max") -> list[DatedDailyBar]:
+        """指定銘柄の確定日足OHLC履歴を返します。"""
+        try:
+            response = request_handler.send_get(
+                f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}.T",
+                params=(
+                    {"interval": "1d", "period1": 0, "period2": int(datetime.now(timezone.utc).timestamp())}
+                    if range_ == "max"
+                    else {"interval": "1d", "range": range_}
+                ),
+                headers={"User-Agent": "Mozilla/5.0"},
+                timeout=30,
+            )
+            if not response:
+                return []
+            result = response["chart"]["result"][0]
+            quote = result["indicators"]["quote"][0]
+            today = datetime.now(timezone.utc).date()
+            return [
+                DatedDailyBar(
+                    date=datetime.fromtimestamp(timestamp, tz=timezone.utc).date(),
+                    bar=DailyBar(high=float(high), low=float(low), close=float(close)),
+                )
+                for timestamp, high, low, close in zip(
+                    result.get("timestamp", []),
+                    quote.get("high", []),
+                    quote.get("low", []),
+                    quote.get("close", []),
+                )
+                if datetime.fromtimestamp(timestamp, tz=timezone.utc).date() < today
+                and high is not None
+                and low is not None
+                and close is not None
+            ]
+        except (KeyError, IndexError, TypeError, ValueError, OverflowError):
+            logger.warning("Yahoo Financeの日足OHLC取得に失敗しました: %s", symbol)
+            return []
+
     def get_daily_market_data(self, symbol: str, target_date: date) -> dict[str, float] | None:
         """指定日と直前営業日の終値、および指定日の出来高を返します。"""
         try:

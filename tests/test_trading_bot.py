@@ -247,6 +247,7 @@ def test_end_of_day_report_identifies_paper_trading(monkeypatch, tmp_path):
         token='dummy',
         order_history_path=tmp_path / 'order_history.json',
         notifier=messages.append,
+        daily_analyzer=SimpleNamespace(analyze=lambda daily_summary: None),
         daily_report_directory=tmp_path / 'reports',
     )
 
@@ -291,6 +292,7 @@ def test_end_of_day_report_keeps_market_conditions_in_data_but_not_notification(
 
     report = json.loads((tmp_path / 'reports' / f'{datetime.now().date().isoformat()}.json').read_text(encoding='utf-8'))
     assert report['market_conditions'] == {
+        'assessment_status': 'available',
         'regime': 'CAUTION',
         'realized_volatility_percent': 21.5,
         'vix': 19.2,
@@ -303,6 +305,57 @@ def test_end_of_day_report_keeps_market_conditions_in_data_but_not_notification(
     assert report['orders'][0]['atr_level'] == 'CAUTION'
     assert 'MarketRegime: CAUTION' not in messages[-1]
     assert 'ATR: 3.200円' in messages[-1]
+
+
+def test_end_of_day_report_marks_market_conditions_not_evaluated(tmp_path):
+    use_case = TradingUseCase(
+        token='dummy',
+        order_history_path=tmp_path / 'order_history.json',
+        notifier=lambda message: None,
+        daily_analyzer=SimpleNamespace(analyze=lambda daily_summary: None),
+        daily_report_directory=tmp_path / 'reports',
+    )
+
+    use_case._send_end_of_day_report()
+
+    report = json.loads((tmp_path / 'reports' / f'{datetime.now().date().isoformat()}.json').read_text(encoding='utf-8'))
+    assert report['market_conditions'] == {
+        'assessment_status': 'not_evaluated',
+        'regime': None,
+        'realized_volatility_percent': None,
+        'vix': None,
+        'nikkei_change_percent': None,
+        'adx': None,
+        'data_available': None,
+        'failure_reason': None,
+    }
+
+
+def test_end_of_day_report_marks_market_conditions_unavailable(tmp_path):
+    use_case = TradingUseCase(
+        token='dummy',
+        order_history_path=tmp_path / 'order_history.json',
+        notifier=lambda message: None,
+        daily_analyzer=SimpleNamespace(analyze=lambda daily_summary: None),
+        daily_report_directory=tmp_path / 'reports',
+    )
+    use_case.market_regime = MarketRegime.DANGER
+    use_case.market_regime_assessment = SimpleNamespace(
+        realized_volatility_percent=None,
+        vix=None,
+        nikkei_change_percent=None,
+        adx=None,
+        data_available=False,
+        failure_reason='日経225またはVIXの日足データが空です',
+    )
+
+    use_case._send_end_of_day_report()
+
+    report = json.loads((tmp_path / 'reports' / f'{datetime.now().date().isoformat()}.json').read_text(encoding='utf-8'))
+    assert report['market_conditions']['assessment_status'] == 'unavailable'
+    assert report['market_conditions']['regime'] == 'DANGER'
+    assert report['market_conditions']['data_available'] is False
+    assert report['market_conditions']['failure_reason'] == '日経225またはVIXの日足データが空です'
 
 
 def test_end_of_day_report_counts_only_errors_during_trading_session(monkeypatch, tmp_path):

@@ -23,7 +23,7 @@ if (-not (Test-Path $runner)) {
 
 $trigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Saturday -At $At
 $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$runner`""
-$settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -MultipleInstances IgnoreNew -WakeToRun
+$settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -WakeToRun
 
 if ($PSCmdlet.ShouldProcess($TaskName, "Register weekly analysis task on Saturday at $($At.ToString('HH:mm'))")) {
     Register-ScheduledTask `

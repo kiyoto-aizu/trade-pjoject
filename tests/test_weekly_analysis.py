@@ -109,7 +109,7 @@ def test_weekly_analyzer_uses_required_review_prompt(monkeypatch):
     assert "参考意見" in prompt
 
 
-def test_daily_analyzer_prompt_includes_all_filter_decision_event_types(monkeypatch):
+def test_daily_analyzer_prompt_uses_event_agnostic_review_contract(monkeypatch):
     captured = {}
 
     class DummyResponse:
@@ -124,9 +124,16 @@ def test_daily_analyzer_prompt_includes_all_filter_decision_event_types(monkeypa
         return DummyResponse()
 
     monkeypatch.setattr("src.infrastructure.analysis.daily_analyzer.requests.post", post)
-    OpenAIDailyAnalyzer("key", "model", "https://example.test").analyze({"order_count": 0})
+    OpenAIDailyAnalyzer("key", "model", "https://example.test").analyze(
+        {"order_count": 0, "future_control_skips": []}
+    )
 
     prompt = captured["payload"]["messages"][1]["content"]
-    assert "market_regime_danger_skips" in prompt
-    assert "market_regime_caution_rsi_filters" in prompt
-    assert "adx_trend_reliefs" in prompt
+    assert "本日の事実" in prompt
+    assert "運用・データ状態" in prompt
+    assert "空配列や発生しなかったイベントは本文で説明しない" in prompt
+    assert "assessment_statusがnot_evaluated" in prompt
+    assert "future_control_skips" in prompt
+    assert "market_regime_danger_skips" not in prompt
+    assert "market_regime_caution_rsi_filters" not in prompt
+    assert "adx_trend_reliefs" not in prompt

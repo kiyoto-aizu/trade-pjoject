@@ -649,6 +649,25 @@ class TradingUseCase:
                 for item in self._liquidation_results
             )
 
+        market_assessment = self.market_regime_assessment
+        market_conditions = {
+            "assessment_status": (
+                "not_evaluated"
+                if market_assessment is None
+                else "available" if getattr(market_assessment, "data_available", False) else "unavailable"
+            ),
+            "regime": self.market_regime.value if market_assessment is not None else None,
+            "realized_volatility_percent": getattr(market_assessment, "realized_volatility_percent", None),
+            "vix": getattr(market_assessment, "vix", None),
+            "nikkei_change_percent": getattr(market_assessment, "nikkei_change_percent", None),
+            "adx": getattr(market_assessment, "adx", None),
+            "data_available": (
+                getattr(market_assessment, "data_available", False)
+                if market_assessment is not None
+                else None
+            ),
+            "failure_reason": getattr(market_assessment, "failure_reason", None),
+        }
         daily_summary = {
             "date": today,
             "trading_mode": config.TRADING_MODE_LABEL,
@@ -669,15 +688,7 @@ class TradingUseCase:
                 }
                 for entry in daily_orders
             ],
-            "market_conditions": {
-                "regime": self.market_regime.value,
-                "realized_volatility_percent": getattr(self.market_regime_assessment, "realized_volatility_percent", None),
-                "vix": getattr(self.market_regime_assessment, "vix", None),
-                "nikkei_change_percent": getattr(self.market_regime_assessment, "nikkei_change_percent", None),
-                "adx": getattr(self.market_regime_assessment, "adx", None),
-                "data_available": getattr(self.market_regime_assessment, "data_available", False),
-                "failure_reason": getattr(self.market_regime_assessment, "failure_reason", None),
-            },
+            "market_conditions": market_conditions,
             "positions": [
                 {
                     "symbol": position.get("Symbol", ""),

@@ -24,7 +24,7 @@ if (-not (Test-Path $runner)) {
 $trigger = New-ScheduledTaskTrigger -Daily -At $At
 $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$runner`""
 # -WakeToRun: PCがスリープしても目覚めさせて実行を継続する
-$settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -MultipleInstances IgnoreNew -WakeToRun
+$settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -WakeToRun
 
 if ($PSCmdlet.ShouldProcess($TaskName, "Register monthly analysis task at $($At.ToString('HH:mm'))")) {
     Register-ScheduledTask `

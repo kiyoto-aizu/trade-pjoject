@@ -24,7 +24,7 @@ if (-not (Test-Path $runner)) {
 # 毎週土曜の朝、過去7日分の分足データを取得・上書きしてバックフィルする
 $trigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Saturday -At $At
 $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$runner`""
-$settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -MultipleInstances IgnoreNew -WakeToRun
+$settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -WakeToRun
 
 if ($PSCmdlet.ShouldProcess($TaskName, "Register weekly Saturday minute-bar backfill task at $($At.ToString('HH:mm'))")) {
     Register-ScheduledTask `

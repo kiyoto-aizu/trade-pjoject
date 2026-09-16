@@ -17,20 +17,12 @@ from src.infrastructure.kabu.get_token import get_api_token
 from src.infrastructure.kabu.unregister import unregister_all
 from src.infrastructure.execution_lock import market_workflow_lock
 from src.infrastructure.market_data.yahoo_finance_client import YahooFinanceClient
-from src.infrastructure.notification.line_notify import process_notification, send_line_notify
-from src.infrastructure.notification.slack_notify import notify_daily
+from src.infrastructure.notification.slack_notify import notify_daily, process_notification
 from src.infrastructure.persistence.filtering_result_repository import FilteringResultRepository
 from src.infrastructure.persistence.screening_result_repository import ScreeningResultRepository
 
-logger = logging.getLogger(__name__)
-
-
 def notify_result(message: str) -> None:
-    send_line_notify(message)
-    try:
-        notify_daily(message)
-    except Exception:
-        logger.exception("フィルタリングのSlack通知に失敗しました。")
+    notify_daily(message)
 
 
 class BoardClient:

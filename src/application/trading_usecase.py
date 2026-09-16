@@ -25,7 +25,6 @@ from src.infrastructure.kabu.get_wallet import get_wallet_cash
 from src.infrastructure.kabu.get_apisoftlimit import get_api_soft_limit
 from src.infrastructure.kabu.send_order import place_market_order
 from src.infrastructure.market_data.get_daily_closes import get_yahoo_daily_bars, get_yahoo_daily_closes
-from src.infrastructure.notification.line_notify import send_line_notify
 from src.infrastructure.notification.slack_notify import notify_critical, notify_daily
 from src.infrastructure.persistence.storage import read_json, write_json
 from src.infrastructure.persistence.filter_decision_repository import FilterDecisionRepository
@@ -74,7 +73,7 @@ class TradingUseCase:
             positions_client: 保有株情報クライアント（オプション、テスト用）
             order_sender: 注文送信クライアント（オプション、テスト用）
             filtering_result_repository: フィルタリング結果リポジトリ（オプション）
-            notifier: 通知機能（デフォルト：LINE通知）
+            notifier: 通知機能（テスト用オプション）
         """
         self.token = token
         self.order_history_path = order_history_path
@@ -86,7 +85,7 @@ class TradingUseCase:
         self.positions_client = positions_client
         self.order_sender = order_sender
         self.filtering_result_repository = filtering_result_repository
-        self.notifier = notifier or send_line_notify
+        self.notifier = notifier
         self.daily_analyzer = daily_analyzer if daily_analyzer is not None else create_daily_analyzer()
         self.daily_report_directory = daily_report_directory or Path(__file__).resolve().parents[2] / "data" / "reports"
         self.filter_decision_repository = filter_decision_repository or FilterDecisionRepository(
@@ -173,15 +172,13 @@ class TradingUseCase:
 
     def _notify_safely(self, message: str) -> None:
         """通知失敗で取引制御自体を妨げないように通知します。"""
-        try:
-            self.notifier(message)
-        except Exception:
-            logger.exception("緊急通知の送信に失敗しました")
+        if self.notifier:
+            try:
+                self.notifier(message)
+            except Exception:
+                logger.exception("緊急通知の送信に失敗しました")
             return
-        try:
-            notify_critical(message)
-        except Exception:
-            logger.exception("キルスイッチのSlack通知に失敗しました。")
+        notify_critical(message)
 
     def _trigger_kill_switch(self, reason: str) -> None:
         """キルスイッチを一度だけ発動し、即時通知します。"""
@@ -368,15 +365,13 @@ class TradingUseCase:
             *self._order_detail_lines(entry),
         ]
         message = "\n".join(message_lines)
-        try:
-            self.notifier(message)
-        except Exception:
-            logger.exception("注文約定通知の送信に失敗しました: 銘柄=%s", signal.symbol)
+        if self.notifier:
+            try:
+                self.notifier(message)
+            except Exception:
+                logger.exception("注文約定通知の送信に失敗しました: 銘柄=%s", signal.symbol)
             return
-        try:
-            notify_critical(message)
-        except Exception:
-            logger.exception("注文約定のSlack通知に失敗しました: 銘柄=%s", signal.symbol)
+        notify_critical(message)
 
     def _calculate_daily_pnl(self, positions: List[dict]) -> float:
         """実現損益と保有中の評価損益を合算します。"""
@@ -717,11 +712,10 @@ class TradingUseCase:
         }
         self.daily_report_directory.mkdir(parents=True, exist_ok=True)
         write_json(self.daily_report_directory / f"{today}.json", report_data)
-        self.notifier(report_text)
-        try:
+        if self.notifier:
+            self.notifier(report_text)
+        else:
             notify_daily(report_text)
-        except Exception:
-            logger.exception("日次レポートのSlack通知に失敗しました。")
 
     def _liquidate_all_positions(self) -> None:
         """持ち越しを防ぐため、現物の全保有を成行で売却します。"""
@@ -830,11 +824,10 @@ class TradingUseCase:
             today = now_provider().date().isoformat()
             if not result or result.date != today or not result.symbols:
                 message = "当日のフィルタ結果がないため、取引を開始しません"
-                self.notifier(message)
-                try:
+                if self.notifier:
+                    self.notifier(message)
+                else:
                     notify_daily(message)
-                except Exception:
-                    logger.exception("取引見送りのSlack通知に失敗しました。")
                 return
             symbols = result.symbols
         else:

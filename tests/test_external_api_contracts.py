@@ -18,7 +18,7 @@ from src.infrastructure.kabu.unregister import unregister_all
 from src.infrastructure.market_data.get_daily_closes import get_yahoo_daily_closes
 from src.infrastructure.market_data.yahoo_finance_client import YahooFinanceClient
 from src.infrastructure.market_data.yahoo_index_client import YahooIndexClient
-from src.infrastructure.notification import line_notify
+from src.infrastructure.notification import slack_notify
 from src.infrastructure.persistence.storage import read_json, write_json
 from src.infrastructure.persistence.filtering_result_repository import FilteringResultRepository
 from src.domain.models import FilteringResult
@@ -202,29 +202,28 @@ def test_yahoo_index_client_uses_plain_symbol_and_parses_ohlc(monkeypatch):
         YahooIndexClient().get_daily_ohlc('7203')
 
 
-def test_line_notification_handles_missing_settings_and_request_errors(monkeypatch):
-    monkeypatch.setattr(line_notify.config, '_is_test_runtime', lambda: False)
-    monkeypatch.setattr(line_notify.config, 'LINE_MESSAGE_CHANNEL_TOKEN', '')
-    assert line_notify.send_line_notify('message') is False
+def test_slack_notification_handles_missing_settings_and_request_errors(monkeypatch):
+    monkeypatch.setattr(slack_notify.config, '_is_test_runtime', lambda: False)
+    monkeypatch.setattr(slack_notify.config, 'SLACK_WEBHOOK_DAILY', '')
+    assert slack_notify.notify_daily('message') is False
 
-    monkeypatch.setattr(line_notify.config, 'LINE_MESSAGE_CHANNEL_TOKEN', 'token')
-    monkeypatch.setattr(line_notify.config, 'LINE_MESSAGE_TO', 'user')
+    monkeypatch.setattr(slack_notify.config, 'SLACK_WEBHOOK_DAILY', 'https://example.test/webhook')
     monkeypatch.setattr(
-        line_notify.requests,
+        slack_notify.requests,
         'post',
         lambda *args, **kwargs: (_ for _ in ()).throw(requests.ConnectionError('down')),
     )
-    assert line_notify.send_line_notify('message') is False
+    assert slack_notify.notify_daily('message') is False
 
-    monkeypatch.setattr(line_notify.requests, 'post', lambda *args, **kwargs: Response({}))
-    assert line_notify.send_line_notify('message') is True
+    monkeypatch.setattr(slack_notify.requests, 'post', lambda *args, **kwargs: Response({}))
+    assert slack_notify.notify_daily('message') is True
 
 
 def test_process_notification_sends_start_and_end(monkeypatch):
     messages = []
-    monkeypatch.setattr(line_notify, 'send_line_notify', messages.append)
+    monkeypatch.setattr(slack_notify, 'notify_daily', messages.append)
 
-    with line_notify.process_notification('テスト', trigger='手動'):
+    with slack_notify.process_notification('テスト', trigger='手動'):
         pass
 
     assert messages == ['【テスト】開始', '【テスト】終了']
@@ -232,15 +231,16 @@ def test_process_notification_sends_start_and_end(monkeypatch):
 
 def test_process_notification_reraises_and_notifies_analyzed_error(monkeypatch):
     messages = []
-    monkeypatch.setattr(line_notify, 'send_line_notify', messages.append)
+    monkeypatch.setattr(slack_notify, 'notify_daily', messages.append)
+    monkeypatch.setattr(slack_notify, 'notify_critical', messages.append)
     monkeypatch.setattr(
-        line_notify,
+        slack_notify,
         '_analyze_exception_safely',
         lambda process_name, exc: SimpleNamespace(occurrence_count=2, summary='原因\n詳細'),
     )
 
     with pytest.raises(ValueError, match='boom'):
-        with line_notify.process_notification('テスト'):
+        with slack_notify.process_notification('テスト'):
             raise ValueError('boom')
 
     assert messages[0] == '【テスト】開始'
@@ -249,9 +249,10 @@ def test_process_notification_reraises_and_notifies_analyzed_error(monkeypatch):
 
 
 def test_process_notification_ignores_lifecycle_notification_failure(monkeypatch):
-    monkeypatch.setattr(line_notify, 'send_line_notify', lambda message: (_ for _ in ()).throw(RuntimeError('down')))
-    line_notify.notify_process_start('テスト')
-    line_notify.notify_process_end('テスト', success=False, detail='失敗')
+    monkeypatch.setattr(slack_notify, 'notify_daily', lambda message: (_ for _ in ()).throw(RuntimeError('down')))
+    monkeypatch.setattr(slack_notify, 'notify_critical', lambda message: (_ for _ in ()).throw(RuntimeError('down')))
+    slack_notify.notify_process_start('テスト')
+    slack_notify.notify_process_end('テスト', success=False, detail='失敗')
 
 
 def test_storage_handles_success_and_io_errors(tmp_path, monkeypatch):

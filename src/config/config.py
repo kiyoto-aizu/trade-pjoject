@@ -241,15 +241,6 @@ MARKET_CLOSE_HOUR = 15
 MARKET_CLOSE_MINUTE = 30
 
 
-# ================================================================================
-# LINE通知設定
-# ================================================================================
-
-# LINE Messaging APIの認証情報（アラート送信用）
-LINE_MESSAGE_CHANNEL_TOKEN = os.getenv("LINE_MESSAGE_CHANNEL_TOKEN", "")
-LINE_MESSAGE_TO = os.getenv("LINE_MESSAGE_TO", "")
-LINE_MESSAGE_API = "https://api.line.me/v2/bot/message/push"
-
 # 日次LLM分析設定（明示的に有効化した場合のみ利用）
 LLM_DAILY_ANALYSIS_ENABLED = os.getenv("LLM_DAILY_ANALYSIS_ENABLED", "false").strip().lower() in ("1", "true", "yes")
 LLM_DIARY_ENABLED = os.getenv("LLM_DIARY_ENABLED", "false").strip().lower() in ("1", "true", "yes")
@@ -315,15 +306,11 @@ LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").strip().upper()
 
 
 # ================================================================================
-# Slack通知設定（段階移行中：LINEと並行運用）
+# Slack通知設定
 # ================================================================================
 
 # チャンネル別Incoming Webhook URL（緊急度別に3分割）
 # critical: 約定・キルスイッチ・例外 / daily: 定型の日次ログ / analysis: 週次・月次分析等
-# NOTE: 段階移行中はまだどこからも呼び出されないため、LINEと同様に未設定=空文字（警告ログのみ）とする。
-#       フェーズ3〜4で実際に運用へ組み込む際に _load_required_env による fail-fast へ切り替える。
-SLACK_WEBHOOK_CRITICAL = os.getenv("SLACK_WEBHOOK_CRITICAL", "")
-SLACK_WEBHOOK_DAILY = os.getenv("SLACK_WEBHOOK_DAILY", "")
-SLACK_WEBHOOK_ANALYSIS = os.getenv("SLACK_WEBHOOK_ANALYSIS", "")
-# SLACK_WEBHOOK_WEEKLY = os.getenv("SLACK_WEBHOOK_WEEKLY", "")
-# SLACK_WEBHOOK_MONTHLY = os.getenv("SLACK_WEBHOOK_MONTHLY", "")
+SLACK_WEBHOOK_CRITICAL = _load_required_env("SLACK_WEBHOOK_CRITICAL", allow_missing=_ALLOW_MISSING_ENV)
+SLACK_WEBHOOK_DAILY = _load_required_env("SLACK_WEBHOOK_DAILY", allow_missing=_ALLOW_MISSING_ENV)
+SLACK_WEBHOOK_ANALYSIS = _load_required_env("SLACK_WEBHOOK_ANALYSIS", allow_missing=_ALLOW_MISSING_ENV)

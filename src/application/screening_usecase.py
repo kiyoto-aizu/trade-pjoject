@@ -18,7 +18,7 @@ from src.domain.rules import (
     limit_candidates,
     merge_ranking_candidates,
 )
-from src.infrastructure.notification.line_notify import format_result_notification
+from src.infrastructure.notification.slack_notify import format_result_notification
 
 logger = logging.getLogger(__name__)
 

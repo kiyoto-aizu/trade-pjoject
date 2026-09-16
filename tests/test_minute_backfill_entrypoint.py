@@ -25,7 +25,7 @@ def test_run_minute_backfill_main_flow(tmp_path):
     ]
 
     with patch("src.entrypoints.run_minute_backfill.get_yahoo_intraday_bars", return_value=fake_bars), \
-         patch("src.entrypoints.run_minute_backfill.send_line_notify") as mock_notify, \
+            patch("src.entrypoints.run_minute_backfill.notify_analysis") as mock_notify, \
          patch("sys.argv", ["run_minute_backfill", "--days", "7"]):
         
         main(

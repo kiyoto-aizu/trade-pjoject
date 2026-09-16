@@ -6,6 +6,18 @@ from src.config import config
 logger = logging.getLogger(__name__)
 
 
+def format_result_notification(business: str, function: str, summary: str, details: list[str]) -> str:
+    """結果通知を共通の4見出しで組み立てます。"""
+    return "\n".join([
+        f"【業務】{business}",
+        f"【機能】{function}",
+        "【概要】",
+        summary,
+        "【詳細】",
+        *details,
+    ])
+
+
 def notify_process_start(process_name: str, detail: str = "開始") -> None:
     """処理開始を通知します（dailyチャンネル）。通知失敗で本処理を中断させません。"""
     _send_process_message(f"【{process_name}】{detail}", critical=False)
@@ -44,7 +56,7 @@ def _analyze_exception_safely(process_name: str, exc: BaseException):
 
 
 def _short_summary(summary: str, limit: int = 200) -> str:
-    """Slack通知向けに、深夜のエラー洪水でも一目で判断できる短い要約に切り詰める。"""
+    """深夜のエラー洪水でも一目で判断できる短い要約に切り詰める。"""
     lines = [line for line in summary.strip().splitlines() if line.strip()]
     short = "\n".join(lines[:2])
     return short if len(short) <= limit else short[:limit] + "…"
@@ -124,11 +136,3 @@ def notify_daily(message: str) -> bool:
 def notify_analysis(message: str) -> bool:
     """週次・月次分析、バックテスト、分足バックフィルなど振り返り用の通知を送信します。"""
     return _send_slack_notify(message, config.SLACK_WEBHOOK_ANALYSIS, "analysis")
-
-# def notify_weekly(message: str) -> bool:
-#     """週次の振り返り用の通知を送信します。"""
-#     return _send_slack_notify(message, config.SLACK_WEBHOOK_WEEKLY, "weekly")
-
-# def notify_monthly(message: str) -> bool:
-#     """月次の振り返り用の通知を送信します。"""
-#     return _send_slack_notify(message, config.SLACK_WEBHOOK_MONTHLY, "monthly")

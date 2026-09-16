@@ -14,17 +14,12 @@ from src.application.market_regime_usecase import MarketRegimeUseCase
 from src.application.trading_usecase import TradingUseCase
 from src.domain.rules import is_market_closed, is_trading_session
 from src.infrastructure.kabu.get_token import get_api_token
-from src.infrastructure.notification.line_notify import process_notification
 from src.infrastructure.persistence.filtering_result_repository import FilteringResultRepository
 from src.infrastructure.persistence.filter_decision_repository import FilterDecisionRepository
 from src.infrastructure.execution_lock import market_workflow_lock
-from src.infrastructure.notification.line_notify import send_line_notify
-from src.infrastructure.notification.slack_notify import notify_daily
+from src.infrastructure.notification.slack_notify import notify_daily, process_notification
 from src.infrastructure.paper.paper_order_executor import PaperOrderExecutor
 from src.infrastructure.market_data.yahoo_index_client import YahooIndexClient
-
-logger = logging.getLogger(__name__)
-
 
 def create_trading_use_case(token: str) -> TradingUseCase:
     """実行モードに応じた取引ユースケースを組み立てます。"""
@@ -46,7 +41,6 @@ def create_trading_use_case(token: str) -> TradingUseCase:
         order_sender=order_sender,
         filtering_result_repository=FilteringResultRepository(root / 'data' / 'filtering'),
         filter_decision_repository=FilterDecisionRepository(root / 'data' / 'filter_decision_events.sqlite3'),
-        notifier=send_line_notify,
         market_regime_usecase=MarketRegimeUseCase(
             market_data_client=YahooIndexClient(),
             thresholds=config.MARKET_REGIME_THRESHOLDS,
@@ -134,11 +128,7 @@ def main(now_provider=None) -> None:
                     f"対象銘柄数: {len(filtering_result.symbols)}\n"
                     + "\n".join(use_case.market_conditions_detail())
                 )
-                send_line_notify(message)
-                try:
-                    notify_daily(message)
-                except Exception:
-                    logger.exception("取引開始のSlack通知に失敗しました。")
+                notify_daily(message)
             if not config.ALLOW_OVERNIGHT_HOLDING and is_market_closed(
                 now.time(),
                 config.MARKET_LIQUIDATION_HOUR,

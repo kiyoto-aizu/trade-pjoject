@@ -1,14 +1,14 @@
 from types import SimpleNamespace
 
 from src.api import request_handler
-from src.infrastructure.notification import line_notify
+from src.infrastructure.notification import slack_notify
 
 
-def test_line_notification_is_suppressed_during_tests(monkeypatch):
+def test_slack_notification_is_suppressed_during_tests(monkeypatch):
     calls = []
-    monkeypatch.setattr(line_notify.requests, 'post', lambda *args, **kwargs: calls.append(args))
+    monkeypatch.setattr(slack_notify.requests, 'post', lambda *args, **kwargs: calls.append(args))
 
-    assert not line_notify.send_line_notify('test message')
+    assert not slack_notify.notify_daily('test message')
     assert calls == []
 
 

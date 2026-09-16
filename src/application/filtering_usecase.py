@@ -11,7 +11,7 @@ import logging
 from src.domain.models import FilteringResult, ScoredCandidate
 from src.domain.rules import calculate_volume_surge_ratio, select_top_n_by_surge_ratio
 from src.config import config
-from src.infrastructure.notification.line_notify import format_result_notification
+from src.infrastructure.notification.slack_notify import format_result_notification
 
 logger = logging.getLogger(__name__)
 

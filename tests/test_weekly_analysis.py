@@ -69,7 +69,7 @@ def test_main_skips_non_saturday_without_force(monkeypatch, tmp_path):
 def test_main_force_writes_result_and_notifies(monkeypatch, tmp_path):
     notifications = []
     monkeypatch.setattr(run_weekly_analysis, "create_daily_analyzer", lambda: None)
-    monkeypatch.setattr(run_weekly_analysis, "send_line_notify", notifications.append)
+    monkeypatch.setattr(run_weekly_analysis, "notify_analysis", notifications.append)
     monkeypatch.setattr(
         sys,
         "argv",

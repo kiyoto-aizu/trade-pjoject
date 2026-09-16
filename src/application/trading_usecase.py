@@ -26,6 +26,7 @@ from src.infrastructure.kabu.get_apisoftlimit import get_api_soft_limit
 from src.infrastructure.kabu.send_order import place_market_order
 from src.infrastructure.market_data.get_daily_closes import get_yahoo_daily_bars, get_yahoo_daily_closes
 from src.infrastructure.notification.line_notify import send_line_notify
+from src.infrastructure.notification.slack_notify import notify_critical, notify_daily
 from src.infrastructure.persistence.storage import read_json, write_json
 from src.infrastructure.persistence.filter_decision_repository import FilterDecisionRepository
 from src.infrastructure.analysis.daily_analyzer import create_daily_analyzer
@@ -176,6 +177,11 @@ class TradingUseCase:
             self.notifier(message)
         except Exception:
             logger.exception("緊急通知の送信に失敗しました")
+            return
+        try:
+            notify_critical(message)
+        except Exception:
+            logger.exception("キルスイッチのSlack通知に失敗しました。")
 
     def _trigger_kill_switch(self, reason: str) -> None:
         """キルスイッチを一度だけ発動し、即時通知します。"""
@@ -361,10 +367,16 @@ class TradingUseCase:
             "【詳細】",
             *self._order_detail_lines(entry),
         ]
+        message = "\n".join(message_lines)
         try:
-            self.notifier("\n".join(message_lines))
+            self.notifier(message)
         except Exception:
             logger.exception("注文約定通知の送信に失敗しました: 銘柄=%s", signal.symbol)
+            return
+        try:
+            notify_critical(message)
+        except Exception:
+            logger.exception("注文約定のSlack通知に失敗しました: 銘柄=%s", signal.symbol)
 
     def _calculate_daily_pnl(self, positions: List[dict]) -> float:
         """実現損益と保有中の評価損益を合算します。"""
@@ -706,6 +718,10 @@ class TradingUseCase:
         self.daily_report_directory.mkdir(parents=True, exist_ok=True)
         write_json(self.daily_report_directory / f"{today}.json", report_data)
         self.notifier(report_text)
+        try:
+            notify_daily(report_text)
+        except Exception:
+            logger.exception("日次レポートのSlack通知に失敗しました。")
 
     def _liquidate_all_positions(self) -> None:
         """持ち越しを防ぐため、現物の全保有を成行で売却します。"""
@@ -813,7 +829,12 @@ class TradingUseCase:
             result = self.filtering_result_repository.load_latest()
             today = now_provider().date().isoformat()
             if not result or result.date != today or not result.symbols:
-                self.notifier("当日のフィルタ結果がないため、取引を開始しません")
+                message = "当日のフィルタ結果がないため、取引を開始しません"
+                self.notifier(message)
+                try:
+                    notify_daily(message)
+                except Exception:
+                    logger.exception("取引見送りのSlack通知に失敗しました。")
                 return
             symbols = result.symbols
         else:

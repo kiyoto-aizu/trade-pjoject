@@ -19,12 +19,23 @@ from src.infrastructure.kabu.unregister import unregister_all
 from src.infrastructure.kabu.register import register_symbols
 from src.infrastructure.execution_lock import market_workflow_lock
 from src.infrastructure.notification.line_notify import process_notification, send_line_notify
+from src.infrastructure.notification.slack_notify import notify_daily
 from src.infrastructure.persistence.screening_result_repository import ScreeningResultRepository
 from src.infrastructure.persistence.listed_security_repository import ListedSecurityRepository
 from src.infrastructure.persistence.historical_regulation_repository import HistoricalRegulationRepository
 from src.infrastructure.market_data.historical_ranking_repository import HistoricalRankingRepository
 from src.infrastructure.market_data.yahoo_finance_client import YahooFinanceClient
 from src.application.screening_usecase import ScreeningUseCase
+
+logger = logging.getLogger(__name__)
+
+
+def notify_result(message: str) -> None:
+    send_line_notify(message)
+    try:
+        notify_daily(message)
+    except Exception:
+        logger.exception("スクリーニングのSlack通知に失敗しました。")
 
 
 def configure_logging() -> None:
@@ -95,7 +106,7 @@ def main() -> None:
                 regulation_repository,
                 PrimaryExchangeRepository(token),
                 ScreeningResultRepository(data_dir),
-                send_line_notify,
+                notify_result,
             )
             usecase.batch_started = lambda batch, _: register_symbols(token, batch) is not None
             usecase.batch_finished = lambda _, __: unregister_all(token) is not None

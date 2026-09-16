@@ -22,6 +22,7 @@ from src.application.minute_bar_backfill_usecase import MinuteBarBackfillUseCase
 from src.config import config
 from src.infrastructure.market_data.get_intraday_bars import get_yahoo_intraday_bars
 from src.infrastructure.notification.line_notify import format_result_notification, process_notification, send_line_notify
+from src.infrastructure.notification.slack_notify import notify_analysis
 from src.infrastructure.persistence.parquet_minute_bar_repository import ParquetMinuteBarRepository
 
 logger = logging.getLogger(__name__)
@@ -92,12 +93,17 @@ def main(now_provider=None, filtering_dir: Path | None = None, output_dir: Path 
         imported_counts = usecase.run(symbols, days=args.days)
 
         total = sum(imported_counts.values())
-        send_line_notify(format_result_notification(
+        message = format_result_notification(
             "市場データ管理",
             "分足バックフィル",
             "分足データの取込が完了しました。",
             [f"対象銘柄数: {len(symbols)}件", f"取込本数: {total}本"],
-        ))
+        )
+        send_line_notify(message)
+        try:
+            notify_analysis(message)
+        except Exception:
+            logger.exception("分足バックフィルのSlack通知に失敗しました。")
 
 
 if __name__ == "__main__":

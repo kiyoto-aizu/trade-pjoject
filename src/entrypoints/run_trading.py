@@ -19,8 +19,11 @@ from src.infrastructure.persistence.filtering_result_repository import Filtering
 from src.infrastructure.persistence.filter_decision_repository import FilterDecisionRepository
 from src.infrastructure.execution_lock import market_workflow_lock
 from src.infrastructure.notification.line_notify import send_line_notify
+from src.infrastructure.notification.slack_notify import notify_daily
 from src.infrastructure.paper.paper_order_executor import PaperOrderExecutor
 from src.infrastructure.market_data.yahoo_index_client import YahooIndexClient
+
+logger = logging.getLogger(__name__)
 
 
 def create_trading_use_case(token: str) -> TradingUseCase:
@@ -122,7 +125,7 @@ def main(now_provider=None) -> None:
             use_case = create_trading_use_case(token)
             if hasattr(use_case, 'prepare_market_regime'):
                 use_case.prepare_market_regime()
-                send_line_notify(
+                message = (
                     "【業務】取引運用\n"
                     "【機能】取引開始\n"
                     "【概要】\n"
@@ -131,6 +134,11 @@ def main(now_provider=None) -> None:
                     f"対象銘柄数: {len(filtering_result.symbols)}\n"
                     + "\n".join(use_case.market_conditions_detail())
                 )
+                send_line_notify(message)
+                try:
+                    notify_daily(message)
+                except Exception:
+                    logger.exception("取引開始のSlack通知に失敗しました。")
             if not config.ALLOW_OVERNIGHT_HOLDING and is_market_closed(
                 now.time(),
                 config.MARKET_LIQUIDATION_HOUR,

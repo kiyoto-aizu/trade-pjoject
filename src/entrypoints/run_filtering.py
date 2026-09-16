@@ -18,8 +18,19 @@ from src.infrastructure.kabu.unregister import unregister_all
 from src.infrastructure.execution_lock import market_workflow_lock
 from src.infrastructure.market_data.yahoo_finance_client import YahooFinanceClient
 from src.infrastructure.notification.line_notify import process_notification, send_line_notify
+from src.infrastructure.notification.slack_notify import notify_daily
 from src.infrastructure.persistence.filtering_result_repository import FilteringResultRepository
 from src.infrastructure.persistence.screening_result_repository import ScreeningResultRepository
+
+logger = logging.getLogger(__name__)
+
+
+def notify_result(message: str) -> None:
+    send_line_notify(message)
+    try:
+        notify_daily(message)
+    except Exception:
+        logger.exception("フィルタリングのSlack通知に失敗しました。")
 
 
 class BoardClient:
@@ -109,7 +120,7 @@ def main() -> None:
                 if unregister_all(token) is None:
                     raise SystemExit('銘柄登録の全解除に失敗しました。')
                 board_client = BoardClient(token)
-                notifier = send_line_notify
+                notifier = notify_result
             usecase = FilteringUseCase(
                 ScreeningResultRepository(root / 'screening'),
                 board_client,

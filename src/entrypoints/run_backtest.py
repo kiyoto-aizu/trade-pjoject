@@ -16,6 +16,7 @@ from src.domain.market_regime import calculate_market_regime_series
 from src.infrastructure.market_data.yahoo_index_client import YahooIndexClient
 from src.infrastructure.analysis.daily_analyzer import create_daily_analyzer
 from src.infrastructure.notification.line_notify import format_result_notification, process_notification, send_line_notify
+from src.infrastructure.notification.slack_notify import notify_analysis
 from src.infrastructure.persistence.parquet_minute_bar_repository import ParquetMinuteBarRepository
 from src.infrastructure.persistence.filter_decision_repository import FilterDecisionRepository
 
@@ -618,9 +619,14 @@ def main() -> None:
             report_lines.append(f"履歴: {archive_path}")
         if llm_analysis:
             report_lines.extend(["LLMバックテスト評価(参考):", llm_analysis])
-        send_line_notify(format_result_notification(
+        message = format_result_notification(
             "分析運用", "バックテスト", "バックテストが完了しました。", report_lines
-        ))
+        )
+        send_line_notify(message)
+        try:
+            notify_analysis(message)
+        except Exception:
+            logger.exception("バックテストのSlack通知に失敗しました。")
 
 
 if __name__ == "__main__":

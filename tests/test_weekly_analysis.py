@@ -2,6 +2,8 @@ import json
 import sys
 from datetime import date
 
+import pytest
+
 from src.entrypoints import run_weekly_analysis
 from src.infrastructure.analysis.daily_analyzer import OpenAIDailyAnalyzer
 
@@ -43,13 +45,16 @@ def test_build_weekly_summary_filters_both_sources_by_inclusive_date_range(tmp_p
         )
 
     summary = run_weekly_analysis.build_weekly_summary(
-        date(2026, 9, 7), date(2026, 9, 11), reports, backtests
+        date(2026, 9, 7), date(2026, 9, 11), reports, backtests, as_of=date(2026, 9, 12)
     )
 
+    assert summary["period"]["status"] == "complete"
     assert summary["daily"]["report_count"] == 2
     assert summary["daily"]["order_count"] == 3
     assert summary["backtest"]["run_count"] == 1
+    assert summary["backtest"]["exact_period_run_available"] is True
     assert summary["backtest"]["total_pnl"] == 100
+    assert summary["comparison"]["available"] is False
 
 
 def test_main_skips_non_saturday_without_force(monkeypatch, tmp_path):
@@ -64,6 +69,17 @@ def test_main_skips_non_saturday_without_force(monkeypatch, tmp_path):
     run_weekly_analysis.main()
 
     assert not list(tmp_path.glob("*.json"))
+
+
+def test_main_rejects_non_monday_week_start(monkeypatch):
+    monkeypatch.setattr(
+        sys, "argv", ["run_weekly_analysis", "--force", "--week-start", "2026-09-13"]
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        run_weekly_analysis.main()
+
+    assert exc_info.value.code == 2
 
 
 def test_main_force_writes_result_and_notifies(monkeypatch, tmp_path):
@@ -105,7 +121,11 @@ def test_weekly_analyzer_uses_required_review_prompt(monkeypatch):
     assert result.startswith("観測事実")
     assert "週次集計" in prompt
     assert "観測事実" in prompt
-    assert "投資判断を命令せず" in prompt
+    assert "期間・稼働状態" in prompt
+    assert "exact_period_run_available" in prompt
+    assert "comparison.availableがtrue" in prompt
+    assert "filter_decision_events.countが1件以上" in prompt
+    assert "投資判断、売買指示は行わず" in prompt
     assert "参考意見" in prompt
 
 

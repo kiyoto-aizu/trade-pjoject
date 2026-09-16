@@ -140,7 +140,13 @@ def test_build_monthly_summary_aggregates_daily_reports_and_backtests(tmp_path):
         encoding="utf-8",
     )
     (backtests / "latest_timeseries_20260902.json").write_text(
-        json.dumps({"generated_at": "2026-09-02T17:00:00", "total_pnl": 250, "total_trades": 4}),
+        json.dumps({
+            "generated_at": "2026-09-30T17:00:00",
+            "period_start": "2026-09-01",
+            "period_end": "2026-09-30",
+            "total_pnl": 250,
+            "total_trades": 4,
+        }),
         encoding="utf-8",
     )
 
@@ -149,6 +155,7 @@ def test_build_monthly_summary_aggregates_daily_reports_and_backtests(tmp_path):
     assert summary["daily"]["order_count"] == 3
     assert summary["daily"]["total_profit_loss"] == 80
     assert summary["daily"]["kill_switch_days"] == 1
+    assert summary["backtest"]["exact_period_run_available"] is True
     assert summary["backtest"]["total_pnl"] == 250
     assert summary["backtest"]["total_trades"] == 4
 

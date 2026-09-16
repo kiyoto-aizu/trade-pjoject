@@ -6,6 +6,132 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
+def build_period_metadata(start: date, end: date, as_of: date) -> dict:
+    if as_of < start:
+        status = "not_started"
+    elif as_of < end:
+        status = "in_progress"
+    else:
+        status = "complete"
+    return {
+        "start": start.isoformat(),
+        "end": end.isoformat(),
+        "as_of": as_of.isoformat(),
+        "status": status,
+        "is_complete": status == "complete",
+    }
+
+
+def summarize_daily_operations(summaries: list[dict]) -> dict:
+    status_counts: dict[str, int] = {}
+    log_error_days = 0
+    log_error_count = 0
+    emergency_stop_days = 0
+    for item in summaries:
+        status = str(item.get("market_assessment_status") or "not_recorded")
+        status_counts[status] = status_counts.get(status, 0) + 1
+        current_error_count = int(item.get("log_error_count") or 0)
+        if current_error_count > 0:
+            log_error_days += 1
+            log_error_count += current_error_count
+        if item.get("emergency_stop_triggered"):
+            emergency_stop_days += 1
+    return {
+        "log_error_days": log_error_days,
+        "log_error_count": log_error_count,
+        "emergency_stop_days": emergency_stop_days,
+        "market_assessment_status_counts": status_counts,
+    }
+
+
+def summarize_daily_reports(summaries: list[dict]) -> dict:
+    return {
+        "report_count": len(summaries),
+        "order_count": sum(int(item["order_count"] or 0) for item in summaries),
+        "total_profit_loss": round(
+            sum(float(item["total_profit_loss"] or 0) for item in summaries), 2
+        ),
+        "kill_switch_days": sum(1 for item in summaries if item["kill_switch_triggered"]),
+        "emergency_stop_days": sum(1 for item in summaries if item["emergency_stop_triggered"]),
+        "trading_modes": sorted(
+            {str(item["trading_mode"]) for item in summaries if item.get("trading_mode")}
+        ),
+        "operational_summary": summarize_daily_operations(summaries),
+        "reports": summaries,
+    }
+
+
+def build_daily_period_comparison(
+    current_period: dict,
+    current_summary: dict,
+    previous_period: dict,
+    previous_summary: dict,
+) -> dict:
+    current_modes = current_summary["trading_modes"]
+    previous_modes = previous_summary["trading_modes"]
+    same_single_mode = (
+        len(current_modes) == 1
+        and current_modes == previous_modes
+    )
+    if not current_period["is_complete"]:
+        available = False
+        reason = "対象期間が未完了です"
+    elif not current_summary["report_count"] or not previous_summary["report_count"]:
+        available = False
+        reason = "比較対象の日次レポートが不足しています"
+    elif not same_single_mode:
+        available = False
+        reason = "両期間の取引モードが一致しません"
+    else:
+        available = True
+        reason = "同一取引モードの日次レポート集計です"
+
+    def values(period: dict, summary: dict) -> dict:
+        return {
+            "period": period,
+            "report_count": summary["report_count"],
+            "order_count": summary["order_count"],
+            "total_profit_loss": summary["total_profit_loss"],
+            "trading_modes": summary["trading_modes"],
+            "operational_summary": summary["operational_summary"],
+        }
+
+    return {
+        "available": available,
+        "basis": "同一取引モードの日次レポート集計" if available else None,
+        "reason": reason,
+        "current": values(current_period, current_summary),
+        "previous": values(previous_period, previous_summary),
+    }
+
+
+def summarize_backtest_runs(backtests: list[dict], start: date, end: date) -> dict:
+    matching_runs = [
+        item
+        for item in backtests
+        if _parse_date(item.get("period_start")) == start and _parse_date(item.get("period_end")) == end
+    ]
+    if not backtests:
+        status = "no_runs"
+    elif len(matching_runs) == 1:
+        status = "single_exact_period_run"
+    elif matching_runs:
+        status = "multiple_exact_period_runs"
+    else:
+        status = "no_exact_period_run"
+
+    matching_run = matching_runs[0] if len(matching_runs) == 1 else None
+    return {
+        "run_count": len(backtests),
+        "matching_period_run_count": len(matching_runs),
+        "summary_status": status,
+        "exact_period_run_available": matching_run is not None,
+        "total_pnl": matching_run["total_pnl"] if matching_run else None,
+        "total_trades": matching_run["total_trades"] if matching_run else None,
+        "runs": backtests,
+    }
+
+
 def load_daily_summaries(report_directory: Path, start: date, end: date) -> list[dict]:
     summaries = []
     for path in sorted(report_directory.glob("*.json")):
@@ -23,12 +149,28 @@ def load_daily_summaries(report_directory: Path, start: date, end: date) -> list
             continue
         if not start <= report_date <= end:
             continue
+        market_conditions = data.get("market_conditions")
+        if not isinstance(market_conditions, dict):
+            market_conditions = {}
+        log_errors = data.get("log_errors")
+        if not isinstance(log_errors, dict):
+            log_errors = {}
+        positions = data.get("positions")
+        error_summaries = log_errors.get("summaries")
+        if not isinstance(error_summaries, list):
+            error_summaries = []
         summaries.append({
             "date": data.get("date", path.stem),
             "trading_mode": data.get("trading_mode"),
             "order_count": data.get("order_count", 0),
             "total_profit_loss": data.get("total_profit_loss", 0),
             "kill_switch_triggered": data.get("kill_switch_triggered", False),
+            "emergency_stop_triggered": data.get("emergency_stop_triggered", False),
+            "market_assessment_status": market_conditions.get("assessment_status") or "not_recorded",
+            "market_failure_reason": market_conditions.get("failure_reason"),
+            "log_error_count": int(log_errors.get("count") or 0),
+            "log_error_summaries": [str(item) for item in error_summaries[:3]],
+            "position_count": len(positions) if isinstance(positions, list) else None,
         })
     return summaries
 

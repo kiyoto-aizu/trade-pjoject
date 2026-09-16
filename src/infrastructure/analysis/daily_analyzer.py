@@ -8,6 +8,29 @@ from src.config import config
 logger = logging.getLogger(__name__)
 
 
+def _build_period_review_prompt(period_label: str, period_summary: dict) -> str:
+    return (
+        f"以下は自動売買システムの{period_label}集計です。数値を再計算せず、入力にある事実だけを根拠に、"
+        "次の検証につながる短い日本語レビューを作成してください。全体を900字以内にしてください。"
+        "見出しは必要なものだけを使い、各見出しの箇条書きは最大2件にしてください。"
+        "「観測事実」は必ず使い、期間、ペーパートレード、バックテスト、確定済み判定イベントの重要な事実だけを書いてください。"
+        "period.statusがcomplete以外の場合だけ「期間・稼働状態」を使い、途中集計または未開始であることを明記してください。"
+        "この場合、未到来のレポートやバックテストがないことを障害やスケジュール不備と推測しないでください。"
+        "daily.operational_summaryにエラー、緊急停止、unavailable、not_evaluated、not_recordedがある場合だけ、"
+        "同見出しで取引・戦略を評価できる状態だったかを事実として示してください。"
+        "backtest.exact_period_run_availableがtrueかつperiod.statusがcompleteの場合だけ、対象期間のバックテスト結果を評価してください。"
+        "それ以外ではbacktest.runsの損益・取引数を合算せず、ペーパートレードとの乖離や成績比較を結論づけないでください。"
+        "comparison.availableがtrueの場合だけ「期間比較」を使い、comparison.basisと両期間のreport_countを併記してください。"
+        "filter_decision_events.countが1件以上の場合だけ「判定イベント」を使い、概算損益を扱う場合は実取引損益ではないと明記してください。"
+        "daily.total_profit_lossは日次レポートの記録値であり、内訳がない限り実現損益・未実現損益を断定しないでください。"
+        "過学習はアウトオブサンプル結果やパラメータ比較などの根拠がない限り断定しないでください。"
+        "仮説を書く場合は「仮説」と明示し、入力に直接根拠がある場合だけにしてください。"
+        "未解決事項を判定できる具体的な観測値またはログがある場合だけ、「次回確認」を1件書いてください。"
+        "ロジック変更、認証情報の修正、投資判断、売買指示は行わず、検証期間中の参考意見だと明記してください。\n\n"
+        f"{period_label}集計:\n{json.dumps(period_summary, ensure_ascii=False, indent=2)}"
+    )
+
+
 class OpenAIDailyAnalyzer:
     """日次取引とバックテストの集計をLLMで評価するアダプター。"""
 
@@ -96,16 +119,7 @@ class OpenAIDailyAnalyzer:
             return None
 
     def analyze_monthly(self, monthly_summary: dict) -> str | None:
-        prompt = (
-            "以下は自動売買システムの月次集計です。与えられた数値だけを根拠に、日本語で短く評価してください。"
-            "出力は「観測事実」「差分」「仮説」「次に確認するデータ」の4見出し、各見出し2項目以内としてください。"
-            "日次のペーパートレードと週次バックテストの差、取引数不足、過学習、未実現損益、"
-            "データ欠損の影響が判断できる場合は指摘してください。ロジック変更や投資判断を命令せず、"
-            "filter_decision_eventsがあれば、確定済みの見送り・緩和イベントを結果分類ごとに参考情報として評価し、"
-            "概算であり実取引損益ではないことを明記してください。"
-            "検証期間中の参考意見だと明記してください。\n\n"
-            f"月次集計:\n{json.dumps(monthly_summary, ensure_ascii=False, indent=2)}"
-        )
+        prompt = _build_period_review_prompt("月次", monthly_summary)
         try:
             response = requests.post(
                 self.api_url,
@@ -132,16 +146,7 @@ class OpenAIDailyAnalyzer:
             return None
 
     def analyze_weekly(self, weekly_summary: dict) -> str | None:
-        prompt = (
-            "以下は自動売買システムの週次集計です。与えられた数値だけを根拠に、日本語で短く評価してください。"
-            "出力は「観測事実」「差分」「仮説」「次に確認するデータ」の4見出し、各見出し2項目以内としてください。"
-            "日次のペーパートレードと週次バックテストの差、取引数不足、過学習、未実現損益、"
-            "データ欠損の影響が判断できる場合は指摘してください。ロジック変更や投資判断を命令せず、"
-            "filter_decision_eventsがあれば、確定済みの見送り・緩和イベントを結果分類ごとに参考情報として評価し、"
-            "概算であり実取引損益ではないことを明記してください。"
-            "検証期間中の参考意見だと明記してください。\n\n"
-            f"週次集計:\n{json.dumps(weekly_summary, ensure_ascii=False, indent=2)}"
-        )
+        prompt = _build_period_review_prompt("週次", weekly_summary)
         try:
             response = requests.post(
                 self.api_url,

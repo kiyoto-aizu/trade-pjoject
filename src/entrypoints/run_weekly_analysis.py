@@ -4,7 +4,14 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from src.infrastructure.analysis.daily_analyzer import create_daily_analyzer
-from src.infrastructure.analysis.summary_loader import load_backtest_summaries, load_daily_summaries
+from src.infrastructure.analysis.summary_loader import (
+    build_daily_period_comparison,
+    build_period_metadata,
+    load_backtest_summaries,
+    load_daily_summaries,
+    summarize_backtest_runs,
+    summarize_daily_reports,
+)
 from src.infrastructure.persistence.filter_decision_repository import FilterDecisionRepository
 from src.infrastructure.notification.slack_notify import format_result_notification, notify_analysis, process_notification
 from src.infrastructure.persistence.storage import write_json
@@ -19,25 +26,31 @@ def _week_bounds(reference_date: date) -> tuple[date, date]:
 def build_weekly_summary(
     week_start: date, week_end: date, report_directory: Path, backtest_directory: Path,
     filter_decision_repository: FilterDecisionRepository | None = None,
+    as_of: date | None = None,
 ) -> dict:
+    as_of = as_of or date.today()
     daily = load_daily_summaries(report_directory, week_start, week_end)
+    previous_week_start = week_start - timedelta(days=7)
+    previous_week_end = week_end - timedelta(days=7)
+    previous_daily = load_daily_summaries(
+        report_directory, previous_week_start, previous_week_end
+    )
     backtests = load_backtest_summaries(backtest_directory, week_start, week_end)
+    period = build_period_metadata(week_start, week_end, as_of)
+    daily_summary = summarize_daily_reports(daily)
+    previous_daily_summary = summarize_daily_reports(previous_daily)
     return {
         "week_start": week_start.isoformat(),
         "week_end": week_end.isoformat(),
-        "daily": {
-            "report_count": len(daily),
-            "order_count": sum(int(item["order_count"] or 0) for item in daily),
-            "total_profit_loss": round(sum(float(item["total_profit_loss"] or 0) for item in daily), 2),
-            "kill_switch_days": sum(1 for item in daily if item["kill_switch_triggered"]),
-            "reports": daily,
-        },
-        "backtest": {
-            "run_count": len(backtests),
-            "total_pnl": round(sum(float(item["total_pnl"] or 0) for item in backtests), 2),
-            "total_trades": sum(int(item["total_trades"] or 0) for item in backtests),
-            "runs": backtests,
-        },
+        "period": period,
+        "daily": daily_summary,
+        "comparison": build_daily_period_comparison(
+            period,
+            daily_summary,
+            build_period_metadata(previous_week_start, previous_week_end, previous_week_end),
+            previous_daily_summary,
+        ),
+        "backtest": summarize_backtest_runs(backtests, week_start, week_end),
         "filter_decision_events": (
             filter_decision_repository.summarize_finalized_events(week_start, week_end)
             if filter_decision_repository else {"count": 0, "by_event_type": {}}
@@ -54,18 +67,22 @@ def main() -> None:
     parser.add_argument("--force", action="store_true", help="土曜以外でも実行する")
     args = parser.parse_args()
 
+    if args.week_start:
+        week_start = date.fromisoformat(args.week_start)
+        if week_start.weekday() != 0:
+            parser.error("--week-startは月曜日（YYYY-MM-DD）を指定してください")
+    else:
+        week_start = None
     today = date.today()
     if not args.force and today.weekday() != 5:
         return
-    if args.week_start:
-        week_start = date.fromisoformat(args.week_start)
-    else:
+    if week_start is None:
         week_start, _ = _week_bounds(today)
     week_end = week_start + timedelta(days=4)
     with process_notification("週次分析", notify_lifecycle=False, trigger="土曜または手動実行"):
         summary = build_weekly_summary(
             week_start, week_end, args.reports, args.backtests,
-            FilterDecisionRepository(Path("data/filter_decision_events.sqlite3")),
+            FilterDecisionRepository(Path("data/filter_decision_events.sqlite3")), today,
         )
         analyzer = create_daily_analyzer()
         analysis = analyzer.analyze_weekly(summary) if analyzer else None
@@ -73,10 +90,17 @@ def main() -> None:
         args.output.mkdir(parents=True, exist_ok=True)
         output_path = args.output / f"{week_start:%Y-%m-%d}_{week_end:%Y-%m-%d}.json"
         write_json(output_path, result)
+        backtest = summary["backtest"]
+        backtest_detail = (
+            f"{backtest['run_count']}回 / 損益 {backtest['total_pnl']}"
+            if backtest["exact_period_run_available"]
+            else f"{backtest['run_count']}回 / 対象期間一致 {backtest['matching_period_run_count']}回"
+        )
         lines = [
             f"対象週: {week_start}～{week_end}",
+            f"集計状態: {'確定' if summary['period']['is_complete'] else '途中'}",
             f"ペーパートレード: {summary['daily']['report_count']}日 / {summary['daily']['order_count']}件",
-            f"バックテスト: {summary['backtest']['run_count']}回 / 損益 {summary['backtest']['total_pnl']}",
+            f"バックテスト: {backtest_detail}",
             f"詳細: {output_path}",
         ]
         if analysis:

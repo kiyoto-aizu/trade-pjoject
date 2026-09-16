@@ -303,6 +303,14 @@ class ExclusionResult:
     excluded_by_exchange_count: int = 0
 
 
+@dataclass
+class PriceFilterResult:
+    """株価上限による候補除外の結果。"""
+    remaining: list[str]
+    excluded_by_price_count: int = 0
+    excluded_missing_price_count: int = 0
+
+
 # ================================================================================
 # スクリーニング結果
 # ================================================================================

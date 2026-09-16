@@ -106,6 +106,120 @@ def test_has_holdings_checks_sell_side_positions():
     assert not use_case._has_holdings('9999', positions)
 
 
+def test_count_open_positions_counts_only_open_sell_side_positions():
+    use_case = TradingUseCase(token='dummy', order_history_path=Path('unused_history.json'))
+    positions = [
+        {'Symbol': '1475', 'Side': config.OrderSide.SELL.value, 'HoldQty': '100'},
+        {'Symbol': '7203', 'Side': config.OrderSide.SELL.value, 'HoldQty': '0'},
+        {'Symbol': '8306', 'Side': config.OrderSide.BUY.value, 'HoldQty': '100'},
+    ]
+
+    assert use_case._count_open_positions(positions) == 1
+
+
+def test_trading_use_case_sizes_new_buy_from_current_wallet(monkeypatch, tmp_path):
+    symbols_path = tmp_path / 'top_symbols.json'
+    symbols_path.write_text(json.dumps(['7203']), encoding='utf-8')
+    orders = []
+
+    class MarketDataClient:
+        def get_yahoo_daily_closes(self, symbol):
+            return [90.0] * config.RSI_MINIMUM_CLOSES
+
+    class BoardClient:
+        def get_current_board(self, token, symbol):
+            return {'current_price': 92.0}
+
+    class WalletClient:
+        def get_wallet_cash(self, token):
+            return {'StockAccountWallet': 100_000.0}
+
+    class PositionsClient:
+        def get_positions(self, token):
+            return []
+
+    class OrderSender:
+        def place_market_order(self, token, symbol, side, qty):
+            orders.append((symbol, side, qty))
+            return {'Result': 0, 'OrderId': 'order-1'}
+
+    monkeypatch.setattr(config, 'IS_DEMO', True)
+    monkeypatch.setattr(config, 'TARGET_POSITIONS', 3)
+    monkeypatch.setattr(config, 'MAX_ORDER_AMOUNT_PER_TRADE', 30_000.0)
+    monkeypatch.setattr(config, 'API_SOFT_LIMIT', 100_000.0)
+    clock_calls = 0
+
+    def now_provider():
+        nonlocal clock_calls
+        clock_calls += 1
+        return datetime(2026, 9, 4, 10, 0) if clock_calls <= 2 else datetime(2026, 9, 4, 15, 30)
+
+    use_case = TradingUseCase(
+        token='dummy', order_history_path=tmp_path / 'order_history.json',
+        market_data_client=MarketDataClient(), board_client=BoardClient(),
+        wallet_client=WalletClient(), positions_client=PositionsClient(),
+        order_sender=OrderSender(), notifier=lambda message: None,
+    )
+
+    use_case.run(top_symbols_path=symbols_path, now_provider=now_provider, sleep=lambda seconds: None)
+
+    assert orders == [('7203', config.OrderSide.BUY.value, 300)]
+
+
+def test_trading_use_case_monitors_all_candidates_when_position_limit_is_reached(monkeypatch, tmp_path, caplog):
+    symbols = [str(1000 + index) for index in range(10)]
+    symbols_path = tmp_path / 'top_symbols.json'
+    symbols_path.write_text(json.dumps(symbols), encoding='utf-8')
+    observed_symbols = []
+    caplog.set_level('INFO', logger='src.application.trading_usecase')
+
+    class MarketDataClient:
+        def get_yahoo_daily_closes(self, symbol):
+            return [90.0] * config.RSI_MINIMUM_CLOSES
+
+    class BoardClient:
+        def get_current_board(self, token, symbol):
+            observed_symbols.append(symbol)
+            return {'current_price': 92.0}
+
+    class WalletClient:
+        def get_wallet_cash(self, token):
+            return {'StockAccountWallet': 100_000.0}
+
+    class PositionsClient:
+        def get_positions(self, token):
+            return [
+                {'Symbol': str(index), 'Side': config.OrderSide.SELL.value, 'HoldQty': '100'}
+                for index in range(3)
+            ]
+
+    class OrderSender:
+        def place_market_order(self, *args):
+            raise AssertionError('保有上限時の新規注文は実行されない')
+
+    monkeypatch.setattr(config, 'IS_DEMO', True)
+    monkeypatch.setattr(config, 'TARGET_POSITIONS', 3)
+    monkeypatch.setattr(config, 'API_SOFT_LIMIT', 100_000.0)
+    clock_calls = 0
+
+    def now_provider():
+        nonlocal clock_calls
+        clock_calls += 1
+        return datetime(2026, 9, 4, 10, 0) if clock_calls == 1 else datetime(2026, 9, 4, 15, 30)
+
+    use_case = TradingUseCase(
+        token='dummy', order_history_path=tmp_path / 'order_history.json',
+        market_data_client=MarketDataClient(), board_client=BoardClient(),
+        wallet_client=WalletClient(), positions_client=PositionsClient(),
+        order_sender=OrderSender(), notifier=lambda message: None,
+    )
+
+    use_case.run(top_symbols_path=symbols_path, now_provider=now_provider, sleep=lambda seconds: None)
+
+    assert observed_symbols == symbols
+    assert '保有上限のため新規買いを見送ります' in caplog.text
+
+
 def test_trading_use_case_factory_uses_paper_executor_by_default(monkeypatch):
     monkeypatch.setattr(config, 'TRADING_MODE', 'paper')
     monkeypatch.setattr(config, 'IS_DEMO', True)

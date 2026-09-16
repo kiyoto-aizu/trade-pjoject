@@ -306,7 +306,7 @@ def test_filtering_usecase_skips_missing_market_inputs_and_notifies_failure(monk
 
     assert result.symbols == []
     assert result_repository.result is result
-    assert '評価対象外: 5件' in notifications[0]
+    assert '評価対象外数: 5件' in notifications[0]
 
 
 def test_filtering_usecase_handles_missing_screening_and_historical_data(tmp_path):

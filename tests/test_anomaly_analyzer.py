@@ -60,7 +60,7 @@ def test_screening_usecase_adds_llm_anomaly_note_when_below_threshold(monkeypatc
         ScreeningResultRepository(tmp_path), notifications.append,
     ).execute()
 
-    assert "--- LLM異常検知（参考） ---" in notifications[0]
+    assert "LLM異常検知(参考):" in notifications[0]
     assert "採用件数が普段より少ない" in notifications[0]
 
 
@@ -85,7 +85,7 @@ def test_filtering_usecase_adds_llm_anomaly_note_when_below_threshold(monkeypatc
         FilteringResultRepository(tmp_path / "filtering"), notifications.append,
     ).execute()
 
-    assert "--- LLM異常検知（参考） ---" in notifications[0]
+    assert "LLM異常検知(参考):" in notifications[0]
     assert "採用件数が普段より少ない" in notifications[0]
 
 

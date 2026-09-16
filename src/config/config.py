@@ -122,6 +122,20 @@ API_REQUEST_INTERVAL_SECONDS = float(os.getenv("API_REQUEST_INTERVAL_SECONDS", "
 # 取引に利用可能な運用資本
 OPERATING_CAPITAL = float(os.getenv("OPERATING_CAPITAL", "100000"))
 
+# スクリーニング時の株価上限に掛ける安全マージン
+SCREENING_PRICE_MARGIN = float(os.getenv("SCREENING_PRICE_MARGIN", "0.9"))
+
+
+def get_screening_price_cap() -> float:
+    """スクリーニング時点で候補として残す株価の上限を動的に計算する。"""
+    if TARGET_POSITIONS <= 0 or ORDER_UNIT <= 0:
+        raise ValueError("TARGET_POSITIONSとORDER_UNITは正数を指定してください。")
+    budget_per_position = min(
+        OPERATING_CAPITAL / TARGET_POSITIONS,
+        MAX_ORDER_AMOUNT_PER_TRADE,
+    )
+    return (budget_per_position / ORDER_UNIT) * SCREENING_PRICE_MARGIN
+
 # スクリーニングのランキング取得対象とする市場区分（/rankingのExchangeDivision）
 # 全市場(ALL)は1回の呼び出しにつき上位50件しか返らず、値がさ株に偏りやすいため
 # 市場区分ごとに個別取得して母集団を拡大する（福証・札証は取引対象外のため含めない）

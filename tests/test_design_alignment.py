@@ -7,7 +7,7 @@ from src.domain.models import FilteringResult, RankingEntry, Regulation, Screeni
 from src.infrastructure.market_data.historical_ranking_repository import HistoricalRankingRepository
 from src.infrastructure.persistence.listed_security_repository import ListedSecurityRepository
 from src.infrastructure.persistence.historical_regulation_repository import HistoricalRegulationRepository
-from src.domain.rules import calculate_buy_quantity, calculate_volume_surge_ratio, check_kill_switch, exclude_by_regulation, is_buy_order_amount_allowed, limit_candidates, merge_ranking_candidates
+from src.domain.rules import calculate_buy_quantity, calculate_volume_surge_ratio, check_kill_switch, exclude_by_regulation, filter_candidates_by_price, is_buy_order_amount_allowed, limit_candidates, merge_ranking_candidates
 from src.infrastructure.persistence.filtering_result_repository import FilteringResultRepository
 from src.infrastructure.persistence.screening_result_repository import ScreeningResultRepository
 from src.infrastructure.kabu.ranking_repository import RankingRepository
@@ -66,6 +66,28 @@ def test_exclude_by_regulation_counts_each_reason():
     assert result.remaining == ["7203"]
     assert result.excluded_by_regulation_count == 1
     assert result.excluded_by_exchange_count == 1
+
+
+def test_filter_candidates_by_price_excludes_expensive_and_missing_prices():
+    result = filter_candidates_by_price(
+        ["7203", "1234", "5678", "9999"],
+        {"7203": 270.0, "1234": 271.0, "5678": 0.0},
+        270.0,
+    )
+
+    assert result.remaining == ["7203"]
+    assert result.excluded_by_price_count == 1
+    assert result.excluded_missing_price_count == 2
+
+
+def test_screening_price_cap_uses_current_budget_settings(monkeypatch):
+    monkeypatch.setattr(config, "OPERATING_CAPITAL", 100_000.0)
+    monkeypatch.setattr(config, "TARGET_POSITIONS", 3)
+    monkeypatch.setattr(config, "MAX_ORDER_AMOUNT_PER_TRADE", 30_000.0)
+    monkeypatch.setattr(config, "ORDER_UNIT", 100)
+    monkeypatch.setattr(config, "SCREENING_PRICE_MARGIN", 0.9)
+
+    assert config.get_screening_price_cap() == 270.0
 
 
 def test_limit_candidates_caps_the_result_at_fifty():
@@ -187,9 +209,9 @@ def test_screening_usecase_persists_date_result(tmp_path):
     ).execute()
     assert result.symbols == ["7203", "8306"]
     assert notifications
-    assert notifications[0].startswith("【スクリーニング】結果\n")
-    assert "採用銘柄: 2銘柄" in notifications[0]
-    assert "候補: 2件" in notifications[0]
+    assert notifications[0].startswith("【業務】銘柄選定\n【機能】スクリーニング\n")
+    assert "採用銘柄数: 2件" in notifications[0]
+    assert "候補数: 2件" in notifications[0]
     assert "- 7203(値上がり率 +100.00%, 売買代金 0.00億円)" in notifications[0]
     saved_result = repository.load_latest()
     assert saved_result.symbols == result.symbols
@@ -197,6 +219,39 @@ def test_screening_usecase_persists_date_result(tmp_path):
         ("7203", 2, True),
         ("8306", 4, True),
     ]
+
+
+def test_screening_usecase_filters_prices_before_regulation_lookups(monkeypatch, tmp_path):
+    class PriceRankingStub:
+        def get_ranking(self, ranking_type, exchange_division="ALL"):
+            return [
+                RankingEntry("cheap", 1, 100.0, ranking_type, 200.0),
+                RankingEntry("expensive", 2, 90.0, ranking_type, 400.0),
+                RankingEntry("missing", 3, 80.0, ranking_type, None),
+            ]
+
+    checked_symbols = []
+
+    class TrackingRegulationStub:
+        def get_regulation(self, symbol, market_code):
+            checked_symbols.append(symbol)
+            return Regulation(symbol, False)
+
+    monkeypatch.setattr(config, "OPERATING_CAPITAL", 100_000.0)
+    monkeypatch.setattr(config, "TARGET_POSITIONS", 3)
+    monkeypatch.setattr(config, "MAX_ORDER_AMOUNT_PER_TRADE", 30_000.0)
+    monkeypatch.setattr(config, "ORDER_UNIT", 100)
+    monkeypatch.setattr(config, "SCREENING_PRICE_MARGIN", 1.0)
+    result = ScreeningUseCase(
+        PriceRankingStub(), TrackingRegulationStub(), ExchangeStub(),
+        ScreeningResultRepository(tmp_path),
+    ).execute()
+
+    assert result.symbols == ["cheap"]
+    assert checked_symbols == ["cheap"]
+    reasons = {entry.symbol: entry.restriction_reason for entry in result.audit_entries}
+    assert reasons["expensive"] == "価格上限超過（300.0円）"
+    assert reasons["missing"] == "価格不明"
 
 
 def test_filtering_usecase_reads_previous_screening_result(tmp_path):
@@ -215,11 +270,11 @@ def test_filtering_usecase_reads_previous_screening_result(tmp_path):
     ).execute()
     assert len(result.symbols) == 10
     assert notifications
-    assert notifications[0].startswith("【フィルタリング】結果\n")
-    assert "採用銘柄: 10銘柄" in notifications[0]
-    assert "スクリーニング結果からの入力: 12件" in notifications[0]
-    assert "評価完了: 12件" in notifications[0]
-    assert "評価対象外: 0件" in notifications[0]
+    assert notifications[0].startswith("【業務】銘柄選定\n【機能】フィルタリング\n")
+    assert "採用銘柄数: 10件" in notifications[0]
+    assert "入力銘柄数: 12件" in notifications[0]
+    assert "評価完了数: 12件" in notifications[0]
+    assert "評価対象外数: 0件" in notifications[0]
     assert result_repository.load_latest().symbols == result.symbols
 
 
@@ -275,11 +330,11 @@ def test_filtering_usecase_selects_by_relative_turnover_ratio(tmp_path):
     # 同時刻帯の日足比較は行わず、取得できた候補を相対順位で選ぶ
     assert result.symbols == ["7689", "6619"]
     assert notifications
-    assert notifications[0].startswith("【フィルタリング】結果\n")
-    assert "採用銘柄: 2銘柄" in notifications[0]
-    assert "スクリーニング結果からの入力: 2件" in notifications[0]
-    assert "評価完了: 2件" in notifications[0]
-    assert "評価対象外: 0件" in notifications[0]
+    assert notifications[0].startswith("【業務】銘柄選定\n【機能】フィルタリング\n")
+    assert "採用銘柄数: 2件" in notifications[0]
+    assert "入力銘柄数: 2件" in notifications[0]
+    assert "評価完了数: 2件" in notifications[0]
+    assert "評価対象外数: 0件" in notifications[0]
 
 
 def test_filtering_without_previous_result_saves_empty_result(tmp_path):

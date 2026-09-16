@@ -15,8 +15,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from src.config import config
-from src.application.allocate_budget import allocate_budget
-from src.domain.models import Candidate, OrderHistoryEntry, PriceLimit, TradeSignal
+from src.domain.models import OrderHistoryEntry, PriceLimit, TradeSignal
 from src.domain.rules import calculate_buy_quantity, calculate_price_limit, calculate_rsi, check_kill_switch, is_buy_order_amount_allowed, is_market_closed, is_safe_to_order, is_trading_session
 from src.domain.volatility import DailyBar, VolatilityLevel, adjust_quantity_for_volatility, assess_volatility, stop_loss_multiplier
 from src.domain.market_regime import MarketRegime, resolve_rsi_entry_threshold
@@ -345,6 +344,18 @@ class TradingUseCase:
             wallet_amount = wallet.get('StockAccountWallet')
         return wallet_amount, positions
 
+    @staticmethod
+    def _is_open_position(position: dict) -> bool:
+        """信用売り建て決済待ちのポジションかどうかを判定する。"""
+        return (
+            position.get('Side') == config.OrderSide.SELL.value
+            and int(position.get('HoldQty', 0) or 0) > 0
+        )
+
+    def _count_open_positions(self, positions: List[dict]) -> int:
+        """信用売り建て決済待ち＝保有中とみなすポジション数を数える。"""
+        return sum(self._is_open_position(position) for position in positions)
+
     def _has_holdings(self, symbol: str, positions: List[dict]) -> bool:
         """
         指定銘柄の保有株があるかどうかを確認します。
@@ -357,28 +368,9 @@ class TradingUseCase:
             保有している場合True、していない場合False
         """
         return any(
-            pos.get('Symbol') == symbol and pos.get('Side') == config.OrderSide.SELL.value and int(pos.get('HoldQty', 0) or 0) > 0
+            pos.get('Symbol') == symbol and self._is_open_position(pos)
             for pos in positions
         )
-
-    def _allocate_filtering_candidates(self, symbols: list[str], market_data: dict) -> dict[str, int]:
-        """フィルタ順位を保ったまま、購入可能な候補へ単元数量を割り当てます。"""
-        wallet_amount, _ = self._load_account_state()
-        if wallet_amount is None:
-            return {}
-        candidates = [
-            Candidate(symbol, float(market_data[symbol]['board']['current_price']), rank)
-            for rank, symbol in enumerate(symbols, 1)
-            if symbol in market_data
-        ]
-        allocations = allocate_budget(
-            candidates,
-            float(wallet_amount),
-            config.TARGET_POSITIONS,
-            config.ORDER_UNIT,
-            config.MAX_ORDER_AMOUNT_PER_TRADE,
-        )
-        return {allocation.symbol: allocation.quantity for allocation in allocations}
 
     def _get_daily_bars(self, symbol: str) -> list[DailyBar] | None:
         if self.market_data_client:
@@ -810,14 +802,6 @@ class TradingUseCase:
                 self.market_regime_assessment.failure_reason or "なし",
             )
 
-        allocated_quantities = {}
-        if self.filtering_result_repository and preflight_market_data:
-            allocated_quantities = self._allocate_filtering_candidates(symbols, preflight_market_data)
-            symbols = [symbol for symbol in symbols if symbol in allocated_quantities]
-            if not symbols:
-                self.notifier("資金制約により発注可能な銘柄がないため、取引を開始しません")
-                return
-
         kill_switch_triggered = False
         # 市場終了時刻まで取引ループを実行
         use_preflight_market_data = bool(preflight_market_data)
@@ -971,12 +955,30 @@ class TradingUseCase:
                         break
                     self.api_soft_limit = api_limit
                     if signal.side == config.OrderSide.BUY:
+                        has_holdings = self._has_holdings(symbol, positions)
+                        open_position_count = self._count_open_positions(positions)
+                        if not has_holdings and open_position_count >= config.TARGET_POSITIONS:
+                            logger.info(
+                                "保有上限のため新規買いを見送ります: 銘柄=%s | 保有数=%s/%s",
+                                symbol,
+                                open_position_count,
+                                config.TARGET_POSITIONS,
+                            )
+                            continue
+                        if wallet_amount is None:
+                            logger.warning("現物買付可能額が不明なため、買い注文を見送ります。")
+                            continue
                         original_qty = 0
-                        signal.qty = allocated_quantities.get(symbol, calculate_buy_quantity(
+                        budget_per_position = min(
+                            wallet_amount / config.TARGET_POSITIONS,
+                            config.MAX_ORDER_AMOUNT_PER_TRADE,
+                            self.api_soft_limit,
+                        )
+                        signal.qty = calculate_buy_quantity(
                             signal.price,
-                            min(config.MAX_ORDER_AMOUNT_PER_TRADE, self.api_soft_limit),
+                            budget_per_position,
                             config.ORDER_UNIT,
-                        ))
+                        )
                         if daily_bars:
                             if assessment:
                                 original_qty = signal.qty

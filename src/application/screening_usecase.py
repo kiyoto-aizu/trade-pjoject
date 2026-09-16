@@ -14,6 +14,7 @@ from src.domain.enums import RankingType
 from src.domain.models import Regulation, ScreeningAuditEntry, ScreeningResult
 from src.domain.rules import (
     exclude_by_regulation,
+    filter_candidates_by_price,
     limit_candidates,
     merge_ranking_candidates,
 )
@@ -80,9 +81,28 @@ class ScreeningUseCase:
         candidates = merge_ranking_candidates(turnover, price_gain)
         turnover_by_symbol = {entry.symbol: entry for entry in turnover}
         price_gain_by_symbol = {entry.symbol: entry for entry in price_gain}
+        price_by_symbol = {
+            symbol: (
+                turnover_by_symbol[symbol].current_price
+                if turnover_by_symbol.get(symbol) and turnover_by_symbol[symbol].current_price is not None
+                else price_gain_by_symbol[symbol].current_price
+                if price_gain_by_symbol.get(symbol)
+                else None
+            )
+            for symbol in candidates
+        }
+        price_cap = config.get_screening_price_cap()
+        price_filter_result = filter_candidates_by_price(candidates, price_by_symbol, price_cap)
+        remaining = price_filter_result.remaining
+        logger.info(
+            "価格上限（%.1f円）により除外: %d件",
+            price_cap,
+            price_filter_result.excluded_by_price_count,
+        )
+        if price_filter_result.excluded_missing_price_count:
+            logger.info("価格不明により除外: %d件", price_filter_result.excluded_missing_price_count)
 
         regulations = {}
-        remaining = candidates
         batch_size = config.SCREENING_BATCH_SIZE
         for batch_start in range(0, len(remaining), batch_size):
             batch = remaining[batch_start:batch_start + batch_size]
@@ -127,12 +147,26 @@ class ScreeningUseCase:
         default_turnover_rank = len(turnover) + 1
         default_price_gain_rank = len(price_gain) + 1
         audit_entries = []
-        for symbol in remaining:
+        price_filtered_symbols = set(candidates) - set(remaining)
+        for symbol in candidates:
             turnover_entry = turnover_by_symbol.get(symbol)
             price_gain_entry = price_gain_by_symbol.get(symbol)
             turnover_rank = turnover_entry.rank if turnover_entry else default_turnover_rank
             price_gain_rank = price_gain_entry.rank if price_gain_entry else default_price_gain_rank
-            regulation = regulations[symbol]
+            regulation = regulations.get(symbol)
+            if symbol in price_filtered_symbols:
+                price = price_by_symbol[symbol]
+                restriction_reason = (
+                    "価格不明"
+                    if price is None or price <= 0
+                    else f"価格上限超過（{price_cap:.1f}円）"
+                )
+                primary_exchange = 0
+                is_restricted = False
+            else:
+                restriction_reason = regulation.reason
+                primary_exchange = regulation.primary_exchange
+                is_restricted = regulation.is_restricted
             audit_entries.append(ScreeningAuditEntry(
                 symbol=symbol,
                 turnover_rank=turnover_rank,
@@ -140,9 +174,9 @@ class ScreeningUseCase:
                 price_gain_rank=price_gain_rank,
                 price_gain_value=price_gain_entry.value if price_gain_entry else 0.0,
                 total_rank=turnover_rank + price_gain_rank,
-                primary_exchange=regulation.primary_exchange,
-                is_restricted=regulation.is_restricted,
-                restriction_reason=regulation.reason,
+                primary_exchange=primary_exchange,
+                is_restricted=is_restricted,
+                restriction_reason=restriction_reason,
                 selected=symbol in selected_symbols,
             ))
         result_date = target_date.isoformat() if target_date else datetime.now().date().isoformat()
@@ -151,6 +185,7 @@ class ScreeningUseCase:
         if self.notifier:
             self._notify_completion(
                 candidates,
+                price_filter_result,
                 exclusion_result,
                 symbols,
                 turnover_by_symbol,
@@ -184,6 +219,7 @@ class ScreeningUseCase:
     def _notify_completion(
         self,
         candidates,
+        price_filter_result,
         exclusion_result,
         symbols,
         turnover_by_symbol,
@@ -192,6 +228,8 @@ class ScreeningUseCase:
         details = [
             f"採用銘柄数: {len(symbols)}件",
             f"候補数: {len(candidates)}件",
+            f"価格上限除外数: {price_filter_result.excluded_by_price_count}件",
+            f"価格不明除外数: {price_filter_result.excluded_missing_price_count}件",
             f"規制除外数: {exclusion_result.excluded_by_regulation_count}件",
             f"地方取引所除外数: {exclusion_result.excluded_by_exchange_count}件",
         ]
@@ -212,7 +250,9 @@ class ScreeningUseCase:
             )
         if top_entries:
             details.extend(["上位銘柄:", *[f"- {entry}" for entry in top_entries]])
-        anomaly = self._analyze_anomaly_if_needed(candidates, exclusion_result, symbols)
+        anomaly = self._analyze_anomaly_if_needed(
+            candidates, price_filter_result, exclusion_result, symbols
+        )
         if anomaly:
             details.extend(["LLM異常検知(参考):", anomaly])
         message = format_result_notification(
@@ -226,7 +266,7 @@ class ScreeningUseCase:
         except Exception:
             logger.exception("スクリーニング完了通知に失敗しました。")
 
-    def _analyze_anomaly_if_needed(self, candidates, exclusion_result, symbols) -> str | None:
+    def _analyze_anomaly_if_needed(self, candidates, price_filter_result, exclusion_result, symbols) -> str | None:
         """採用件数が閾値を下回るなど普段と異なる可能性がある時だけLLMを呼び出し、クレジットを節約する。"""
         if len(symbols) >= config.SCREENING_ANOMALY_MIN_SYMBOLS:
             return None
@@ -238,6 +278,8 @@ class ScreeningUseCase:
                 return None
             summary = {
                 "候補件数": len(candidates),
+                "価格上限で除外した件数": price_filter_result.excluded_by_price_count,
+                "価格不明で除外した件数": price_filter_result.excluded_missing_price_count,
                 "規制で除外した件数": exclusion_result.excluded_by_regulation_count,
                 "地方取引所で除外した件数": exclusion_result.excluded_by_exchange_count,
                 "採用件数": len(symbols),

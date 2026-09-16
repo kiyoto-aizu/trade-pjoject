@@ -35,9 +35,9 @@ def test_run_minute_backfill_main_flow(tmp_path):
         )
 
         mock_notify.assert_called_once()
-        assert "【分足バックフィル】結果" in mock_notify.call_args[0][0]
-        assert "対象銘柄数: 1" in mock_notify.call_args[0][0]
-        assert "取り込んだ足の総数: 1" in mock_notify.call_args[0][0]
+        assert "【業務】市場データ管理\n【機能】分足バックフィル\n" in mock_notify.call_args[0][0]
+        assert "対象銘柄数: 1件" in mock_notify.call_args[0][0]
+        assert "取込本数: 1本" in mock_notify.call_args[0][0]
 
     repository = ParquetMinuteBarRepository(minute_bars_dir)
     saved_bars = repository.load_bars(date(2026, 9, 10), "7203")

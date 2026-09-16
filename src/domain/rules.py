@@ -9,7 +9,7 @@ from datetime import datetime, time, timedelta
 from typing import List, Optional
 
 from src.domain.enums import OrderSide
-from src.domain.models import ExclusionResult, OrderHistoryEntry, PriceLimit, ScoredCandidate, TradeSignal
+from src.domain.models import ExclusionResult, OrderHistoryEntry, PriceFilterResult, PriceLimit, ScoredCandidate, TradeSignal
 
 logger = logging.getLogger(__name__)
 
@@ -276,6 +276,26 @@ def exclude_by_regulation(candidates, regulations):
         remaining=remaining,
         excluded_by_regulation_count=excluded_by_regulation_count,
         excluded_by_exchange_count=excluded_by_exchange_count,
+    )
+
+
+def filter_candidates_by_price(candidates, price_by_symbol, price_cap):
+    """株価上限を超える、または価格不明の候補を除外する。"""
+    remaining = []
+    excluded_by_price_count = 0
+    excluded_missing_price_count = 0
+    for symbol in candidates:
+        price = price_by_symbol.get(symbol)
+        if price is None or price <= 0:
+            excluded_missing_price_count += 1
+        elif price > price_cap:
+            excluded_by_price_count += 1
+        else:
+            remaining.append(symbol)
+    return PriceFilterResult(
+        remaining=remaining,
+        excluded_by_price_count=excluded_by_price_count,
+        excluded_missing_price_count=excluded_missing_price_count,
     )
 
 

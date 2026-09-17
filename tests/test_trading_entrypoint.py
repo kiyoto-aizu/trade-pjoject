@@ -64,3 +64,53 @@ def test_main_can_enter_the_pre_close_liquidation_path(monkeypatch):
     monkeypatch.setattr(config, 'MARKET_LIQUIDATION_MINUTE', 20)
 
     run_trading.main(now_provider=lambda: datetime(2026, 9, 4, 15, 20))
+
+
+def test_main_notifies_the_actual_monitored_symbol_count(monkeypatch):
+    class FilteringResult:
+        symbols = ['7203', '6758', '8306', '9432', '9984', '8058']
+
+    class FilteringRepository:
+        def __init__(self, path):
+            pass
+
+        def load_for_date(self, target_date):
+            return FilteringResult()
+
+    class Bot:
+        def __init__(self, token):
+            assert token == 'dummy'
+
+        def prepare_market_regime(self):
+            pass
+
+        def market_conditions_detail(self):
+            return ['市場レジーム: NORMAL']
+
+        def collect_preflight_market_data(self, symbols):
+            return {}
+
+        def run(self, **kwargs):
+            pass
+
+    class NoOpContext:
+        def __enter__(self):
+            return True
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return False
+
+    notifications = []
+    monkeypatch.setattr(run_trading, 'configure_logging', lambda: None)
+    monkeypatch.setattr(run_trading, 'FilteringResultRepository', FilteringRepository)
+    monkeypatch.setattr(run_trading, 'create_trading_use_case', Bot)
+    monkeypatch.setattr(run_trading, 'get_api_token', lambda: 'dummy')
+    monkeypatch.setattr(run_trading, 'market_workflow_lock', NoOpContext)
+    monkeypatch.setattr(run_trading, 'process_notification', lambda *args, **kwargs: NoOpContext())
+    monkeypatch.setattr(run_trading, 'notify_daily', notifications.append)
+    monkeypatch.setattr(config, 'ALLOW_OVERNIGHT_HOLDING', True)
+
+    run_trading.main(now_provider=lambda: datetime(2026, 9, 4, 10, 0))
+
+    assert notifications
+    assert '監視銘柄数: 6件' in notifications[0]

@@ -113,4 +113,5 @@ def test_main_notifies_the_actual_monitored_symbol_count(monkeypatch):
     run_trading.main(now_provider=lambda: datetime(2026, 9, 4, 10, 0))
 
     assert notifications
-    assert '監視銘柄数: 6件' in notifications[0]
+    assert '対象銘柄数: 6' in notifications[0]
+    assert '市場レジーム: NORMAL' in notifications[0]

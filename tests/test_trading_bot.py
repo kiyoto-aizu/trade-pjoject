@@ -118,6 +118,89 @@ def test_count_open_positions_counts_only_open_sell_side_positions():
     assert use_case._count_open_positions(positions) == 1
 
 
+def test_trading_use_case_uses_daily_starting_total_equity_for_kill_switch(monkeypatch, tmp_path):
+    symbols_path = tmp_path / 'top_symbols.json'
+    symbols_path.write_text(json.dumps(['7203']), encoding='utf-8')
+    orders = []
+
+    class MarketDataClient:
+        def get_yahoo_daily_closes(self, symbol):
+            return [90.0] * config.RSI_MINIMUM_CLOSES
+
+    class BoardClient:
+        def get_current_board(self, token, symbol):
+            return {'current_price': 92.0}
+
+    class WalletClient:
+        def get_wallet_cash(self, token):
+            return {'StockAccountWallet': 200_000.0}
+
+    class PositionsClient:
+        def get_positions(self, token):
+            return [
+                {
+                    'Symbol': '1301',
+                    'Side': config.OrderSide.BUY.value,
+                    'HoldQty': '100',
+                    'CurrentPrice': '1000',
+                    'ProfitLoss': '-3000',
+                }
+            ]
+
+    class OrderSender:
+        def place_market_order(self, token, symbol, side, qty):
+            orders.append((symbol, side, qty))
+            return {'Result': 0, 'OrderId': 'order-1'}
+
+    monkeypatch.setattr(config, 'IS_DEMO', True)
+    monkeypatch.setattr(config, 'OPERATING_CAPITAL', 100_000.0)
+    monkeypatch.setattr(config, 'DAILY_LOSS_LIMIT_RATIO', 0.02)
+    monkeypatch.setattr(config, 'API_SOFT_LIMIT', 100_000.0)
+    current_times = iter([datetime(2026, 9, 4, 10, 0), datetime(2026, 9, 4, 15, 30)])
+    use_case = TradingUseCase(
+        token='dummy', order_history_path=tmp_path / 'order_history.json',
+        market_data_client=MarketDataClient(), board_client=BoardClient(),
+        wallet_client=WalletClient(), positions_client=PositionsClient(),
+        order_sender=OrderSender(), notifier=lambda message: None,
+    )
+
+    use_case.run(top_symbols_path=symbols_path, now_provider=lambda: next(current_times), sleep=lambda seconds: None)
+
+    assert use_case.daily_starting_capital == 300_000.0
+    assert [(symbol, side) for symbol, side, _ in orders] == [
+        ('7203', config.OrderSide.BUY.value)
+    ]
+    assert use_case.kill_switch_triggered is False
+
+
+def test_trading_use_case_falls_back_to_operating_capital_when_starting_equity_is_zero(monkeypatch, tmp_path):
+    symbols_path = tmp_path / 'top_symbols.json'
+    symbols_path.write_text(json.dumps(['7203']), encoding='utf-8')
+
+    class WalletClient:
+        def get_wallet_cash(self, token):
+            return None
+
+    class PositionsClient:
+        def get_positions(self, token):
+            return []
+
+    monkeypatch.setattr(config, 'OPERATING_CAPITAL', 123_456.0)
+    use_case = TradingUseCase(
+        token='dummy', order_history_path=tmp_path / 'order_history.json',
+        wallet_client=WalletClient(), positions_client=PositionsClient(),
+        notifier=lambda message: None,
+    )
+
+    use_case.run(
+        top_symbols_path=symbols_path,
+        now_provider=lambda: datetime(2026, 9, 4, 15, 30),
+        sleep=lambda seconds: None,
+    )
+
+    assert use_case.daily_starting_capital == 123_456.0
+
+
 def test_trading_use_case_sizes_new_buy_from_current_wallet(monkeypatch, tmp_path):
     symbols_path = tmp_path / 'top_symbols.json'
     symbols_path.write_text(json.dumps(['7203']), encoding='utf-8')

@@ -97,6 +97,7 @@ class TradingUseCase:
         self.last_positions = []
         self.kill_switch_triggered = False
         self.emergency_stop_triggered = False
+        self.daily_starting_capital = config.OPERATING_CAPITAL
         self.api_soft_limit: Optional[float] = None
         self._missing_holding_warning_symbols: set[str] = set()
         self._sell_condition_observations: dict[str, str] = {}
@@ -391,6 +392,14 @@ class TradingUseCase:
                 for position in positions
             )
         return unrealized_pnl + realized_pnl
+
+    def _calculate_total_equity(self, wallet_amount: float, positions: List[dict]) -> float:
+        """現金(買付余力)と保有ポジション評価額を合算した総資産を計算します。"""
+        position_value = sum(
+            float(position.get('HoldQty', 0) or 0) * float(position.get('CurrentPrice', 0) or 0)
+            for position in positions
+        )
+        return float(wallet_amount or 0) + position_value
 
     # ================================================================================
     # 口座状態の取得
@@ -852,6 +861,12 @@ class TradingUseCase:
                 self.market_regime_assessment.failure_reason or "なし",
             )
 
+        initial_wallet_amount, initial_positions = self._load_account_state()
+        computed_capital = self._calculate_total_equity(initial_wallet_amount, initial_positions)
+        self.daily_starting_capital = (
+            computed_capital if computed_capital > 0 else config.OPERATING_CAPITAL
+        )
+
         kill_switch_triggered = False
         filter_decisions_initialized = False
         # 市場終了時刻まで取引ループを実行
@@ -1132,7 +1147,9 @@ class TradingUseCase:
                         1 for entry in self.order_history
                         if entry.timestamp.startswith(now_provider().date().isoformat())
                     )
-                    if not check_kill_switch(daily_orders, daily_pnl, config.OPERATING_CAPITAL, config):
+                    if not check_kill_switch(
+                        daily_orders, daily_pnl, self.daily_starting_capital, config
+                    ):
                         logger.warning("キルスイッチにより発注を停止しました。")
                         self._trigger_kill_switch(
                             f"日次損益または発注回数の上限超過（損益={daily_pnl:.1f}円、発注件数={daily_orders}件）"

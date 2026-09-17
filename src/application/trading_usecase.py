@@ -992,10 +992,12 @@ class TradingUseCase:
                                 config.RSI_ENTRY_THRESHOLD, config.RSI_EXIT_THRESHOLD,
                             )
                             if normal_signal is not None and normal_signal.side == config.OrderSide.BUY:
-                                wallet_amount, _ = self._load_account_state()
+                                wallet_amount, positions = self._load_account_state()
                                 if wallet_amount is not None:
+                                    open_position_count = self._count_open_positions(positions)
+                                    remaining_slots = max(config.TARGET_POSITIONS - open_position_count, 1)
                                     estimated_budget = min(
-                                        wallet_amount / config.TARGET_POSITIONS,
+                                        wallet_amount / remaining_slots,
                                         config.MAX_ORDER_AMOUNT_PER_TRADE,
                                     )
                                     estimated_quantity = calculate_buy_quantity(
@@ -1045,8 +1047,9 @@ class TradingUseCase:
                             logger.warning("現物買付可能額が不明なため、買い注文を見送ります。")
                             continue
                         original_qty = 0
+                        remaining_slots = max(config.TARGET_POSITIONS - open_position_count, 1)
                         budget_per_position = min(
-                            wallet_amount / config.TARGET_POSITIONS,
+                            wallet_amount / remaining_slots,
                             config.MAX_ORDER_AMOUNT_PER_TRADE,
                             self.api_soft_limit,
                         )

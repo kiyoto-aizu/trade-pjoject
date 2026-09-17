@@ -167,6 +167,145 @@ def test_trading_use_case_sizes_new_buy_from_current_wallet(monkeypatch, tmp_pat
     assert orders == [('7203', config.OrderSide.BUY.value, 300)]
 
 
+def test_trading_use_case_sizes_new_buy_by_remaining_position_slots(monkeypatch, tmp_path):
+    symbols_path = tmp_path / 'top_symbols.json'
+    symbols_path.write_text(json.dumps(['7203']), encoding='utf-8')
+    orders = []
+
+    class MarketDataClient:
+        def get_yahoo_daily_closes(self, symbol):
+            return [2_000.0] * config.RSI_MINIMUM_CLOSES
+
+    class BoardClient:
+        def get_current_board(self, token, symbol):
+            return {'current_price': 2_200.0}
+
+    class WalletClient:
+        def get_wallet_cash(self, token):
+            return {'StockAccountWallet': 500_000.0}
+
+    class PositionsClient:
+        def get_positions(self, token):
+            return [
+                {'Symbol': symbol, 'Side': config.OrderSide.SELL.value, 'HoldQty': '100'}
+                for symbol in ('1301', '1332', '1605')
+            ]
+
+    class OrderSender:
+        def place_market_order(self, token, symbol, side, qty):
+            orders.append((symbol, side, qty))
+            return {'Result': 0, 'OrderId': 'order-1'}
+
+    monkeypatch.setattr(config, 'IS_DEMO', True)
+    monkeypatch.setattr(config, 'TARGET_POSITIONS', 5)
+    monkeypatch.setattr(config, 'MAX_ORDER_AMOUNT_PER_TRADE', 1_000_000.0)
+    monkeypatch.setattr(config, 'API_SOFT_LIMIT', 1_000_000.0)
+    current_times = iter([datetime(2026, 9, 4, 10, 0), datetime(2026, 9, 4, 15, 30)])
+    use_case = TradingUseCase(
+        token='dummy', order_history_path=tmp_path / 'order_history.json',
+        market_data_client=MarketDataClient(), board_client=BoardClient(),
+        wallet_client=WalletClient(), positions_client=PositionsClient(),
+        order_sender=OrderSender(), notifier=lambda message: None,
+    )
+
+    use_case.run(top_symbols_path=symbols_path, now_provider=lambda: next(current_times), sleep=lambda seconds: None)
+
+    # Fixed five-slot allocation would allow only 100,000 yen, below one 220,000-yen lot.
+    assert orders == [('7203', config.OrderSide.BUY.value, 100)]
+
+
+def test_trading_use_case_uses_one_remaining_slot_for_existing_holding_at_position_limit(monkeypatch, tmp_path):
+    symbols_path = tmp_path / 'top_symbols.json'
+    symbols_path.write_text(json.dumps(['7203']), encoding='utf-8')
+    orders = []
+
+    class MarketDataClient:
+        def get_yahoo_daily_closes(self, symbol):
+            return [2_000.0] * config.RSI_MINIMUM_CLOSES
+
+    class BoardClient:
+        def get_current_board(self, token, symbol):
+            return {'current_price': 2_200.0}
+
+    class WalletClient:
+        def get_wallet_cash(self, token):
+            return {'StockAccountWallet': 500_000.0}
+
+    class PositionsClient:
+        def get_positions(self, token):
+            return [
+                {'Symbol': symbol, 'Side': config.OrderSide.SELL.value, 'HoldQty': '100'}
+                for symbol in ('7203', '1301', '1332', '1605', '1801')
+            ]
+
+    class OrderSender:
+        def place_market_order(self, token, symbol, side, qty):
+            orders.append((symbol, side, qty))
+            return {'Result': 0, 'OrderId': 'order-1'}
+
+    monkeypatch.setattr(config, 'IS_DEMO', True)
+    monkeypatch.setattr(config, 'TARGET_POSITIONS', 5)
+    monkeypatch.setattr(config, 'MAX_ORDER_AMOUNT_PER_TRADE', 1_000_000.0)
+    monkeypatch.setattr(config, 'API_SOFT_LIMIT', 1_000_000.0)
+    current_times = iter([datetime(2026, 9, 4, 10, 0), datetime(2026, 9, 4, 15, 30)])
+    use_case = TradingUseCase(
+        token='dummy', order_history_path=tmp_path / 'order_history.json',
+        market_data_client=MarketDataClient(), board_client=BoardClient(),
+        wallet_client=WalletClient(), positions_client=PositionsClient(),
+        order_sender=OrderSender(), notifier=lambda message: None,
+    )
+
+    use_case.run(top_symbols_path=symbols_path, now_provider=lambda: next(current_times), sleep=lambda seconds: None)
+
+    assert orders == [('7203', config.OrderSide.BUY.value, 200)]
+
+
+def test_trading_use_case_keeps_buy_budget_caps_with_remaining_position_slots(monkeypatch, tmp_path):
+    symbols_path = tmp_path / 'top_symbols.json'
+    symbols_path.write_text(json.dumps(['7203']), encoding='utf-8')
+    orders = []
+
+    class MarketDataClient:
+        def get_yahoo_daily_closes(self, symbol):
+            return [900.0] * config.RSI_MINIMUM_CLOSES
+
+    class BoardClient:
+        def get_current_board(self, token, symbol):
+            return {'current_price': 1_000.0}
+
+    class WalletClient:
+        def get_wallet_cash(self, token):
+            return {'StockAccountWallet': 500_000.0}
+
+    class PositionsClient:
+        def get_positions(self, token):
+            return [
+                {'Symbol': symbol, 'Side': config.OrderSide.SELL.value, 'HoldQty': '100'}
+                for symbol in ('1301', '1332', '1605')
+            ]
+
+    class OrderSender:
+        def place_market_order(self, token, symbol, side, qty):
+            orders.append((symbol, side, qty))
+            return {'Result': 0, 'OrderId': 'order-1'}
+
+    monkeypatch.setattr(config, 'IS_DEMO', True)
+    monkeypatch.setattr(config, 'TARGET_POSITIONS', 5)
+    monkeypatch.setattr(config, 'MAX_ORDER_AMOUNT_PER_TRADE', 300_000.0)
+    monkeypatch.setattr(config, 'API_SOFT_LIMIT', 150_000.0)
+    current_times = iter([datetime(2026, 9, 4, 10, 0), datetime(2026, 9, 4, 15, 30)])
+    use_case = TradingUseCase(
+        token='dummy', order_history_path=tmp_path / 'order_history.json',
+        market_data_client=MarketDataClient(), board_client=BoardClient(),
+        wallet_client=WalletClient(), positions_client=PositionsClient(),
+        order_sender=OrderSender(), notifier=lambda message: None,
+    )
+
+    use_case.run(top_symbols_path=symbols_path, now_provider=lambda: next(current_times), sleep=lambda seconds: None)
+
+    assert orders == [('7203', config.OrderSide.BUY.value, 100)]
+
+
 def test_trading_use_case_monitors_all_candidates_when_position_limit_is_reached(monkeypatch, tmp_path, caplog):
     symbols = [str(1000 + index) for index in range(10)]
     symbols_path = tmp_path / 'top_symbols.json'

@@ -75,7 +75,12 @@ def test_order_history_register_records_audit_fields(tmp_path):
     limit = PriceLimit(lower_band=990.0, upper_band=1010.0)
     messages = []
     use_case.notifier = messages.append
-    use_case._register_order(signal, limit, {'Result': 0, 'OrderId': 'abc123'})
+    use_case._register_order(
+        signal,
+        limit,
+        {'Result': 0, 'OrderId': 'abc123'},
+        diagnostics={'allocated_budget': 30_000.0},
+    )
 
     assert len(use_case.order_history) == 1
     entry = use_case.order_history[0]
@@ -87,12 +92,14 @@ def test_order_history_register_records_audit_fields(tmp_path):
     assert messages[0].startswith('【業務】取引運用\n【機能】注文執行')
     assert '買い注文が成立しました。' in messages[0]
     assert '銘柄: 1475' in messages[0]
+    assert '割当予算: 30,000円' in messages[0]
 
     # 再読み込みしても永続化されていること
     reloaded = TradingUseCase(token='dummy', order_history_path=history_file)
     reloaded._load_order_history()
     assert len(reloaded.order_history) == 1
     assert reloaded.order_history[0].order_id == 'abc123'
+    assert reloaded.order_history[0].allocated_budget == 30_000.0
 
 
 def test_has_holdings_checks_sell_side_positions():

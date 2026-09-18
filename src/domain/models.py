@@ -53,6 +53,7 @@ class OrderHistoryEntry:
     rsi_exit_threshold: Optional[float] = None
     current_price: Optional[float] = None
     order_qty_before_atr: Optional[int] = None
+    allocated_budget: Optional[float] = None
 
     @classmethod
     def from_dict(cls, data: Dict) -> 'OrderHistoryEntry':
@@ -87,6 +88,7 @@ class OrderHistoryEntry:
             rsi_exit_threshold=data.get('rsi_exit_threshold'),
             current_price=data.get('current_price'),
             order_qty_before_atr=data.get('order_qty_before_atr'),
+            allocated_budget=data.get('allocated_budget'),
         )
 
     def to_dict(self) -> Dict:
@@ -118,6 +120,7 @@ class OrderHistoryEntry:
             'rsi_exit_threshold': self.rsi_exit_threshold,
             'current_price': self.current_price,
             'order_qty_before_atr': self.order_qty_before_atr,
+            'allocated_budget': self.allocated_budget,
         }
 
 
@@ -235,6 +238,7 @@ class TradeSignal:
             rsi_exit_threshold=diagnostics.get('rsi_exit_threshold'),
             current_price=diagnostics.get('current_price'),
             order_qty_before_atr=diagnostics.get('order_qty_before_atr'),
+            allocated_budget=diagnostics.get('allocated_budget'),
         )
 
 

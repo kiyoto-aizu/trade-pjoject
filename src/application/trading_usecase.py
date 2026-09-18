@@ -275,6 +275,8 @@ class TradingUseCase:
             f"数量: {entry.qty}株",
             f"判断理由: {entry.decision_reason or '注文条件成立'}",
         ]
+        if entry.side == config.OrderSide.BUY and entry.allocated_budget is not None:
+            lines.append(f"割当予算: {entry.allocated_budget:,.0f}円")
         if entry.rsi is not None:
             if entry.side == config.OrderSide.BUY and entry.rsi_entry_threshold is not None:
                 state = "買い基準以上" if entry.rsi >= entry.rsi_entry_threshold else "買い基準未満"
@@ -1216,6 +1218,7 @@ class TradingUseCase:
                                 "rsi_exit_threshold": config.RSI_EXIT_THRESHOLD,
                                 "current_price": board['current_price'],
                                 "order_qty_before_atr": original_qty,
+                                "allocated_budget": budget_per_position if signal.side == config.OrderSide.BUY else None,
                             },
                         )
                         if decision_reason == "ATR損切り基準到達":

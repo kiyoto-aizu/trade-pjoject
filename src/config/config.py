@@ -230,8 +230,8 @@ MINUTE_BAR_PARQUET_DIR = Path(
 # ================================================================================
 
 # 注文履歴を保存するファイル
-ORDER_HISTORY_FILE = "order_history.json"
-PAPER_ACCOUNT_STATE_FILE = "paper_account_state.json"
+ORDER_HISTORY_FILE = "data/trading/order_history.json"
+PAPER_ACCOUNT_STATE_FILE = "data/trading/paper_account_state.json"
 EMERGENCY_STOP_FILE = Path(os.getenv("EMERGENCY_STOP_FILE", str(_repo_root / "data" / "emergency_stop")))
 
 # 市場クローズ時刻（日本標準時）

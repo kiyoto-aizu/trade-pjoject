@@ -24,6 +24,8 @@ from src.infrastructure.market_data.yahoo_index_client import YahooIndexClient
 def create_trading_use_case(token: str) -> TradingUseCase:
     """実行モードに応じた取引ユースケースを組み立てます。"""
     root = Path(__file__).resolve().parents[2]
+    runtime_state_dir = root / 'data' / 'trading'
+    runtime_state_dir.mkdir(parents=True, exist_ok=True)
     order_sender = None
     if config.TRADING_MODE == 'paper':
         order_sender = PaperOrderExecutor(

@@ -12,7 +12,6 @@ from pathlib import Path
 
 from src.config import config
 from src.infrastructure.kabu.get_token import get_api_token
-from src.infrastructure.kabu.ranking_repository import RankingRepository
 from src.infrastructure.kabu.regulation_repository import RegulationRepository
 from src.infrastructure.kabu.primaryexchange_repository import PrimaryExchangeRepository
 from src.infrastructure.kabu.unregister import unregister_all
@@ -83,16 +82,23 @@ def main() -> None:
                 raise SystemExit('銘柄登録の全解除に失敗しました。')
             data_dir = Path(__file__).resolve().parents[2] / 'data' / 'screening'
             root = Path(__file__).resolve().parents[2]
-            ranking_repository = RankingRepository(token)
-            regulation_repository = RegulationRepository(token)
+            # ADR-0001: kabu STATIONの/rankingは市場区分ごと上位50件しか返さず、
+            # 価格を意識した絞り込みができない。上場銘柄マスタ+日足データから
+            # 全銘柄のランキングを自前計算するHistoricalRankingRepositoryを、
+            # 通常運用(過去日付指定なし)でも常用する。
+            effective_target_date = args.target_date or date.today()
+            ranking_repository = HistoricalRankingRepository(
+                ListedSecurityRepository(root / 'data' / 'universe' / 'listed_securities.csv'),
+                YahooFinanceClient(),
+            )
             if args.target_date:
-                ranking_repository = HistoricalRankingRepository(
-                    ListedSecurityRepository(root / 'data' / 'universe' / 'listed_securities.csv'),
-                    YahooFinanceClient(),
-                )
+                # 過去日付を明示指定した場合のみ、規制情報もその時点の履歴で再現する
+                # (純粋なバックテスト用途。本番の規制判定には使わない)
                 regulation_repository = HistoricalRegulationRepository(
                     root / 'data' / 'regulation' / 'historical_regulations.csv'
                 )
+            else:
+                regulation_repository = RegulationRepository(token)
             usecase = ScreeningUseCase(
                 ranking_repository,
                 regulation_repository,
@@ -102,7 +108,7 @@ def main() -> None:
             )
             usecase.batch_started = lambda batch, _: register_symbols(token, batch) is not None
             usecase.batch_finished = lambda _, __: unregister_all(token) is not None
-            usecase.execute(target_date=args.target_date)
+            usecase.execute(target_date=effective_target_date)
 
 
 if __name__ == '__main__':

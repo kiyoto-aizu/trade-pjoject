@@ -125,6 +125,15 @@ OPERATING_CAPITAL = float(os.getenv("OPERATING_CAPITAL", "100000"))
 # スクリーニング時の株価上限に掛ける安全マージン
 SCREENING_PRICE_MARGIN = float(os.getenv("SCREENING_PRICE_MARGIN", "0.9"))
 
+# ADR-0001: 出来高ランキングと値上がり率ランキングを統合する際、値上がり率側に
+# 掛ける重み係数。1.0が従来通りの等重み。値上がり率ランキング上位の銘柄ほど
+# 既に株価が伸びており、予算上限(株価上限)に近づきやすいという診断結果
+# (2026-09-19, analyze_filter_entry_alignment.py)を踏まえ、値上がり率側の
+# 影響を弱めることで、予算内に収まる候補を増やす狙い。
+# 【要調整】この数値は実データでの検証前の暫定値であり、1.0(現状維持)としている。
+# 値上がり率と事後の予算超過率との相関を見た上で、適切な値に調整すること。
+PRICE_GAIN_WEIGHT = float(os.getenv("PRICE_GAIN_WEIGHT", "1.0"))
+
 
 def get_screening_price_cap() -> float:
     """スクリーニング時点で候補として残す株価の上限を動的に計算する。"""

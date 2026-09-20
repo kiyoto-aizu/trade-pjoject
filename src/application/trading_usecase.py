@@ -102,6 +102,10 @@ class TradingUseCase:
         self._missing_holding_warning_symbols: set[str] = set()
         self._sell_condition_observations: dict[str, str] = {}
         self._liquidation_results: list[dict] = []
+        # ADR-0002: ATRトレーリングストップ用の保有中最高値(銘柄ごと、メモリ保持・当日限り)
+        self._holding_high_prices: dict[str, float] = {}
+        # ADR-0002: 銘柄ごとに初回ループの判定結果を必ずINFOで出力するための既出フラグ
+        self._logged_initial_judgment_symbols: set[str] = set()
 
     @property
     def _execution_mode(self) -> str:
@@ -357,6 +361,13 @@ class TradingUseCase:
             })
         self.order_history.append(signal.to_order_history_entry(limit, order_response, order_diagnostics))
         self._save_order_history()
+        # ADR-0002: 約定成立時に保有中最高値を初期化(買い)・クリア(売り)する。
+        # 通常決済・ATR損切り・大引けの強制決済(_liquidate_all_positions)は
+        # いずれもこのメソッドを経由するため、ここ1箇所で両方をカバーできる。
+        if signal.side == config.OrderSide.BUY:
+            self._holding_high_prices[signal.symbol] = signal.price
+        elif signal.side == config.OrderSide.SELL:
+            self._holding_high_prices.pop(signal.symbol, None)
         side_label = "買い" if signal.side == config.OrderSide.BUY else "売り"
         entry = self.order_history[-1]
         message_lines = [
@@ -834,6 +845,8 @@ class TradingUseCase:
         """
         self._load_order_history()
         self._missing_holding_warning_symbols.clear()
+        self._holding_high_prices.clear()
+        self._logged_initial_judgment_symbols.clear()
         now_provider = now_provider or datetime.now
         sleep = sleep or time.sleep
         if self.filtering_result_repository:
@@ -929,6 +942,8 @@ class TradingUseCase:
                         config.RSI_ENTRY_THRESHOLD_CAUTION,
                     )
                     entry_price = None
+                    held_high = None
+                    trailing_stop_line = None
                     atr_stop_multiplier = None
                     decision_reason = None
                     # 売買シグナルを生成
@@ -959,12 +974,22 @@ class TradingUseCase:
                         )
                         entry_price = self._get_position_entry_price(position) if position else None
                         if entry_price is not None:
+                            # ADR-0002: ATR損切りの基準点を、エントリー価格ではなく
+                            # 「保有開始後の最高値」に置き換える(シャンデリア・イグジット)。
+                            # 保有中最高値がまだ記録されていない場合(再起動直後など)は
+                            # エントリー価格を初期値として扱う(=含み益ゼロなら従来と同じ挙動)。
+                            held_high = max(
+                                self._holding_high_prices.get(symbol, entry_price),
+                                float(board['current_price']),
+                            )
+                            self._holding_high_prices[symbol] = held_high
                             atr_stop_multiplier = stop_loss_multiplier(
                                 assessment.level,
                                 config.ATR_STOP_NORMAL_MULTIPLIER,
                                 config.ATR_STOP_CAUTION_MULTIPLIER,
                                 config.ATR_STOP_DANGER_MULTIPLIER,
                             )
+                            trailing_stop_line = held_high - assessment.atr * atr_stop_multiplier
                             signal = TradeSignal.evaluate(
                                 symbol,
                                 board['current_price'],
@@ -972,7 +997,7 @@ class TradingUseCase:
                                 rsi,
                                 entry_threshold,
                                 config.RSI_EXIT_THRESHOLD,
-                                entry_price,
+                                held_high,
                                 assessment.atr,
                                 atr_stop_multiplier,
                             )
@@ -1026,8 +1051,17 @@ class TradingUseCase:
                                             float(board['current_price']), estimated_quantity,
                                             self._market_regime_event_inputs(rsi, entry_threshold),
                                         )
-                    logger.info(
-                        "売買判定: 銘柄=%s | 現在値=%.1f | エントリー基準=%.1f | 決済基準=%.1f | RSI=%.1f | エントリーRSI基準=%.1f | 決済RSI基準=%.1f | 判定=%s",
+                    # ADR-0002: シグナルなし(keep)はDEBUG、判定変化(buy/sell)はINFO。
+                    # ただし各監視銘柄の初回ループ判定は、何を監視しているか把握できるよう
+                    # レベルに関わらず必ずINFOで出力する。
+                    is_first_observation = symbol not in self._logged_initial_judgment_symbols
+                    self._logged_initial_judgment_symbols.add(symbol)
+                    log_level = logging.INFO if (signal is not None or is_first_observation) else logging.DEBUG
+                    logger.log(
+                        log_level,
+                        "売買判定: 銘柄=%s | 現在値=%.1f | エントリー基準=%.1f | 決済基準=%.1f | "
+                        "RSI=%.1f | エントリーRSI基準=%.1f | 決済RSI基準=%.1f | "
+                        "保有中最高値=%s | 利確ライン=%s | 判定=%s",
                         symbol,
                         board['current_price'],
                         limit.upper_band,
@@ -1035,6 +1069,8 @@ class TradingUseCase:
                         rsi,
                         entry_threshold,
                         config.RSI_EXIT_THRESHOLD,
+                        f"{held_high:.1f}" if held_high is not None else "-",
+                        f"{trailing_stop_line:.1f}" if trailing_stop_line is not None else "-",
                         signal.side.name if signal else "なし",
                     )
                     if not signal:

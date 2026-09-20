@@ -221,25 +221,35 @@ def is_safe_to_order(
 # ランキング候補の統合・並べ替え
 # ================================================================================
 
-def merge_ranking_candidates(turnover_ranking, price_gain_ranking):
+def merge_ranking_candidates(turnover_ranking, price_gain_ranking, price_gain_weight: float = 1.0):
     """
     出来高ランキングと値上がり率ランキングを統合し、総合スコアで順位付けします。
     両ランキングで上位の銘柄が高スコアになります。
-    
+
     Args:
         turnover_ranking: 出来高ランキングのリスト
         price_gain_ranking: 値上がり率ランキングのリスト
-        
+        price_gain_weight: 値上がり率側の順位に掛ける重み係数(ADR-0001)。
+            デフォルト1.0は従来通りの等重み合算。1.0未満にすると、
+            既に値上がりして予算上限に近づいている銘柄の影響を弱められる。
+
     Returns:
         統合スコアでソートされた銘柄シンボルのリスト
     """
     rankings = (turnover_ranking, price_gain_ranking)
+    weights = (1.0, price_gain_weight)
     defaults = [len(ranking) + 1 for ranking in rankings]
     scores = {}
     for index, ranking in enumerate(rankings):
         for entry in ranking:
             scores.setdefault(entry.symbol, [defaults[0], defaults[1]])[index] = entry.rank
-    return sorted(scores, key=lambda symbol: (sum(scores[symbol]), symbol))
+    return sorted(
+        scores,
+        key=lambda symbol: (
+            sum(rank * weight for rank, weight in zip(scores[symbol], weights)),
+            symbol,
+        ),
+    )
 
 
 # ================================================================================

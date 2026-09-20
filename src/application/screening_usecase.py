@@ -78,7 +78,7 @@ class ScreeningUseCase:
                     ["採用銘柄数: 0件"],
                 ))
             raise RuntimeError("ランキングが空のためスクリーニングを中止しました")
-        candidates = merge_ranking_candidates(turnover, price_gain)
+        candidates = merge_ranking_candidates(turnover, price_gain, price_gain_weight=config.PRICE_GAIN_WEIGHT)
         turnover_by_symbol = {entry.symbol: entry for entry in turnover}
         price_gain_by_symbol = {entry.symbol: entry for entry in price_gain}
         price_by_symbol = {

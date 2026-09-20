@@ -1,0 +1,278 @@
+diff --git a/.env.example b/.env.example
+index 5a34423..9c4a747 100644
+--- a/.env.example
++++ b/.env.example
+@@ -24,6 +24,8 @@ OPERATING_CAPITAL=100000
+ MAX_ORDER_AMOUNT_PER_TRADE=30000
+ # スクリーニング時の株価上限に掛ける安全マージン
+ SCREENING_PRICE_MARGIN=0.9
++# ADR-0001: 値上がり率ランキング側の重み(1.0=従来通りの等重み)。要データ検証・調整。
++PRICE_GAIN_WEIGHT=1.0
+ # 1日あたりの最大注文数
+ MAX_ORDER_COUNT_PER_DAY=10
+ # 1日の損失限度額（運用資本の比率、例：0.02 = 2%）
+diff --git a/requirements.txt b/requirements.txt
+index 93bdd34..3d92dc0 100644
+--- a/requirements.txt
++++ b/requirements.txt
+@@ -3,4 +3,5 @@ requests==2.34.2
+ pytest
+ pytest-cov
+ pyarrow
+-duckdb
+\ No newline at end of file
++duckdb
++xlrd
+\ No newline at end of file
+diff --git a/src/application/screening_usecase.py b/src/application/screening_usecase.py
+index 442de5e..961aeea 100644
+--- a/src/application/screening_usecase.py
++++ b/src/application/screening_usecase.py
+@@ -78,7 +78,7 @@ class ScreeningUseCase:
+                     ["採用銘柄数: 0件"],
+                 ))
+             raise RuntimeError("ランキングが空のためスクリーニングを中止しました")
+-        candidates = merge_ranking_candidates(turnover, price_gain)
++        candidates = merge_ranking_candidates(turnover, price_gain, price_gain_weight=config.PRICE_GAIN_WEIGHT)
+         turnover_by_symbol = {entry.symbol: entry for entry in turnover}
+         price_gain_by_symbol = {entry.symbol: entry for entry in price_gain}
+         price_by_symbol = {
+diff --git a/src/application/trading_usecase.py b/src/application/trading_usecase.py
+index 6dd8e80..955de40 100644
+--- a/src/application/trading_usecase.py
++++ b/src/application/trading_usecase.py
+@@ -102,6 +102,10 @@ class TradingUseCase:
+         self._missing_holding_warning_symbols: set[str] = set()
+         self._sell_condition_observations: dict[str, str] = {}
+         self._liquidation_results: list[dict] = []
++        # ADR-0002: ATRトレーリングストップ用の保有中最高値(銘柄ごと、メモリ保持・当日限り)
++        self._holding_high_prices: dict[str, float] = {}
++        # ADR-0002: 銘柄ごとに初回ループの判定結果を必ずINFOで出力するための既出フラグ
++        self._logged_initial_judgment_symbols: set[str] = set()
+ 
+     @property
+     def _execution_mode(self) -> str:
+@@ -355,6 +359,13 @@ class TradingUseCase:
+             })
+         self.order_history.append(signal.to_order_history_entry(limit, order_response, order_diagnostics))
+         self._save_order_history()
++        # ADR-0002: 約定成立時に保有中最高値を初期化(買い)・クリア(売り)する。
++        # 通常決済・ATR損切り・大引けの強制決済(_liquidate_all_positions)は
++        # いずれもこのメソッドを経由するため、ここ1箇所で両方をカバーできる。
++        if signal.side == config.OrderSide.BUY:
++            self._holding_high_prices[signal.symbol] = signal.price
++        elif signal.side == config.OrderSide.SELL:
++            self._holding_high_prices.pop(signal.symbol, None)
+         side_label = "買い" if signal.side == config.OrderSide.BUY else "売り"
+         entry = self.order_history[-1]
+         message_lines = [
+@@ -832,6 +843,8 @@ class TradingUseCase:
+         """
+         self._load_order_history()
+         self._missing_holding_warning_symbols.clear()
++        self._holding_high_prices.clear()
++        self._logged_initial_judgment_symbols.clear()
+         now_provider = now_provider or datetime.now
+         sleep = sleep or time.sleep
+         if self.filtering_result_repository:
+@@ -927,6 +940,8 @@ class TradingUseCase:
+                         config.RSI_ENTRY_THRESHOLD_CAUTION,
+                     )
+                     entry_price = None
++                    held_high = None
++                    trailing_stop_line = None
+                     atr_stop_multiplier = None
+                     decision_reason = None
+                     # 売買シグナルを生成
+@@ -957,12 +972,22 @@ class TradingUseCase:
+                         )
+                         entry_price = self._get_position_entry_price(position) if position else None
+                         if entry_price is not None:
++                            # ADR-0002: ATR損切りの基準点を、エントリー価格ではなく
++                            # 「保有開始後の最高値」に置き換える(シャンデリア・イグジット)。
++                            # 保有中最高値がまだ記録されていない場合(再起動直後など)は
++                            # エントリー価格を初期値として扱う(=含み益ゼロなら従来と同じ挙動)。
++                            held_high = max(
++                                self._holding_high_prices.get(symbol, entry_price),
++                                float(board['current_price']),
++                            )
++                            self._holding_high_prices[symbol] = held_high
+                             atr_stop_multiplier = stop_loss_multiplier(
+                                 assessment.level,
+                                 config.ATR_STOP_NORMAL_MULTIPLIER,
+                                 config.ATR_STOP_CAUTION_MULTIPLIER,
+                                 config.ATR_STOP_DANGER_MULTIPLIER,
+                             )
++                            trailing_stop_line = held_high - assessment.atr * atr_stop_multiplier
+                             signal = TradeSignal.evaluate(
+                                 symbol,
+                                 board['current_price'],
+@@ -970,7 +995,7 @@ class TradingUseCase:
+                                 rsi,
+                                 entry_threshold,
+                                 config.RSI_EXIT_THRESHOLD,
+-                                entry_price,
++                                held_high,
+                                 assessment.atr,
+                                 atr_stop_multiplier,
+                             )
+@@ -1024,8 +1049,17 @@ class TradingUseCase:
+                                             float(board['current_price']), estimated_quantity,
+                                             self._market_regime_event_inputs(rsi, entry_threshold),
+                                         )
+-                    logger.info(
+-                        "売買判定: 銘柄=%s | 現在値=%.1f | エントリー基準=%.1f | 決済基準=%.1f | RSI=%.1f | エントリーRSI基準=%.1f | 決済RSI基準=%.1f | 判定=%s",
++                    # ADR-0002: シグナルなし(keep)はDEBUG、判定変化(buy/sell)はINFO。
++                    # ただし各監視銘柄の初回ループ判定は、何を監視しているか把握できるよう
++                    # レベルに関わらず必ずINFOで出力する。
++                    is_first_observation = symbol not in self._logged_initial_judgment_symbols
++                    self._logged_initial_judgment_symbols.add(symbol)
++                    log_level = logging.INFO if (signal is not None or is_first_observation) else logging.DEBUG
++                    logger.log(
++                        log_level,
++                        "売買判定: 銘柄=%s | 現在値=%.1f | エントリー基準=%.1f | 決済基準=%.1f | "
++                        "RSI=%.1f | エントリーRSI基準=%.1f | 決済RSI基準=%.1f | "
++                        "保有中最高値=%s | 利確ライン=%s | 判定=%s",
+                         symbol,
+                         board['current_price'],
+                         limit.upper_band,
+@@ -1033,6 +1067,8 @@ class TradingUseCase:
+                         rsi,
+                         entry_threshold,
+                         config.RSI_EXIT_THRESHOLD,
++                        f"{held_high:.1f}" if held_high is not None else "-",
++                        f"{trailing_stop_line:.1f}" if trailing_stop_line is not None else "-",
+                         signal.side.name if signal else "なし",
+                     )
+                     if not signal:
+diff --git a/src/config/config.py b/src/config/config.py
+index 2bc55d1..535a64b 100644
+--- a/src/config/config.py
++++ b/src/config/config.py
+@@ -125,6 +125,15 @@ OPERATING_CAPITAL = float(os.getenv("OPERATING_CAPITAL", "100000"))
+ # スクリーニング時の株価上限に掛ける安全マージン
+ SCREENING_PRICE_MARGIN = float(os.getenv("SCREENING_PRICE_MARGIN", "0.9"))
+ 
++# ADR-0001: 出来高ランキングと値上がり率ランキングを統合する際、値上がり率側に
++# 掛ける重み係数。1.0が従来通りの等重み。値上がり率ランキング上位の銘柄ほど
++# 既に株価が伸びており、予算上限(株価上限)に近づきやすいという診断結果
++# (2026-09-19, analyze_filter_entry_alignment.py)を踏まえ、値上がり率側の
++# 影響を弱めることで、予算内に収まる候補を増やす狙い。
++# 【要調整】この数値は実データでの検証前の暫定値であり、1.0(現状維持)としている。
++# 値上がり率と事後の予算超過率との相関を見た上で、適切な値に調整すること。
++PRICE_GAIN_WEIGHT = float(os.getenv("PRICE_GAIN_WEIGHT", "1.0"))
++
+ 
+ def get_screening_price_cap() -> float:
+     """スクリーニング時点で候補として残す株価の上限を動的に計算する。"""
+diff --git a/src/domain/rules.py b/src/domain/rules.py
+index f45dade..4102279 100644
+--- a/src/domain/rules.py
++++ b/src/domain/rules.py
+@@ -221,25 +221,35 @@ def is_safe_to_order(
+ # ランキング候補の統合・並べ替え
+ # ================================================================================
+ 
+-def merge_ranking_candidates(turnover_ranking, price_gain_ranking):
++def merge_ranking_candidates(turnover_ranking, price_gain_ranking, price_gain_weight: float = 1.0):
+     """
+     出来高ランキングと値上がり率ランキングを統合し、総合スコアで順位付けします。
+     両ランキングで上位の銘柄が高スコアになります。
+-    
++
+     Args:
+         turnover_ranking: 出来高ランキングのリスト
+         price_gain_ranking: 値上がり率ランキングのリスト
+-        
++        price_gain_weight: 値上がり率側の順位に掛ける重み係数(ADR-0001)。
++            デフォルト1.0は従来通りの等重み合算。1.0未満にすると、
++            既に値上がりして予算上限に近づいている銘柄の影響を弱められる。
++
+     Returns:
+         統合スコアでソートされた銘柄シンボルのリスト
+     """
+     rankings = (turnover_ranking, price_gain_ranking)
++    weights = (1.0, price_gain_weight)
+     defaults = [len(ranking) + 1 for ranking in rankings]
+     scores = {}
+     for index, ranking in enumerate(rankings):
+         for entry in ranking:
+             scores.setdefault(entry.symbol, [defaults[0], defaults[1]])[index] = entry.rank
+-    return sorted(scores, key=lambda symbol: (sum(scores[symbol]), symbol))
++    return sorted(
++        scores,
++        key=lambda symbol: (
++            sum(rank * weight for rank, weight in zip(scores[symbol], weights)),
++            symbol,
++        ),
++    )
+ 
+ 
+ # ================================================================================
+diff --git a/src/entrypoints/run_screening.py b/src/entrypoints/run_screening.py
+index bb87201..c982d70 100644
+--- a/src/entrypoints/run_screening.py
++++ b/src/entrypoints/run_screening.py
+@@ -12,7 +12,6 @@ from pathlib import Path
+ 
+ from src.config import config
+ from src.infrastructure.kabu.get_token import get_api_token
+-from src.infrastructure.kabu.ranking_repository import RankingRepository
+ from src.infrastructure.kabu.regulation_repository import RegulationRepository
+ from src.infrastructure.kabu.primaryexchange_repository import PrimaryExchangeRepository
+ from src.infrastructure.kabu.unregister import unregister_all
+@@ -83,16 +82,23 @@ def main() -> None:
+                 raise SystemExit('銘柄登録の全解除に失敗しました。')
+             data_dir = Path(__file__).resolve().parents[2] / 'data' / 'screening'
+             root = Path(__file__).resolve().parents[2]
+-            ranking_repository = RankingRepository(token)
+-            regulation_repository = RegulationRepository(token)
++            # ADR-0001: kabu STATIONの/rankingは市場区分ごと上位50件しか返さず、
++            # 価格を意識した絞り込みができない。上場銘柄マスタ+日足データから
++            # 全銘柄のランキングを自前計算するHistoricalRankingRepositoryを、
++            # 通常運用(過去日付指定なし)でも常用する。
++            effective_target_date = args.target_date or date.today()
++            ranking_repository = HistoricalRankingRepository(
++                ListedSecurityRepository(root / 'data' / 'universe' / 'listed_securities.csv'),
++                YahooFinanceClient(),
++            )
+             if args.target_date:
+-                ranking_repository = HistoricalRankingRepository(
+-                    ListedSecurityRepository(root / 'data' / 'universe' / 'listed_securities.csv'),
+-                    YahooFinanceClient(),
+-                )
++                # 過去日付を明示指定した場合のみ、規制情報もその時点の履歴で再現する
++                # (純粋なバックテスト用途。本番の規制判定には使わない)
+                 regulation_repository = HistoricalRegulationRepository(
+                     root / 'data' / 'regulation' / 'historical_regulations.csv'
+                 )
++            else:
++                regulation_repository = RegulationRepository(token)
+             usecase = ScreeningUseCase(
+                 ranking_repository,
+                 regulation_repository,
+@@ -102,7 +108,7 @@ def main() -> None:
+             )
+             usecase.batch_started = lambda batch, _: register_symbols(token, batch) is not None
+             usecase.batch_finished = lambda _, __: unregister_all(token) is not None
+-            usecase.execute(target_date=args.target_date)
++            usecase.execute(target_date=effective_target_date)
+ 
+ 
+ if __name__ == '__main__':
+diff --git a/src/infrastructure/kabu/regulation_repository.py b/src/infrastructure/kabu/regulation_repository.py
+index 53b9022..c8036ef 100644
+--- a/src/infrastructure/kabu/regulation_repository.py
++++ b/src/infrastructure/kabu/regulation_repository.py
+@@ -7,7 +7,10 @@ class RegulationRepository:
+     def __init__(self, token: str):
+         self.token = token
+ 
+-    def get_regulation(self, symbol: str, market_code: int) -> Regulation:
++    def get_regulation(self, symbol: str, market_code: int, target_date=None) -> Regulation:
++        # target_dateはHistoricalRegulationRepositoryとのインターフェース統一のために
++        # 受け付けているだけで、本番(kabu STATION API)は常に現在時点の規制情報を返すため
++        # 未使用のまま無視する(ADR-0001)。
+         response = request_handler.send_get(
+             f"{config.BASE_URL}/regulations/{symbol}@{market_code}",
+             headers={"X-API-KEY": self.token},

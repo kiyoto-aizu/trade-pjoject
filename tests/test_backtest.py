@@ -9,6 +9,7 @@ from src.application.backtest_usecase import (
     simulate_backtest,
     simulate_timeseries_backtest,
 )
+from src.domain.enums import OrderSide
 from src.domain.market_regime import MarketRegime
 from src.config import config
 from src.domain.rules import calculate_rsi
@@ -244,6 +245,72 @@ def test_simulate_timeseries_backtest_uses_daily_symbol_sets():
         "win_count": 1,
         "avg_realized_pnl": 400.0,
     }]
+
+
+def _two_symbol_daily_history_and_symbols():
+    price_series = {
+        "2026-09-01": 90.0, "2026-09-02": 90.0, "2026-09-03": 90.0,
+        "2026-09-04": 90.0, "2026-09-05": 90.0, "2026-09-06": 92.0,
+        "2026-09-07": 120.0, "2026-09-08": 98.0, "2026-09-09": 96.0,
+    }
+    dated_history = {"7203": dict(price_series), "9984": dict(price_series)}
+    daily_symbols = {
+        "2026-09-06": ["7203", "9984"],
+        "2026-09-07": ["7203", "9984"],
+        "2026-09-08": ["7203", "9984"],
+        "2026-09-09": ["7203", "9984"],
+    }
+    return daily_symbols, dated_history
+
+
+def test_timeseries_backtest_target_positions_allocates_budget_dynamically():
+    # Issue 3: target_positions未指定時はqty_per_trade固定だが、指定時は
+    # 本番(trading_usecase.py)と同じ「残り建玉枠で現金按分」で数量を決める。
+    daily_symbols, dated_history = _two_symbol_daily_history_and_symbols()
+
+    fixed = simulate_timeseries_backtest(
+        daily_symbols, dated_history, starting_cash=40_000.0, qty_per_trade=100,
+        close_at_eod=False, enable_volatility_adjustment=False, market_regime_enabled=False,
+    )
+    sized = simulate_timeseries_backtest(
+        daily_symbols, dated_history, starting_cash=40_000.0, qty_per_trade=100,
+        close_at_eod=False, enable_volatility_adjustment=False, market_regime_enabled=False,
+        target_positions=2,
+    )
+
+    # 固定モード: qty_per_trade(100)がそのまま使われる
+    assert [s["qty"] for s in fixed["signals"] if s["side"] == OrderSide.BUY.value] == [100, 100]
+    # 予算配分モード: 40,000円を2枠に按分(20,000円/枠)して単元(100株)で丸めた数量になる
+    assert [s["qty"] for s in sized["signals"] if s["side"] == OrderSide.BUY.value] == [200, 200]
+
+
+def test_timeseries_backtest_target_positions_caps_max_order_amount():
+    daily_symbols, dated_history = _two_symbol_daily_history_and_symbols()
+
+    capped = simulate_timeseries_backtest(
+        daily_symbols, dated_history, starting_cash=40_000.0, qty_per_trade=100,
+        close_at_eod=False, enable_volatility_adjustment=False, market_regime_enabled=False,
+        target_positions=2, max_order_amount_per_trade=10_000.0,
+    )
+
+    # 按分すると20,000円/枠だが、上限額10,000円でキャップされるため数量が減る
+    assert [s["qty"] for s in capped["signals"] if s["side"] == OrderSide.BUY.value] == [100, 100]
+
+
+def test_timeseries_backtest_target_positions_limit_skips_new_buys():
+    daily_symbols, dated_history = _two_symbol_daily_history_and_symbols()
+
+    limited = simulate_timeseries_backtest(
+        daily_symbols, dated_history, starting_cash=40_000.0, qty_per_trade=100,
+        close_at_eod=False, enable_volatility_adjustment=False, market_regime_enabled=False,
+        target_positions=1,
+    )
+
+    # 同時保有上限(1)に達しているため、2銘柄目(9984)の新規買いは一切発生しない
+    buy_symbols = {s["symbol"] for s in limited["signals"] if s["side"] == OrderSide.BUY.value}
+    assert buy_symbols == {"7203"}
+    # 先に買えた7203は、余った現金枠(40,000円/1枠)をすべて使った数量になる
+    assert [s["qty"] for s in limited["signals"] if s["side"] == OrderSide.BUY.value] == [400]
 
 
 def test_timeseries_backtest_danger_skips_buy_but_does_not_change_sell_logic(tmp_path):

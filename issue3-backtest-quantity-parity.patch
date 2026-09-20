@@ -1,0 +1,288 @@
+diff --git a/src/application/backtest_usecase.py b/src/application/backtest_usecase.py
+index bc3e916..1501fa1 100644
+--- a/src/application/backtest_usecase.py
++++ b/src/application/backtest_usecase.py
+@@ -14,7 +14,7 @@ from src.domain.market_regime import (
+ )
+ from src.domain.market_volatility import MarketDailyBar
+ from src.domain.models import TradeSignal
+-from src.domain.rules import calculate_price_limit, calculate_rsi
++from src.domain.rules import calculate_buy_quantity, calculate_price_limit, calculate_rsi
+ from src.domain.volatility import (
+     DailyBar,
+     adjust_quantity_for_volatility,
+@@ -673,8 +673,17 @@ def simulate_timeseries_backtest(
+     market_regime_enabled: bool = True,
+     market_regime_trend_relief_enabled: bool = True,
+     filter_decision_repository: FilterDecisionRepository | None = None,
++    target_positions: int | None = None,
++    max_order_amount_per_trade: float | None = None,
++    order_unit: int = config.ORDER_UNIT,
+ ) -> dict:
+-    """日付ごとのフィルタリング結果を、日足または分足で再生します。"""
++    """日付ごとのフィルタリング結果を、日足または分足で再生します。
++
++    target_positions を指定すると、本番の trading_usecase.py と同じ
++    「残り建玉枠で現金を按分し、上限額でキャップする」予算配分ロジックで
++    数量を計算する（Issue 3対応）。未指定（既定）の場合は従来通り
++    qty_per_trade の固定数量を使う。
++    """
+     if indicator_source not in {"daily", "minute"}:
+         raise ValueError("indicator_source は 'daily' または 'minute' を指定してください")
+ 
+@@ -1028,8 +1037,26 @@ def simulate_timeseries_backtest(
+                         bar for bar_date, bar in sorted(dated_bars.items())
+                         if bar_date <= date_text
+                     ]
++                    if target_positions is not None:
++                        open_position_count = sum(1 for q in holdings.values() if q > 0)
++                        if open_position_count >= target_positions:
++                            record_filter_decision(
++                                "TARGET_POSITIONS_LIMIT_SKIP", symbol, date_text, price, 0,
++                                {
++                                    "open_position_count": open_position_count,
++                                    "target_positions": target_positions,
++                                }, time_text,
++                            )
++                            continue
++                        remaining_slots = max(target_positions - open_position_count, 1)
++                        budget_per_position = cash / remaining_slots
++                        if max_order_amount_per_trade is not None:
++                            budget_per_position = min(budget_per_position, max_order_amount_per_trade)
++                        base_qty = calculate_buy_quantity(price, budget_per_position, order_unit)
++                    else:
++                        base_qty = qty_per_trade
+                     qty = _adjust_backtest_quantity(
+-                        qty_per_trade,
++                        base_qty,
+                         daily_bars,
+                         enable_volatility_sizing,
+                         volatility_stats,
+@@ -1040,9 +1067,9 @@ def simulate_timeseries_backtest(
+                         config.ATR_CAUTION_RATIO,
+                         config.ATR_DANGER_RATIO,
+                     ) if daily_bars else None
+-                    if qty == 0 and assessment is not None and qty_per_trade > 0:
++                    if qty == 0 and assessment is not None and base_qty > 0:
+                         record_filter_decision(
+-                            "ATR_DANGER_SKIP", symbol, date_text, price, qty_per_trade,
++                            "ATR_DANGER_SKIP", symbol, date_text, price, base_qty,
+                             {
+                                 "atr": assessment.atr,
+                                 "true_range": assessment.latest_true_range,
+diff --git a/src/entrypoints/run_backtest.py b/src/entrypoints/run_backtest.py
+index 0f2f1d8..328af17 100644
+--- a/src/entrypoints/run_backtest.py
++++ b/src/entrypoints/run_backtest.py
+@@ -269,7 +269,27 @@ def main() -> None:
+         parser.add_argument("--filtering-dir", type=Path, default=None, help="日付別フィルタリング結果のディレクトリ")
+         parser.add_argument("--history", type=Path, default=default_history_path, help="銘柄ごとの終値履歴JSONファイル")
+         parser.add_argument("--cash", type=float, default=100000.0, help="開始現金")
+-        parser.add_argument("--qty", type=int, default=100, help="1回の売買数量")
++        parser.add_argument("--qty", type=int, default=100, help="1回の売買数量（--production-sizing未指定時のみ使用）")
++        parser.add_argument(
++            "--production-sizing",
++            action="store_true",
++            help=(
++                "本番(trading_usecase.py)と同じ予算配分ロジックで数量を計算する"
++                "（残り建玉枠で現金按分＋上限額でキャップ。--qtyは無視される）"
++            ),
++        )
++        parser.add_argument(
++            "--target-positions",
++            type=int,
++            default=None,
++            help="同時保有銘柄数の上限（既定: --production-sizing時はconfig.TARGET_POSITIONS）",
++        )
++        parser.add_argument(
++            "--max-order-amount",
++            type=float,
++            default=None,
++            help="1回あたりの発注上限額（既定: --production-sizing時はconfig.MAX_ORDER_AMOUNT_PER_TRADE）",
++        )
+         parser.add_argument("--fee", type=float, default=config.BACKTEST_FEE_RATE, help="片道手数料率 (例: 0.001 = 0.1%%)")
+         parser.add_argument(
+             "--market-slippage-bps",
+@@ -318,6 +338,25 @@ def main() -> None:
+         args = parser.parse_args()
+         minute_bar_repository = ParquetMinuteBarRepository(args.minute_bars_dir) if args.minute_bars_dir else None
+ 
++        target_positions = args.target_positions
++        max_order_amount_per_trade = args.max_order_amount
++        if args.production_sizing:
++            if target_positions is None:
++                target_positions = config.TARGET_POSITIONS
++            if max_order_amount_per_trade is None:
++                max_order_amount_per_trade = config.MAX_ORDER_AMOUNT_PER_TRADE
++        # simulate_backtest（固定銘柄・レガシーモード）は対象外。target_positions等を
++        # 明示指定した場合のみ simulate_timeseries_backtest 側の呼び出しに反映する。
++        sizing_kwargs = {
++            "target_positions": target_positions,
++            "max_order_amount_per_trade": max_order_amount_per_trade,
++        }
++        if (target_positions is not None or max_order_amount_per_trade is not None) and not args.filtering_dir:
++            logger.warning(
++                "--production-sizing/--target-positions/--max-order-amount は "
++                "--filtering-dir（simulate_timeseries_backtest）でのみ有効です。固定銘柄モードでは無視されます。"
++            )
++
+         if args.compare_atr and not args.live:
+             raise ValueError("--compare-atr を使う場合は --live を指定してください")
+         if args.compare_market_regime and not args.live:
+@@ -360,7 +399,7 @@ def main() -> None:
+                 daily_symbols,
+                 history,
+                 starting_cash=args.cash,
+-                qty_per_trade=args.qty,
++                qty_per_trade=args.qty, **sizing_kwargs,
+                 fee_rate=args.fee,
+                 market_slippage_bps=args.market_slippage_bps,
+                 execution_delay_bars=args.execution_delay_bars,
+@@ -379,7 +418,7 @@ def main() -> None:
+                     daily_symbols,
+                     history,
+                     starting_cash=args.cash,
+-                    qty_per_trade=args.qty,
++                    qty_per_trade=args.qty, **sizing_kwargs,
+                     fee_rate=args.fee,
+                     market_slippage_bps=args.market_slippage_bps,
+                     execution_delay_bars=args.execution_delay_bars,
+@@ -396,7 +435,7 @@ def main() -> None:
+                     daily_symbols,
+                     history,
+                     starting_cash=args.cash,
+-                    qty_per_trade=args.qty,
++                    qty_per_trade=args.qty, **sizing_kwargs,
+                     fee_rate=args.fee,
+                     market_slippage_bps=args.market_slippage_bps,
+                     execution_delay_bars=args.execution_delay_bars,
+@@ -408,7 +447,7 @@ def main() -> None:
+                     enable_volatility_adjustment=False,
+                 )
+                 lot_only = simulate_timeseries_backtest(
+-                    daily_symbols, history, starting_cash=args.cash, qty_per_trade=args.qty,
++                    daily_symbols, history, starting_cash=args.cash, qty_per_trade=args.qty, **sizing_kwargs,
+                     fee_rate=args.fee, market_slippage_bps=args.market_slippage_bps,
+                     execution_delay_bars=args.execution_delay_bars, order_type=args.order_type,
+                     minute_bar_repository=minute_bar_repository, indicator_source=args.indicator_source,
+@@ -455,7 +494,7 @@ def main() -> None:
+                     daily_symbols,
+                     dated_history,
+                     starting_cash=args.cash,
+-                    qty_per_trade=args.qty,
++                    qty_per_trade=args.qty, **sizing_kwargs,
+                     fee_rate=args.fee,
+                     market_slippage_bps=args.market_slippage_bps,
+                     execution_delay_bars=args.execution_delay_bars,
+@@ -471,7 +510,7 @@ def main() -> None:
+                         daily_symbols,
+                         dated_history,
+                         starting_cash=args.cash,
+-                        qty_per_trade=args.qty,
++                        qty_per_trade=args.qty, **sizing_kwargs,
+                         fee_rate=args.fee,
+                         market_slippage_bps=args.market_slippage_bps,
+                         execution_delay_bars=args.execution_delay_bars,
+@@ -488,7 +527,7 @@ def main() -> None:
+                         daily_symbols,
+                         dated_history,
+                         starting_cash=args.cash,
+-                        qty_per_trade=args.qty,
++                        qty_per_trade=args.qty, **sizing_kwargs,
+                         fee_rate=args.fee,
+                         market_slippage_bps=args.market_slippage_bps,
+                         execution_delay_bars=args.execution_delay_bars,
+@@ -500,7 +539,7 @@ def main() -> None:
+                         enable_volatility_adjustment=False,
+                     )
+                     lot_only = simulate_timeseries_backtest(
+-                        daily_symbols, dated_history, starting_cash=args.cash, qty_per_trade=args.qty,
++                        daily_symbols, dated_history, starting_cash=args.cash, qty_per_trade=args.qty, **sizing_kwargs,
+                         fee_rate=args.fee, market_slippage_bps=args.market_slippage_bps,
+                         execution_delay_bars=args.execution_delay_bars, order_type=args.order_type,
+                         minute_bar_repository=minute_bar_repository, indicator_source=args.indicator_source,
+diff --git a/tests/test_backtest.py b/tests/test_backtest.py
+index f13d5f2..cd4c845 100644
+--- a/tests/test_backtest.py
++++ b/tests/test_backtest.py
+@@ -9,6 +9,7 @@ from src.application.backtest_usecase import (
+     simulate_backtest,
+     simulate_timeseries_backtest,
+ )
++from src.domain.enums import OrderSide
+ from src.domain.market_regime import MarketRegime
+ from src.config import config
+ from src.domain.rules import calculate_rsi
+@@ -246,6 +247,72 @@ def test_simulate_timeseries_backtest_uses_daily_symbol_sets():
+     }]
+ 
+ 
++def _two_symbol_daily_history_and_symbols():
++    price_series = {
++        "2026-09-01": 90.0, "2026-09-02": 90.0, "2026-09-03": 90.0,
++        "2026-09-04": 90.0, "2026-09-05": 90.0, "2026-09-06": 92.0,
++        "2026-09-07": 120.0, "2026-09-08": 98.0, "2026-09-09": 96.0,
++    }
++    dated_history = {"7203": dict(price_series), "9984": dict(price_series)}
++    daily_symbols = {
++        "2026-09-06": ["7203", "9984"],
++        "2026-09-07": ["7203", "9984"],
++        "2026-09-08": ["7203", "9984"],
++        "2026-09-09": ["7203", "9984"],
++    }
++    return daily_symbols, dated_history
++
++
++def test_timeseries_backtest_target_positions_allocates_budget_dynamically():
++    # Issue 3: target_positions未指定時はqty_per_trade固定だが、指定時は
++    # 本番(trading_usecase.py)と同じ「残り建玉枠で現金按分」で数量を決める。
++    daily_symbols, dated_history = _two_symbol_daily_history_and_symbols()
++
++    fixed = simulate_timeseries_backtest(
++        daily_symbols, dated_history, starting_cash=40_000.0, qty_per_trade=100,
++        close_at_eod=False, enable_volatility_adjustment=False, market_regime_enabled=False,
++    )
++    sized = simulate_timeseries_backtest(
++        daily_symbols, dated_history, starting_cash=40_000.0, qty_per_trade=100,
++        close_at_eod=False, enable_volatility_adjustment=False, market_regime_enabled=False,
++        target_positions=2,
++    )
++
++    # 固定モード: qty_per_trade(100)がそのまま使われる
++    assert [s["qty"] for s in fixed["signals"] if s["side"] == OrderSide.BUY.value] == [100, 100]
++    # 予算配分モード: 40,000円を2枠に按分(20,000円/枠)して単元(100株)で丸めた数量になる
++    assert [s["qty"] for s in sized["signals"] if s["side"] == OrderSide.BUY.value] == [200, 200]
++
++
++def test_timeseries_backtest_target_positions_caps_max_order_amount():
++    daily_symbols, dated_history = _two_symbol_daily_history_and_symbols()
++
++    capped = simulate_timeseries_backtest(
++        daily_symbols, dated_history, starting_cash=40_000.0, qty_per_trade=100,
++        close_at_eod=False, enable_volatility_adjustment=False, market_regime_enabled=False,
++        target_positions=2, max_order_amount_per_trade=10_000.0,
++    )
++
++    # 按分すると20,000円/枠だが、上限額10,000円でキャップされるため数量が減る
++    assert [s["qty"] for s in capped["signals"] if s["side"] == OrderSide.BUY.value] == [100, 100]
++
++
++def test_timeseries_backtest_target_positions_limit_skips_new_buys():
++    daily_symbols, dated_history = _two_symbol_daily_history_and_symbols()
++
++    limited = simulate_timeseries_backtest(
++        daily_symbols, dated_history, starting_cash=40_000.0, qty_per_trade=100,
++        close_at_eod=False, enable_volatility_adjustment=False, market_regime_enabled=False,
++        target_positions=1,
++    )
++
++    # 同時保有上限(1)に達しているため、2銘柄目(9984)の新規買いは一切発生しない
++    buy_symbols = {s["symbol"] for s in limited["signals"] if s["side"] == OrderSide.BUY.value}
++    assert buy_symbols == {"7203"}
++    # 先に買えた7203は、余った現金枠(40,000円/1枠)をすべて使った数量になる
++    assert [s["qty"] for s in limited["signals"] if s["side"] == OrderSide.BUY.value] == [400]
++
++
+ def test_timeseries_backtest_danger_skips_buy_but_does_not_change_sell_logic(tmp_path):
+     dated_history = {
+         "7203": {

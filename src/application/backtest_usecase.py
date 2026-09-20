@@ -14,7 +14,7 @@ from src.domain.market_regime import (
 )
 from src.domain.market_volatility import MarketDailyBar
 from src.domain.models import TradeSignal
-from src.domain.rules import calculate_price_limit, calculate_rsi
+from src.domain.rules import calculate_buy_quantity, calculate_price_limit, calculate_rsi
 from src.domain.volatility import (
     DailyBar,
     adjust_quantity_for_volatility,
@@ -673,8 +673,17 @@ def simulate_timeseries_backtest(
     market_regime_enabled: bool = True,
     market_regime_trend_relief_enabled: bool = True,
     filter_decision_repository: FilterDecisionRepository | None = None,
+    target_positions: int | None = None,
+    max_order_amount_per_trade: float | None = None,
+    order_unit: int = config.ORDER_UNIT,
 ) -> dict:
-    """日付ごとのフィルタリング結果を、日足または分足で再生します。"""
+    """日付ごとのフィルタリング結果を、日足または分足で再生します。
+
+    target_positions を指定すると、本番の trading_usecase.py と同じ
+    「残り建玉枠で現金を按分し、上限額でキャップする」予算配分ロジックで
+    数量を計算する（Issue 3対応）。未指定（既定）の場合は従来通り
+    qty_per_trade の固定数量を使う。
+    """
     if indicator_source not in {"daily", "minute"}:
         raise ValueError("indicator_source は 'daily' または 'minute' を指定してください")
 
@@ -1028,8 +1037,26 @@ def simulate_timeseries_backtest(
                         bar for bar_date, bar in sorted(dated_bars.items())
                         if bar_date <= date_text
                     ]
+                    if target_positions is not None:
+                        open_position_count = sum(1 for q in holdings.values() if q > 0)
+                        if open_position_count >= target_positions:
+                            record_filter_decision(
+                                "TARGET_POSITIONS_LIMIT_SKIP", symbol, date_text, price, 0,
+                                {
+                                    "open_position_count": open_position_count,
+                                    "target_positions": target_positions,
+                                }, time_text,
+                            )
+                            continue
+                        remaining_slots = max(target_positions - open_position_count, 1)
+                        budget_per_position = cash / remaining_slots
+                        if max_order_amount_per_trade is not None:
+                            budget_per_position = min(budget_per_position, max_order_amount_per_trade)
+                        base_qty = calculate_buy_quantity(price, budget_per_position, order_unit)
+                    else:
+                        base_qty = qty_per_trade
                     qty = _adjust_backtest_quantity(
-                        qty_per_trade,
+                        base_qty,
                         daily_bars,
                         enable_volatility_sizing,
                         volatility_stats,
@@ -1040,9 +1067,9 @@ def simulate_timeseries_backtest(
                         config.ATR_CAUTION_RATIO,
                         config.ATR_DANGER_RATIO,
                     ) if daily_bars else None
-                    if qty == 0 and assessment is not None and qty_per_trade > 0:
+                    if qty == 0 and assessment is not None and base_qty > 0:
                         record_filter_decision(
-                            "ATR_DANGER_SKIP", symbol, date_text, price, qty_per_trade,
+                            "ATR_DANGER_SKIP", symbol, date_text, price, base_qty,
                             {
                                 "atr": assessment.atr,
                                 "true_range": assessment.latest_true_range,

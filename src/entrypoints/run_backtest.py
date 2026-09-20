@@ -269,7 +269,27 @@ def main() -> None:
         parser.add_argument("--filtering-dir", type=Path, default=None, help="日付別フィルタリング結果のディレクトリ")
         parser.add_argument("--history", type=Path, default=default_history_path, help="銘柄ごとの終値履歴JSONファイル")
         parser.add_argument("--cash", type=float, default=100000.0, help="開始現金")
-        parser.add_argument("--qty", type=int, default=100, help="1回の売買数量")
+        parser.add_argument("--qty", type=int, default=100, help="1回の売買数量（--production-sizing未指定時のみ使用）")
+        parser.add_argument(
+            "--production-sizing",
+            action="store_true",
+            help=(
+                "本番(trading_usecase.py)と同じ予算配分ロジックで数量を計算する"
+                "（残り建玉枠で現金按分＋上限額でキャップ。--qtyは無視される）"
+            ),
+        )
+        parser.add_argument(
+            "--target-positions",
+            type=int,
+            default=None,
+            help="同時保有銘柄数の上限（既定: --production-sizing時はconfig.TARGET_POSITIONS）",
+        )
+        parser.add_argument(
+            "--max-order-amount",
+            type=float,
+            default=None,
+            help="1回あたりの発注上限額（既定: --production-sizing時はconfig.MAX_ORDER_AMOUNT_PER_TRADE）",
+        )
         parser.add_argument("--fee", type=float, default=config.BACKTEST_FEE_RATE, help="片道手数料率 (例: 0.001 = 0.1%%)")
         parser.add_argument(
             "--market-slippage-bps",
@@ -318,6 +338,25 @@ def main() -> None:
         args = parser.parse_args()
         minute_bar_repository = ParquetMinuteBarRepository(args.minute_bars_dir) if args.minute_bars_dir else None
 
+        target_positions = args.target_positions
+        max_order_amount_per_trade = args.max_order_amount
+        if args.production_sizing:
+            if target_positions is None:
+                target_positions = config.TARGET_POSITIONS
+            if max_order_amount_per_trade is None:
+                max_order_amount_per_trade = config.MAX_ORDER_AMOUNT_PER_TRADE
+        # simulate_backtest（固定銘柄・レガシーモード）は対象外。target_positions等を
+        # 明示指定した場合のみ simulate_timeseries_backtest 側の呼び出しに反映する。
+        sizing_kwargs = {
+            "target_positions": target_positions,
+            "max_order_amount_per_trade": max_order_amount_per_trade,
+        }
+        if (target_positions is not None or max_order_amount_per_trade is not None) and not args.filtering_dir:
+            logger.warning(
+                "--production-sizing/--target-positions/--max-order-amount は "
+                "--filtering-dir（simulate_timeseries_backtest）でのみ有効です。固定銘柄モードでは無視されます。"
+            )
+
         if args.compare_atr and not args.live:
             raise ValueError("--compare-atr を使う場合は --live を指定してください")
         if args.compare_market_regime and not args.live:
@@ -360,7 +399,7 @@ def main() -> None:
                 daily_symbols,
                 history,
                 starting_cash=args.cash,
-                qty_per_trade=args.qty,
+                qty_per_trade=args.qty, **sizing_kwargs,
                 fee_rate=args.fee,
                 market_slippage_bps=args.market_slippage_bps,
                 execution_delay_bars=args.execution_delay_bars,
@@ -379,7 +418,7 @@ def main() -> None:
                     daily_symbols,
                     history,
                     starting_cash=args.cash,
-                    qty_per_trade=args.qty,
+                    qty_per_trade=args.qty, **sizing_kwargs,
                     fee_rate=args.fee,
                     market_slippage_bps=args.market_slippage_bps,
                     execution_delay_bars=args.execution_delay_bars,
@@ -396,7 +435,7 @@ def main() -> None:
                     daily_symbols,
                     history,
                     starting_cash=args.cash,
-                    qty_per_trade=args.qty,
+                    qty_per_trade=args.qty, **sizing_kwargs,
                     fee_rate=args.fee,
                     market_slippage_bps=args.market_slippage_bps,
                     execution_delay_bars=args.execution_delay_bars,
@@ -408,7 +447,7 @@ def main() -> None:
                     enable_volatility_adjustment=False,
                 )
                 lot_only = simulate_timeseries_backtest(
-                    daily_symbols, history, starting_cash=args.cash, qty_per_trade=args.qty,
+                    daily_symbols, history, starting_cash=args.cash, qty_per_trade=args.qty, **sizing_kwargs,
                     fee_rate=args.fee, market_slippage_bps=args.market_slippage_bps,
                     execution_delay_bars=args.execution_delay_bars, order_type=args.order_type,
                     minute_bar_repository=minute_bar_repository, indicator_source=args.indicator_source,
@@ -455,7 +494,7 @@ def main() -> None:
                     daily_symbols,
                     dated_history,
                     starting_cash=args.cash,
-                    qty_per_trade=args.qty,
+                    qty_per_trade=args.qty, **sizing_kwargs,
                     fee_rate=args.fee,
                     market_slippage_bps=args.market_slippage_bps,
                     execution_delay_bars=args.execution_delay_bars,
@@ -471,7 +510,7 @@ def main() -> None:
                         daily_symbols,
                         dated_history,
                         starting_cash=args.cash,
-                        qty_per_trade=args.qty,
+                        qty_per_trade=args.qty, **sizing_kwargs,
                         fee_rate=args.fee,
                         market_slippage_bps=args.market_slippage_bps,
                         execution_delay_bars=args.execution_delay_bars,
@@ -488,7 +527,7 @@ def main() -> None:
                         daily_symbols,
                         dated_history,
                         starting_cash=args.cash,
-                        qty_per_trade=args.qty,
+                        qty_per_trade=args.qty, **sizing_kwargs,
                         fee_rate=args.fee,
                         market_slippage_bps=args.market_slippage_bps,
                         execution_delay_bars=args.execution_delay_bars,
@@ -500,7 +539,7 @@ def main() -> None:
                         enable_volatility_adjustment=False,
                     )
                     lot_only = simulate_timeseries_backtest(
-                        daily_symbols, dated_history, starting_cash=args.cash, qty_per_trade=args.qty,
+                        daily_symbols, dated_history, starting_cash=args.cash, qty_per_trade=args.qty, **sizing_kwargs,
                         fee_rate=args.fee, market_slippage_bps=args.market_slippage_bps,
                         execution_delay_bars=args.execution_delay_bars, order_type=args.order_type,
                         minute_bar_repository=minute_bar_repository, indicator_source=args.indicator_source,

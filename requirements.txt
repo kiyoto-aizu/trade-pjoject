@@ -4,4 +4,4 @@ pytest
 pytest-cov
 pyarrow
 duckdb
-xlrd
+openpyxl

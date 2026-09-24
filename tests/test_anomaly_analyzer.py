@@ -5,6 +5,7 @@ from src.application.screening_usecase import ScreeningUseCase
 from src.config import config
 from src.domain.enums import RankingType
 from src.domain.models import RankingEntry, Regulation, ScreeningResult
+from src.domain.rules import is_trading_day
 from src.infrastructure.persistence.filtering_result_repository import FilteringResultRepository
 from src.infrastructure.persistence.screening_result_repository import ScreeningResultRepository
 
@@ -72,7 +73,7 @@ def test_filtering_usecase_adds_llm_anomaly_note_when_below_threshold(monkeypatc
 
     today = datetime.now().date()
     previous_business_day = today - timedelta(days=1)
-    while previous_business_day.weekday() >= 5:
+    while not is_trading_day(previous_business_day):
         previous_business_day -= timedelta(days=1)
     screening_repository = ScreeningResultRepository(tmp_path / "screening")
     screening_repository.save(ScreeningResult(

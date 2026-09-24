@@ -7,7 +7,7 @@ from src.domain.models import FilteringResult, RankingEntry, Regulation, Screeni
 from src.infrastructure.market_data.historical_ranking_repository import HistoricalRankingRepository
 from src.infrastructure.persistence.listed_security_repository import ListedSecurityRepository
 from src.infrastructure.persistence.historical_regulation_repository import HistoricalRegulationRepository
-from src.domain.rules import calculate_buy_quantity, calculate_volume_surge_ratio, check_kill_switch, exclude_by_regulation, filter_candidates_by_price, is_buy_order_amount_allowed, limit_candidates, merge_ranking_candidates
+from src.domain.rules import calculate_buy_quantity, calculate_volume_surge_ratio, check_kill_switch, exclude_by_regulation, filter_candidates_by_price, is_buy_order_amount_allowed, is_trading_day, limit_candidates, merge_ranking_candidates
 from src.infrastructure.persistence.filtering_result_repository import FilteringResultRepository
 from src.infrastructure.persistence.screening_result_repository import ScreeningResultRepository
 from src.infrastructure.kabu.ranking_repository import RankingRepository
@@ -257,7 +257,7 @@ def test_screening_usecase_filters_prices_before_regulation_lookups(monkeypatch,
 def test_filtering_usecase_reads_previous_screening_result(tmp_path):
     today = datetime.now().date()
     previous_business_day = today - timedelta(days=1)
-    while previous_business_day.weekday() >= 5:
+    while not is_trading_day(previous_business_day):
         previous_business_day -= timedelta(days=1)
     screening_repository = ScreeningResultRepository(tmp_path / "screening")
     screening_repository.save(ScreeningResult(
@@ -306,10 +306,39 @@ def test_filtering_usecase_replays_a_past_date_from_daily_turnover(tmp_path):
     assert result.symbols == ["7203"]
 
 
+def test_filtering_usecase_skips_holidays_when_locating_previous_screening(tmp_path):
+    # 2026-09-21(月・敬老の日)〜09-23(水・秋分の日)は祝日、直前の営業日は09-18(金)
+    target_date = datetime(2026, 9, 24).date()
+    screening_repository = ScreeningResultRepository(tmp_path / "screening")
+    screening_repository.save(ScreeningResult(
+        "2026-09-18", ["7203"], datetime.now().isoformat()
+    ))
+
+    class HistoricalVolumeStub:
+        def get_turnover_for_date(self, symbol, requested_date):
+            assert requested_date == target_date
+            return 300.0
+
+        def get_average_turnover_before(self, symbol, requested_date, days):
+            assert requested_date == target_date
+            assert days == 20
+            return 100.0
+
+    result = FilteringUseCase(
+        screening_repository,
+        BoardStub(),
+        HistoricalVolumeStub(),
+        FilteringResultRepository(tmp_path / "filtering"),
+    ).execute(target_date=target_date)
+
+    # 土日しか見ない旧ロジックだと09-23(祝日)を見に行き空振りしていた
+    assert result.symbols == ["7203"]
+
+
 def test_filtering_usecase_selects_by_relative_turnover_ratio(tmp_path):
     today = datetime.now().date()
     previous_business_day = today - timedelta(days=1)
-    while previous_business_day.weekday() >= 5:
+    while not is_trading_day(previous_business_day):
         previous_business_day -= timedelta(days=1)
     screening_repository = ScreeningResultRepository(tmp_path / "screening")
     screening_repository.save(ScreeningResult(

@@ -9,7 +9,7 @@ from datetime import date, datetime, timedelta
 import logging
 
 from src.domain.models import FilteringResult, ScoredCandidate
-from src.domain.rules import calculate_volume_surge_ratio, select_top_n_by_surge_ratio
+from src.domain.rules import calculate_volume_surge_ratio, is_trading_day, select_top_n_by_surge_ratio
 from src.config import config
 from src.infrastructure.notification.slack_notify import format_result_notification
 
@@ -57,8 +57,8 @@ class FilteringUseCase:
         """
         today = target_date or datetime.now().date()
         previous_business_day = today - timedelta(days=1)
-        # 土日を跨ぐ場合は前営業日に遡る
-        while previous_business_day.weekday() >= 5:
+        # 土日・祝日・年末年始を跨ぐ場合は前営業日に遡る
+        while not is_trading_day(previous_business_day):
             previous_business_day -= timedelta(days=1)
         screening = self.screening_repository.load_for_date(previous_business_day)
         scored = []

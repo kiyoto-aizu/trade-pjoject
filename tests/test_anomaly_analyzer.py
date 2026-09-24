@@ -5,7 +5,7 @@ from src.application.screening_usecase import ScreeningUseCase
 from src.config import config
 from src.domain.enums import RankingType
 from src.domain.models import RankingEntry, Regulation, ScreeningResult
-from src.domain.rules import is_trading_day
+from src.infrastructure.calendar.japanese_calendar import is_trading_day
 from src.infrastructure.persistence.filtering_result_repository import FilteringResultRepository
 from src.infrastructure.persistence.screening_result_repository import ScreeningResultRepository
 

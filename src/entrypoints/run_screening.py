@@ -24,7 +24,7 @@ from src.infrastructure.persistence.historical_regulation_repository import Hist
 from src.infrastructure.market_data.historical_ranking_repository import HistoricalRankingRepository
 from src.infrastructure.market_data.yahoo_finance_client import YahooFinanceClient
 from src.application.screening_usecase import ScreeningUseCase
-from src.domain.rules import is_trading_day
+from src.infrastructure.calendar.japanese_calendar import is_trading_day
 
 def notify_result(message: str) -> None:
     notify_daily(message)

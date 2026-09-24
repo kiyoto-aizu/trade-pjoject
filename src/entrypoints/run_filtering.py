@@ -20,7 +20,7 @@ from src.infrastructure.market_data.yahoo_finance_client import YahooFinanceClie
 from src.infrastructure.notification.slack_notify import notify_daily, process_notification
 from src.infrastructure.persistence.filtering_result_repository import FilteringResultRepository
 from src.infrastructure.persistence.screening_result_repository import ScreeningResultRepository
-from src.domain.rules import is_trading_day
+from src.infrastructure.calendar.japanese_calendar import is_trading_day
 
 def notify_result(message: str) -> None:
     notify_daily(message)

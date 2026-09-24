@@ -16,7 +16,7 @@ from typing import List, Optional
 
 from src.config import config
 from src.domain.models import OrderHistoryEntry, PriceLimit, TradeSignal
-from src.domain.rules import calculate_buy_quantity, calculate_price_limit, calculate_rsi, check_kill_switch, is_buy_order_amount_allowed, is_market_closed, is_safe_to_order, is_trading_session
+from src.domain.rules import calculate_buy_quantity, calculate_price_limit, calculate_rsi, check_kill_switch, is_buy_order_amount_allowed, is_market_closed, is_safe_to_order
 from src.domain.volatility import DailyBar, VolatilityLevel, adjust_quantity_for_volatility, assess_volatility, stop_loss_multiplier
 from src.domain.market_regime import MarketRegime, resolve_rsi_entry_threshold
 from src.infrastructure.kabu.get_board import get_current_board
@@ -26,6 +26,7 @@ from src.infrastructure.kabu.get_apisoftlimit import get_api_soft_limit
 from src.infrastructure.kabu.send_order import place_market_order
 from src.infrastructure.market_data.get_daily_closes import get_yahoo_daily_bars, get_yahoo_daily_closes
 from src.infrastructure.notification.slack_notify import notify_critical, notify_daily
+from src.infrastructure.calendar.japanese_calendar import is_trading_session
 from src.infrastructure.persistence.storage import read_json, write_json
 from src.infrastructure.persistence.filter_decision_repository import FilterDecisionRepository
 from src.infrastructure.analysis.daily_analyzer import create_daily_analyzer

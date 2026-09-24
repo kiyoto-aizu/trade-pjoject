@@ -7,11 +7,12 @@ from src.domain.models import FilteringResult, RankingEntry, Regulation, Screeni
 from src.infrastructure.market_data.historical_ranking_repository import HistoricalRankingRepository
 from src.infrastructure.persistence.listed_security_repository import ListedSecurityRepository
 from src.infrastructure.persistence.historical_regulation_repository import HistoricalRegulationRepository
-from src.domain.rules import calculate_buy_quantity, calculate_volume_surge_ratio, check_kill_switch, exclude_by_regulation, filter_candidates_by_price, is_buy_order_amount_allowed, is_trading_day, limit_candidates, merge_ranking_candidates
+from src.domain.rules import calculate_buy_quantity, calculate_volume_surge_ratio, check_kill_switch, exclude_by_regulation, filter_candidates_by_price, is_buy_order_amount_allowed, limit_candidates, merge_ranking_candidates
 from src.infrastructure.persistence.filtering_result_repository import FilteringResultRepository
 from src.infrastructure.persistence.screening_result_repository import ScreeningResultRepository
 from src.infrastructure.kabu.ranking_repository import RankingRepository
 from src.config import config
+from src.infrastructure.calendar.japanese_calendar import is_trading_day
 from pathlib import Path
 
 

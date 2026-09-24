@@ -12,7 +12,7 @@ from pathlib import Path
 from src.config import config
 from src.application.market_regime_usecase import MarketRegimeUseCase
 from src.application.trading_usecase import TradingUseCase
-from src.domain.rules import is_market_closed, is_trading_session
+from src.domain.rules import is_market_closed
 from src.infrastructure.kabu.get_token import get_api_token
 from src.infrastructure.persistence.filtering_result_repository import FilteringResultRepository
 from src.infrastructure.persistence.filter_decision_repository import FilterDecisionRepository
@@ -20,6 +20,7 @@ from src.infrastructure.execution_lock import market_workflow_lock
 from src.infrastructure.notification.slack_notify import notify_daily, process_notification
 from src.infrastructure.paper.paper_order_executor import PaperOrderExecutor
 from src.infrastructure.market_data.yahoo_index_client import YahooIndexClient
+from src.infrastructure.calendar.japanese_calendar import is_trading_session
 
 def create_trading_use_case(token: str) -> TradingUseCase:
     """実行モードに応じた取引ユースケースを組み立てます。"""

@@ -2,7 +2,7 @@ from datetime import date, datetime
 
 from src.config import config
 from src.entrypoints import run_trading
-from src.domain.rules import is_trading_day, is_trading_session
+from src.infrastructure.calendar.japanese_calendar import is_trading_day, is_trading_session
 
 
 def test_is_trading_session_accepts_weekday_market_hours():

@@ -675,6 +675,7 @@ def simulate_timeseries_backtest(
     filter_decision_repository: FilterDecisionRepository | None = None,
     target_positions: int | None = None,
     max_order_amount_per_trade: float | None = None,
+    api_soft_limit: float | None = None,
     order_unit: int = config.ORDER_UNIT,
 ) -> dict:
     """日付ごとのフィルタリング結果を、日足または分足で再生します。
@@ -988,7 +989,7 @@ def simulate_timeseries_backtest(
                     bar for bar_date, bar in sorted(
                         (ohlc_history_by_symbol_date or {}).get(symbol, {}).items()
                     )
-                    if bar_date <= date_text
+                    if bar_date < date_text
                 ]
                 atr_stop_triggered = False
                 if enable_atr_stop_loss and holdings.get(symbol, 0) > 0 and daily_bars:
@@ -1035,7 +1036,7 @@ def simulate_timeseries_backtest(
                     dated_bars = (ohlc_history_by_symbol_date or {}).get(symbol, {})
                     daily_bars = [
                         bar for bar_date, bar in sorted(dated_bars.items())
-                        if bar_date <= date_text
+                        if bar_date < date_text
                     ]
                     if target_positions is not None:
                         open_position_count = sum(1 for q in holdings.values() if q > 0)
@@ -1050,8 +1051,12 @@ def simulate_timeseries_backtest(
                             continue
                         remaining_slots = max(target_positions - open_position_count, 1)
                         budget_per_position = cash / remaining_slots
-                        if max_order_amount_per_trade is not None:
-                            budget_per_position = min(budget_per_position, max_order_amount_per_trade)
+                        budget_limits = [
+                            limit for limit in (max_order_amount_per_trade, api_soft_limit)
+                            if limit is not None
+                        ]
+                        if budget_limits:
+                            budget_per_position = min(budget_per_position, *budget_limits)
                         base_qty = calculate_buy_quantity(price, budget_per_position, order_unit)
                     else:
                         base_qty = qty_per_trade

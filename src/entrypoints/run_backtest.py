@@ -350,6 +350,7 @@ def main() -> None:
         sizing_kwargs = {
             "target_positions": target_positions,
             "max_order_amount_per_trade": max_order_amount_per_trade,
+            "api_soft_limit": config.API_SOFT_LIMIT if target_positions is not None else None,
         }
         if (target_positions is not None or max_order_amount_per_trade is not None) and not args.filtering_dir:
             logger.warning(

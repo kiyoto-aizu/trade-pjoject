@@ -10,15 +10,14 @@ flowchart TD
     FilterCheck -->|Yes| Preflight[10候補の確定終値と板情報を事前取得]
     Preflight --> PreflightCheck{全銘柄のデータ取得成功？}
     PreflightCheck -->|No| NotifySkip
-    PreflightCheck -->|Yes| Allocate[資金配分で発注対象を最大3銘柄に決定]
-    Allocate --> Loop[監視ループ開始]
+    PreflightCheck -->|Yes| Loop[フィルタ結果の全候補を監視]
 
     Loop --> History[確定終値からSMA5・RSI14を計算]
     History --> Board[対象銘柄の現在値を取得]
     Board --> Signal{SMA乖離とRSIの条件に合致？}
     Signal -->|No| Next[次の銘柄]
     Signal -->|Yes| Account[現金残高・保有株を再取得]
-    Account --> Safety{キルスイッチ・予算・保有・重複注文がOK？}
+    Account --> Safety{キルスイッチ・予算・保有上限・重複注文がOK？}
     Safety -->|No| Next
     Safety -->|Yes| Order[注文送信]
     Order --> Record[成功時のみ注文履歴・監査情報を保存]

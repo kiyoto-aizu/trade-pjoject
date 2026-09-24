@@ -297,6 +297,18 @@ def test_timeseries_backtest_target_positions_caps_max_order_amount():
     assert [s["qty"] for s in capped["signals"] if s["side"] == OrderSide.BUY.value] == [100, 100]
 
 
+def test_timeseries_backtest_target_positions_caps_api_soft_limit():
+    daily_symbols, dated_history = _two_symbol_daily_history_and_symbols()
+
+    capped = simulate_timeseries_backtest(
+        daily_symbols, dated_history, starting_cash=40_000.0, qty_per_trade=100,
+        close_at_eod=False, enable_volatility_adjustment=False, market_regime_enabled=False,
+        target_positions=2, api_soft_limit=5_000.0,
+    )
+
+    assert [s for s in capped["signals"] if s["side"] == OrderSide.BUY.value] == []
+
+
 def test_timeseries_backtest_target_positions_limit_skips_new_buys():
     daily_symbols, dated_history = _two_symbol_daily_history_and_symbols()
 
@@ -311,6 +323,48 @@ def test_timeseries_backtest_target_positions_limit_skips_new_buys():
     assert buy_symbols == {"7203"}
     # 先に買えた7203は、余った現金枠(40,000円/1枠)をすべて使った数量になる
     assert [s["qty"] for s in limited["signals"] if s["side"] == OrderSide.BUY.value] == [400]
+
+
+def test_timeseries_backtest_atr_uses_only_completed_daily_bars(monkeypatch):
+    captured_bars = []
+
+    def capture_assessment(bars, *args, **kwargs):
+        captured_bars.append(list(bars))
+        return None
+
+    monkeypatch.setattr("src.application.backtest_usecase.assess_volatility", capture_assessment)
+    dated_history = {
+        "7203": {
+            "2026-09-01": 90.0,
+            "2026-09-02": 90.0,
+            "2026-09-03": 90.0,
+            "2026-09-04": 90.0,
+            "2026-09-05": 90.0,
+            "2026-09-06": 92.0,
+            "2026-09-07": 120.0,
+        },
+    }
+    ohlc = {
+        "7203": {
+            date_text: DailyBar(91.0, 89.0, 90.0)
+            for date_text in dated_history["7203"]
+        },
+    }
+    ohlc["7203"]["2026-09-07"] = DailyBar(999.0, 1.0, 120.0)
+
+    simulate_timeseries_backtest(
+        {"2026-09-06": ["7203"], "2026-09-07": ["7203"]},
+        dated_history,
+        starting_cash=20_000.0,
+        qty_per_trade=100,
+        ohlc_history_by_symbol_date=ohlc,
+        close_at_eod=False,
+        enable_volatility_adjustment=False,
+        market_regime_enabled=False,
+    )
+
+    assert captured_bars
+    assert all(all(bar.high != 999.0 for bar in bars) for bars in captured_bars)
 
 
 def test_timeseries_backtest_danger_skips_buy_but_does_not_change_sell_logic(tmp_path):

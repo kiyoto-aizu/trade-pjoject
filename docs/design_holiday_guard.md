@@ -23,29 +23,27 @@ def is_trading_session(now, open_hour, open_minute, close_hour, close_minute) ->
     ...
 ```
 
-また、リポジトリ全体を確認したが `jpholiday` 等の祝日判定ライブラリは導入されていない。
+祝日判定ライブラリはdomain層ではなく、`src/infrastructure/calendar/japanese_calendar.py`から利用する。
 
 ## 3. 修正方針
 
 1. `jpholiday`ライブラリを新規依存として追加する
-2. `src/domain/rules.py`に稼働日判定の単一の関数`is_trading_day(target_date: date) -> bool`を新設する
-3. `is_trading_session()`は`is_trading_day()`を内部で呼び出す形に変更する（土日判定ロジックの重複を解消）
+2. `src/domain/rules.py`に稼働日判定の単一の関数`is_trading_day(target_date: date, holiday_checker=...) -> bool`を新設する
+3. 祝日ライブラリは`src/infrastructure/calendar/japanese_calendar.py`で注入し、domain層は外部ライブラリに依存しない。`is_trading_session()`も注入された判定関数を内部で呼び出す。
 4. `run_filtering.py`・`run_screening.py`の`main()`冒頭に、`is_trading_day()`による早期returnガードを追加する（`run_trading.py`と同じ「非稼働日ならログを出して終了」というパターンに揃える）
 
 ## 4. インターフェース設計
 
 ```python
-# src/domain/rules.py（新設）
-import jpholiday
-
-def is_trading_day(target_date: date) -> bool:
+# src/domain/rules.py
+def is_trading_day(target_date: date, holiday_checker=None) -> bool:
     """
     指定日が株式市場の稼働日かどうかを判定します。
     土曜・日曜・祝日・年末年始(12/31, 1/2, 1/3)を非稼働日とします。
     """
     if target_date.weekday() >= 5:
         return False
-    if jpholiday.is_holiday(target_date):
+    if holiday_checker is not None and holiday_checker(target_date):
         return False
     if target_date.month == 12 and target_date.day == 31:
         return False
@@ -54,20 +52,25 @@ def is_trading_day(target_date: date) -> bool:
     return True
 
 
-def is_trading_session(now: datetime, open_hour, open_minute, close_hour, close_minute) -> bool:
+def is_trading_session(
+    now: datetime, open_hour, open_minute, close_hour, close_minute,
+    holiday_checker=None,
+) -> bool:
     """稼働日かつ市場時間内かを判定します。"""
-    if not is_trading_day(now.date()):
+    if not is_trading_day(now.date(), holiday_checker=holiday_checker):
         return False
     session_start = time(open_hour, open_minute)
     session_end = time(close_hour, close_minute)
     return session_start <= now.time() < session_end
 ```
 
+`src/infrastructure/calendar/japanese_calendar.py`が`jpholiday.is_holiday`を注入して、アプリケーションから利用する日本市場向けの公開関数を提供する。domain層は外部ライブラリに依存しない。
+
 `run_filtering.py` / `run_screening.py`側の追加ガード（イメージ）:
 
 ```python
 from datetime import date
-from src.domain.rules import is_trading_day
+from src.infrastructure.calendar.japanese_calendar import is_trading_day
 
 def main() -> None:
     configure_logging()

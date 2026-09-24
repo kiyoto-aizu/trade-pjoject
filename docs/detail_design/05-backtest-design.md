@@ -81,9 +81,8 @@
 バックテストは「本番の判定ロジックをできるだけ再現する」ことが前提。
 
 - **シグナル判定（SMA5/RSI）は本番と共通**: `domain/rules.py`の純粋関数を両方から呼んでいるため、ここは一致している。
-- **数量計算は本番相当のモードをオプションで用意（Issue 3対応済み、2026-09-18）**: 本番の`trading_usecase.py`は`calculate_buy_quantity`＋残り枠数ベースの予算配分（`wallet_amount / max(TARGET_POSITIONS - open_position_count, 1)`を`MAX_ORDER_AMOUNT_PER_TRADE`でキャップ、2026-09-17実装）で数量を決める。バックテスト側は既定では従来通り`qty_per_trade`固定値だが、`simulate_timeseries_backtest`に新設した`target_positions`/`max_order_amount_per_trade`/`order_unit`を指定すると、本番と同じ「残り建玉枠で現金按分→上限額でキャップ→単元で丸め」＋「`open_position_count >= target_positions`での新規買いスキップ（`TARGET_POSITIONS_LIMIT_SKIP`として記録）」に切り替わる。
-  - CLI側は`run_backtest.py`の`--production-sizing`（`config.TARGET_POSITIONS`/`config.MAX_ORDER_AMOUNT_PER_TRADE`を既定値として使用）、または`--target-positions`/`--max-order-amount`個別指定で有効化する。`--filtering-dir`を使う`simulate_timeseries_backtest`系の呼び出し8箇所すべてに反映済み。`simulate_backtest`（レガシー・固定銘柄モード）は対象外。
-  - 未指定時は既存の固定数量モードのまま（後方互換）。既存テスト29件は無変更で通過、新規3件を追加し全232件パス確認済み（詳細: `docs/task-backtest-quantity-parity.md`）。
+- **数量計算は本番相当サイジングをデフォルトにする（ADR-0004、Issue 3対応済み）**: 本番の`trading_usecase.py`は`calculate_buy_quantity`＋残り枠数ベースの予算配分（`wallet_amount / max(TARGET_POSITIONS - open_position_count, 1)`を`MAX_ORDER_AMOUNT_PER_TRADE`でキャップ）で数量を決める。バックテストも既定で、`target_positions`/`max_order_amount_per_trade`を使い、本番と同じ「残り建玉枠で現金按分→上限額でキャップ→単元で丸め」＋「`open_position_count >= target_positions`での新規買いスキップ（`TARGET_POSITIONS_LIMIT_SKIP`として記録）」を適用する。
+  - CLI側は`--target-positions`/`--max-order-amount`を個別指定でき、省略時はそれぞれ`config.TARGET_POSITIONS`/`config.MAX_ORDER_AMOUNT_PER_TRADE`を使う。固定数量の比較用途では`--fixed-qty`を指定して`--qty`を使う。旧`--production-sizing`は非推奨no-opとして残す。`simulate_backtest`（レガシー・固定銘柄モード）は対象外。
   - **残課題**: 本番の`wallet_amount`（APIから都度取得する買付可能額）はバックテストでは`cash`変数で代替している。信用取引や買付余力の考え方が変わった場合はこの対応関係を再検討する。`api_soft_limit`（API発注上限）はバックテストには対応する概念がないため未反映（実発注をしないため影響は限定的と判断）。
 
 ---
@@ -133,5 +132,6 @@
 - 本番相当の評価は常に`simulate_timeseries_backtest`（日次フィルタリング結果の再生）を正とする
 - 約定モデルは「Nバー遅延＋成行スリッページ／指値はスリッページなし」で固定
 - ATR/MarketRegimeの適用有無はいずれもデフォルトで有効（`enable_volatility_adjustment=True`, `market_regime_enabled=True`）
-- 数量計算はデフォルトで`qty_per_trade`固定（後方互換）。本番相当の予算配分で検証したい場合は`--production-sizing`等で明示的に有効化する（Issue 3対応済み、2026-09-18。詳細: `docs/task-backtest-quantity-parity.md`）
+- 数量計算はデフォルトで本番相当の予算配分を使い、固定数量が必要な場合だけ`--fixed-qty`を指定する（ADR-0004）
+- 週次など期間を完全一致させる評価では、`--start-date`と`--end-date`を両方指定する。未指定時は`--days`による相対カットオフを使う（ADR-0005）
 - entrypointsの肥大化（データ取得・比較整形の内包）は、coding-guidelines.md 5節の「例外」として本設計書で正式に許容する

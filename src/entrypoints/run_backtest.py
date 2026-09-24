@@ -110,6 +110,67 @@ def load_daily_filtering_symbols(directory: Path) -> dict[str, list[str]]:
     return daily_symbols
 
 
+def _validate_backtest_arguments(args: argparse.Namespace) -> None:
+    if (args.start_date is None) != (args.end_date is None):
+        raise ValueError("--start-date と --end-date は両方指定してください")
+    if args.fixed_qty and (
+        args.target_positions is not None or args.max_order_amount is not None
+    ):
+        raise ValueError(
+            "--fixed-qty と --target-positions/--max-order-amount は同時指定できません"
+        )
+
+
+def _build_sizing_kwargs(args: argparse.Namespace) -> dict[str, object]:
+    _validate_backtest_arguments(args)
+    if args.production_sizing:
+        logger.warning("--production-sizing は非推奨です。指定しても挙動は変わりません。")
+
+    if args.fixed_qty:
+        target_positions = None
+        max_order_amount_per_trade = None
+    else:
+        target_positions = (
+            args.target_positions
+            if args.target_positions is not None
+            else config.TARGET_POSITIONS
+        )
+        max_order_amount_per_trade = (
+            args.max_order_amount
+            if args.max_order_amount is not None
+            else config.MAX_ORDER_AMOUNT_PER_TRADE
+        )
+    return {
+        "target_positions": target_positions,
+        "max_order_amount_per_trade": max_order_amount_per_trade,
+        "api_soft_limit": config.API_SOFT_LIMIT if target_positions is not None else None,
+    }
+
+
+def _filter_daily_symbols(
+    daily_symbols: dict[str, list[str]],
+    start_date: date | None,
+    end_date: date | None,
+    days: int,
+) -> dict[str, list[str]]:
+    if start_date is not None and end_date is not None:
+        logger.warning("--start-date/--end-date を優先し、--days は無視します。")
+        return {
+            date_text: symbols_on_day
+            for date_text, symbols_on_day in daily_symbols.items()
+            if start_date <= date.fromisoformat(date_text) <= end_date
+        }
+    if daily_symbols:
+        latest_date = max(date.fromisoformat(date_text) for date_text in daily_symbols)
+        cutoff = latest_date - timedelta(days=days)
+        return {
+            date_text: symbols_on_day
+            for date_text, symbols_on_day in daily_symbols.items()
+            if date.fromisoformat(date_text) >= cutoff
+        }
+    return daily_symbols
+
+
 def fetch_yahoo_dated_history(symbols: list[str], days: int = 90) -> dict[str, dict[str, float]]:
     """Yahoo Financeから日付付きの日足終値を取得します。"""
     dated_history: dict[str, dict[str, float]] = {}
@@ -269,26 +330,30 @@ def main() -> None:
         parser.add_argument("--filtering-dir", type=Path, default=None, help="日付別フィルタリング結果のディレクトリ")
         parser.add_argument("--history", type=Path, default=default_history_path, help="銘柄ごとの終値履歴JSONファイル")
         parser.add_argument("--cash", type=float, default=100000.0, help="開始現金")
-        parser.add_argument("--qty", type=int, default=100, help="1回の売買数量（--production-sizing未指定時のみ使用）")
+        parser.add_argument("--qty", type=int, default=100, help="1回の売買数量（--fixed-qty指定時のみ使用）")
         parser.add_argument(
             "--production-sizing",
             action="store_true",
             help=(
-                "本番(trading_usecase.py)と同じ予算配分ロジックで数量を計算する"
-                "（残り建玉枠で現金按分＋上限額でキャップ。--qtyは無視される）"
+                "非推奨。指定しても挙動は変わらず、本番相当サイジングがデフォルトで適用される"
             ),
+        )
+        parser.add_argument(
+            "--fixed-qty",
+            action="store_true",
+            help="固定数量モードを使用する（--qtyを使用）",
         )
         parser.add_argument(
             "--target-positions",
             type=int,
             default=None,
-            help="同時保有銘柄数の上限（既定: --production-sizing時はconfig.TARGET_POSITIONS）",
+            help="同時保有銘柄数の上限（既定: config.TARGET_POSITIONS）",
         )
         parser.add_argument(
             "--max-order-amount",
             type=float,
             default=None,
-            help="1回あたりの発注上限額（既定: --production-sizing時はconfig.MAX_ORDER_AMOUNT_PER_TRADE）",
+            help="1回あたりの発注上限額（既定: config.MAX_ORDER_AMOUNT_PER_TRADE）",
         )
         parser.add_argument("--fee", type=float, default=config.BACKTEST_FEE_RATE, help="片道手数料率 (例: 0.001 = 0.1%%)")
         parser.add_argument(
@@ -311,6 +376,8 @@ def main() -> None:
         )
         parser.add_argument("--live", action="store_true", help="Yahoo Finance から実データを取得してバックテストを実行")
         parser.add_argument("--days", type=int, default=730, help="Yahoo Finance から取得する日数（既定: 約2年）")
+        parser.add_argument("--start-date", type=date.fromisoformat, default=None, help="評価開始日（YYYY-MM-DD。--end-dateと同時指定）")
+        parser.add_argument("--end-date", type=date.fromisoformat, default=None, help="評価終了日（YYYY-MM-DD。--start-dateと同時指定）")
         parser.add_argument("--allow-overnight", action="store_true", help="持ち越しを許可し、当日終値での強制決済を無効にする")
         parser.add_argument(
             "--minute-bars-dir",
@@ -336,25 +403,17 @@ def main() -> None:
             help="MarketRegime導入前後を比較する（--liveの日付付きバックテストが必要）",
         )
         args = parser.parse_args()
+        _validate_backtest_arguments(args)
         minute_bar_repository = ParquetMinuteBarRepository(args.minute_bars_dir) if args.minute_bars_dir else None
 
-        target_positions = args.target_positions
-        max_order_amount_per_trade = args.max_order_amount
-        if args.production_sizing:
-            if target_positions is None:
-                target_positions = config.TARGET_POSITIONS
-            if max_order_amount_per_trade is None:
-                max_order_amount_per_trade = config.MAX_ORDER_AMOUNT_PER_TRADE
+        sizing_kwargs = _build_sizing_kwargs(args)
+        target_positions = sizing_kwargs["target_positions"]
+        max_order_amount_per_trade = sizing_kwargs["max_order_amount_per_trade"]
         # simulate_backtest（固定銘柄・レガシーモード）は対象外。target_positions等を
         # 明示指定した場合のみ simulate_timeseries_backtest 側の呼び出しに反映する。
-        sizing_kwargs = {
-            "target_positions": target_positions,
-            "max_order_amount_per_trade": max_order_amount_per_trade,
-            "api_soft_limit": config.API_SOFT_LIMIT if target_positions is not None else None,
-        }
         if (target_positions is not None or max_order_amount_per_trade is not None) and not args.filtering_dir:
             logger.warning(
-                "--production-sizing/--target-positions/--max-order-amount は "
+                "--fixed-qty/--target-positions/--max-order-amount は "
                 "--filtering-dir（simulate_timeseries_backtest）でのみ有効です。固定銘柄モードでは無視されます。"
             )
 
@@ -373,14 +432,9 @@ def main() -> None:
             if not args.live:
                 raise ValueError("--filtering-dir を使う場合は --live も指定してください")
             daily_symbols = load_daily_filtering_symbols(args.filtering_dir)
-            if daily_symbols:
-                latest_date = max(date.fromisoformat(date_text) for date_text in daily_symbols)
-                cutoff = latest_date - timedelta(days=args.days)
-                daily_symbols = {
-                    date_text: symbols_on_day
-                    for date_text, symbols_on_day in daily_symbols.items()
-                    if date.fromisoformat(date_text) >= cutoff
-                }
+            daily_symbols = _filter_daily_symbols(
+                daily_symbols, args.start_date, args.end_date, args.days
+            )
             symbols = sorted({symbol for symbols_on_day in daily_symbols.values() for symbol in symbols_on_day})
             history = fetch_yahoo_dated_history(symbols, days=args.days + 5)
             ohlc_history = fetch_yahoo_dated_ohlc(symbols, days=args.days + 5) if args.compare_atr else None

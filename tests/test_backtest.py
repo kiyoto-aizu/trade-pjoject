@@ -1,5 +1,6 @@
 import json
 from datetime import date
+from types import SimpleNamespace
 
 import pytest
 
@@ -13,7 +14,14 @@ from src.domain.enums import OrderSide
 from src.domain.market_regime import MarketRegime
 from src.config import config
 from src.domain.rules import calculate_rsi
-from src.entrypoints.run_backtest import fetch_yahoo_history, load_history, save_backtest_result
+from src.entrypoints.run_backtest import (
+    _build_sizing_kwargs,
+    _filter_daily_symbols,
+    _validate_backtest_arguments,
+    fetch_yahoo_history,
+    load_history,
+    save_backtest_result,
+)
 from src.infrastructure.analysis.daily_analyzer import OpenAIDailyAnalyzer
 from src.domain.models import MinuteBar
 from src.domain.volatility import DailyBar
@@ -83,6 +91,88 @@ def test_save_backtest_result_keeps_latest_and_timestamped_archive(tmp_path):
     assert archive_path != output_path
     assert archive_path.stem.startswith("latest_timeseries_")
     assert output_path.read_text(encoding="utf-8") == archive_path.read_text(encoding="utf-8")
+
+
+def _backtest_args(**overrides):
+    values = {
+        "start_date": None,
+        "end_date": None,
+        "fixed_qty": False,
+        "target_positions": None,
+        "max_order_amount": None,
+        "production_sizing": False,
+    }
+    values.update(overrides)
+    return SimpleNamespace(**values)
+
+
+def test_backtest_default_sizing_uses_config_values(monkeypatch):
+    monkeypatch.setattr(config, "TARGET_POSITIONS", 7)
+    monkeypatch.setattr(config, "MAX_ORDER_AMOUNT_PER_TRADE", 12345.0)
+    monkeypatch.setattr(config, "API_SOFT_LIMIT", 9999.0)
+
+    assert _build_sizing_kwargs(_backtest_args()) == {
+        "target_positions": 7,
+        "max_order_amount_per_trade": 12345.0,
+        "api_soft_limit": 9999.0,
+    }
+
+
+def test_backtest_fixed_qty_disables_production_sizing():
+    assert _build_sizing_kwargs(_backtest_args(fixed_qty=True)) == {
+        "target_positions": None,
+        "max_order_amount_per_trade": None,
+        "api_soft_limit": None,
+    }
+
+
+def test_backtest_production_sizing_is_deprecated_noop(caplog):
+    default = _build_sizing_kwargs(_backtest_args())
+    with caplog.at_level("WARNING"):
+        deprecated = _build_sizing_kwargs(_backtest_args(production_sizing=True))
+
+    assert deprecated == default
+    assert "非推奨" in caplog.text
+
+
+@pytest.mark.parametrize("option", ["target_positions", "max_order_amount"])
+def test_backtest_fixed_qty_rejects_sizing_overrides(option):
+    with pytest.raises(ValueError, match="同時指定できません"):
+        _validate_backtest_arguments(_backtest_args(fixed_qty=True, **{option: 1}))
+
+
+@pytest.mark.parametrize("missing", ["start_date", "end_date"])
+def test_backtest_date_range_requires_both_dates(missing):
+    values = {"start_date": date(2026, 9, 21), "end_date": date(2026, 9, 25)}
+    values[missing] = None
+
+    with pytest.raises(ValueError, match="両方指定"):
+        _validate_backtest_arguments(_backtest_args(**values))
+
+
+def test_backtest_explicit_date_range_filters_daily_symbols_and_period():
+    daily_symbols = {
+        "2026-09-18": ["7203"],
+        "2026-09-21": ["7203"],
+        "2026-09-22": ["9984"],
+        "2026-09-25": ["7203"],
+        "2026-09-28": ["9984"],
+    }
+
+    filtered = _filter_daily_symbols(
+        daily_symbols, date(2026, 9, 21), date(2026, 9, 25), days=1
+    )
+    result = simulate_timeseries_backtest(
+        filtered,
+        {
+            "7203": {date_text: 100.0 for date_text in filtered},
+            "9984": {date_text: 100.0 for date_text in filtered},
+        },
+    )
+
+    assert list(filtered) == ["2026-09-21", "2026-09-22", "2026-09-25"]
+    assert result["period_start"] == "2026-09-21"
+    assert result["period_end"] == "2026-09-25"
 
 
 def test_backtest_analyzer_uses_backtest_specific_review_prompt(monkeypatch):

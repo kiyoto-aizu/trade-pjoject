@@ -1,0 +1,220 @@
+diff --git a/requirements.txt b/requirements.txt
+index ce4d600..723b0ac 100644
+--- a/requirements.txt
++++ b/requirements.txt
+@@ -1,5 +1,6 @@
+ python-dotenv
+ requests==2.34.2
++jpholiday
+ pytest
+ pytest-cov
+ pyarrow
+diff --git a/src/domain/rules.py b/src/domain/rules.py
+index 4102279..0ee9526 100644
+--- a/src/domain/rules.py
++++ b/src/domain/rules.py
+@@ -5,9 +5,11 @@
+ ================================================================================
+ """
+ import logging
+-from datetime import datetime, time, timedelta
++from datetime import date, datetime, time, timedelta
+ from typing import List, Optional
+ 
++import jpholiday
++
+ from src.domain.enums import OrderSide
+ from src.domain.models import ExclusionResult, OrderHistoryEntry, PriceFilterResult, PriceLimit, ScoredCandidate, TradeSignal
+ 
+@@ -82,9 +84,31 @@ def is_market_closed(now: time, close_hour: int, close_minute: int) -> bool:
+     return (now.hour, now.minute) >= (close_hour, close_minute)
+ 
+ 
++def is_trading_day(target_date: date) -> bool:
++    """
++    指定日が株式市場の稼働日かどうかを判定します。
++    土曜・日曜・祝日・年末年始(12/31, 1/2, 1/3)を非稼働日とします。
++
++    Args:
++        target_date: 判定対象の日付
++
++    Returns:
++        稼働日の場合True
++    """
++    if target_date.weekday() >= 5:
++        return False
++    if jpholiday.is_holiday(target_date):
++        return False
++    if target_date.month == 12 and target_date.day == 31:
++        return False
++    if target_date.month == 1 and target_date.day in (2, 3):
++        return False
++    return True
++
++
+ def is_trading_session(now: datetime, open_hour: int, open_minute: int, close_hour: int, close_minute: int) -> bool:
+-    """平日の市場時間内かを判定します。"""
+-    if now.weekday() >= 5:
++    """稼働日かつ市場時間内かを判定します。"""
++    if not is_trading_day(now.date()):
+         return False
+     session_start = time(open_hour, open_minute)
+     session_end = time(close_hour, close_minute)
+diff --git a/src/entrypoints/run_filtering.py b/src/entrypoints/run_filtering.py
+index c1ada1e..9dab5fc 100644
+--- a/src/entrypoints/run_filtering.py
++++ b/src/entrypoints/run_filtering.py
+@@ -20,6 +20,7 @@ from src.infrastructure.market_data.yahoo_finance_client import YahooFinanceClie
+ from src.infrastructure.notification.slack_notify import notify_daily, process_notification
+ from src.infrastructure.persistence.filtering_result_repository import FilteringResultRepository
+ from src.infrastructure.persistence.screening_result_repository import ScreeningResultRepository
++from src.domain.rules import is_trading_day
+ 
+ def notify_result(message: str) -> None:
+     notify_daily(message)
+@@ -92,6 +93,9 @@ def main() -> None:
+     args = parser.parse_args()
+ 
+     configure_logging()
++    if not is_trading_day(args.target_date or date.today()):
++        logging.getLogger(__name__).info('休場日のため、フィルタリングを開始しません。')
++        return
+     with market_workflow_lock() as acquired:
+         if not acquired:
+             logging.getLogger(__name__).warning("他の市場処理が実行中のため、フィルタリングを中止します。")
+diff --git a/src/entrypoints/run_screening.py b/src/entrypoints/run_screening.py
+index c982d70..94a75df 100644
+--- a/src/entrypoints/run_screening.py
++++ b/src/entrypoints/run_screening.py
+@@ -24,6 +24,7 @@ from src.infrastructure.persistence.historical_regulation_repository import Hist
+ from src.infrastructure.market_data.historical_ranking_repository import HistoricalRankingRepository
+ from src.infrastructure.market_data.yahoo_finance_client import YahooFinanceClient
+ from src.application.screening_usecase import ScreeningUseCase
++from src.domain.rules import is_trading_day
+ 
+ def notify_result(message: str) -> None:
+     notify_daily(message)
+@@ -64,8 +65,12 @@ def main() -> None:
+     parser = argparse.ArgumentParser(description="スクリーニングを実行します")
+     parser.add_argument("--date", dest="target_date", type=date.fromisoformat, help="対象日 (YYYY-MM-DD)。指定時は銘柄マスタと日足から再計算")
+     args = parser.parse_args()
++    effective_target_date = args.target_date or date.today()
+ 
+     configure_logging()
++    if not is_trading_day(effective_target_date):
++        logging.getLogger(__name__).info('休場日のため、スクリーニングを開始しません。')
++        return
+     with market_workflow_lock() as acquired:
+         if not acquired:
+             logging.getLogger(__name__).warning("他の市場処理が実行中のため、スクリーニングを中止します。")
+@@ -86,7 +91,6 @@ def main() -> None:
+             # 価格を意識した絞り込みができない。上場銘柄マスタ+日足データから
+             # 全銘柄のランキングを自前計算するHistoricalRankingRepositoryを、
+             # 通常運用(過去日付指定なし)でも常用する。
+-            effective_target_date = args.target_date or date.today()
+             ranking_repository = HistoricalRankingRepository(
+                 ListedSecurityRepository(root / 'data' / 'universe' / 'listed_securities.csv'),
+                 YahooFinanceClient(),
+diff --git a/tests/test_filtering_entrypoint.py b/tests/test_filtering_entrypoint.py
+new file mode 100644
+index 0000000..306618f
+--- /dev/null
++++ b/tests/test_filtering_entrypoint.py
+@@ -0,0 +1,22 @@
++import sys
++
++from src.entrypoints import run_filtering
++
++
++def test_main_does_not_request_token_on_non_trading_day(monkeypatch):
++    monkeypatch.setattr(sys, 'argv', ['run_filtering.py'])
++    monkeypatch.setattr(run_filtering, 'configure_logging', lambda: None)
++    monkeypatch.setattr(run_filtering, 'is_trading_day', lambda _: False)
++    monkeypatch.setattr(
++        run_filtering,
++        'get_api_token',
++        lambda: (_ for _ in ()).throw(AssertionError('token was requested')),
++    )
++    monkeypatch.setattr(
++        run_filtering,
++        'market_workflow_lock',
++        lambda: (_ for _ in ()).throw(AssertionError('market_workflow_lock was entered')),
++    )
++
++    # 例外が発生しなければ、休場日ガードで早期returnできている
++    run_filtering.main()
+diff --git a/tests/test_screening_entrypoint.py b/tests/test_screening_entrypoint.py
+new file mode 100644
+index 0000000..222160c
+--- /dev/null
++++ b/tests/test_screening_entrypoint.py
+@@ -0,0 +1,22 @@
++import sys
++
++from src.entrypoints import run_screening
++
++
++def test_main_does_not_request_token_on_non_trading_day(monkeypatch):
++    monkeypatch.setattr(sys, 'argv', ['run_screening.py'])
++    monkeypatch.setattr(run_screening, 'configure_logging', lambda: None)
++    monkeypatch.setattr(run_screening, 'is_trading_day', lambda _: False)
++    monkeypatch.setattr(
++        run_screening,
++        'get_api_token',
++        lambda: (_ for _ in ()).throw(AssertionError('token was requested')),
++    )
++    monkeypatch.setattr(
++        run_screening,
++        'market_workflow_lock',
++        lambda: (_ for _ in ()).throw(AssertionError('market_workflow_lock was entered')),
++    )
++
++    # 例外が発生しなければ、休場日ガードで早期returnできている
++    run_screening.main()
+diff --git a/tests/test_trading_entrypoint.py b/tests/test_trading_entrypoint.py
+index 4dfe7e1..a3a41ba 100644
+--- a/tests/test_trading_entrypoint.py
++++ b/tests/test_trading_entrypoint.py
+@@ -1,8 +1,8 @@
+-from datetime import datetime
++from datetime import date, datetime
+ 
+ from src.config import config
+ from src.entrypoints import run_trading
+-from src.domain.rules import is_trading_session
++from src.domain.rules import is_trading_day, is_trading_session
+ 
+ 
+ def test_is_trading_session_accepts_weekday_market_hours():
+@@ -16,6 +16,31 @@ def test_is_trading_session_rejects_boundaries_and_weekends():
+     assert not is_trading_session(datetime(2026, 9, 5, 10, 0), 9, 0, 15, 30)
+ 
+ 
++def test_is_trading_session_rejects_holiday_on_a_weekday():
++    # 2026-09-21は敬老の日（月曜）
++    assert not is_trading_session(datetime(2026, 9, 21, 10, 0), 9, 0, 15, 30)
++
++
++def test_is_trading_day_accepts_ordinary_weekday():
++    assert is_trading_day(date(2026, 9, 4))
++
++
++def test_is_trading_day_rejects_weekend():
++    assert not is_trading_day(date(2026, 9, 5))  # 土曜
++    assert not is_trading_day(date(2026, 9, 6))  # 日曜
++
++
++def test_is_trading_day_rejects_national_holiday():
++    assert not is_trading_day(date(2026, 9, 21))  # 敬老の日（月曜）
++
++
++def test_is_trading_day_rejects_year_end_new_year():
++    assert not is_trading_day(date(2026, 12, 31))
++    assert not is_trading_day(date(2026, 1, 1))  # 元日（祝日カレンダー経由）
++    assert not is_trading_day(date(2026, 1, 2))
++    assert not is_trading_day(date(2026, 1, 3))
++
++
+ def test_main_does_not_request_token_outside_trading_session(monkeypatch):
+     monkeypatch.setattr(run_trading, 'configure_logging', lambda: None)
+     monkeypatch.setattr(

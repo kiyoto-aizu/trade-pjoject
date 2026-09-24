@@ -20,6 +20,7 @@ from src.infrastructure.market_data.yahoo_finance_client import YahooFinanceClie
 from src.infrastructure.notification.slack_notify import notify_daily, process_notification
 from src.infrastructure.persistence.filtering_result_repository import FilteringResultRepository
 from src.infrastructure.persistence.screening_result_repository import ScreeningResultRepository
+from src.domain.rules import is_trading_day
 
 def notify_result(message: str) -> None:
     notify_daily(message)
@@ -92,6 +93,9 @@ def main() -> None:
     args = parser.parse_args()
 
     configure_logging()
+    if not is_trading_day(args.target_date or date.today()):
+        logging.getLogger(__name__).info('休場日のため、フィルタリングを開始しません。')
+        return
     with market_workflow_lock() as acquired:
         if not acquired:
             logging.getLogger(__name__).warning("他の市場処理が実行中のため、フィルタリングを中止します。")

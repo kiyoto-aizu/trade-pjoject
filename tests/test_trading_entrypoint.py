@@ -1,8 +1,8 @@
-from datetime import datetime
+from datetime import date, datetime
 
 from src.config import config
 from src.entrypoints import run_trading
-from src.domain.rules import is_trading_session
+from src.domain.rules import is_trading_day, is_trading_session
 
 
 def test_is_trading_session_accepts_weekday_market_hours():
@@ -14,6 +14,31 @@ def test_is_trading_session_rejects_boundaries_and_weekends():
     assert not is_trading_session(datetime(2026, 9, 4, 8, 59), 9, 0, 15, 30)
     assert not is_trading_session(datetime(2026, 9, 4, 15, 30), 9, 0, 15, 30)
     assert not is_trading_session(datetime(2026, 9, 5, 10, 0), 9, 0, 15, 30)
+
+
+def test_is_trading_session_rejects_holiday_on_a_weekday():
+    # 2026-09-21は敬老の日（月曜）
+    assert not is_trading_session(datetime(2026, 9, 21, 10, 0), 9, 0, 15, 30)
+
+
+def test_is_trading_day_accepts_ordinary_weekday():
+    assert is_trading_day(date(2026, 9, 4))
+
+
+def test_is_trading_day_rejects_weekend():
+    assert not is_trading_day(date(2026, 9, 5))  # 土曜
+    assert not is_trading_day(date(2026, 9, 6))  # 日曜
+
+
+def test_is_trading_day_rejects_national_holiday():
+    assert not is_trading_day(date(2026, 9, 21))  # 敬老の日（月曜）
+
+
+def test_is_trading_day_rejects_year_end_new_year():
+    assert not is_trading_day(date(2026, 12, 31))
+    assert not is_trading_day(date(2026, 1, 1))  # 元日（祝日カレンダー経由）
+    assert not is_trading_day(date(2026, 1, 2))
+    assert not is_trading_day(date(2026, 1, 3))
 
 
 def test_main_does_not_request_token_outside_trading_session(monkeypatch):

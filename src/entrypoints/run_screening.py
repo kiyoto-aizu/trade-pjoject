@@ -24,6 +24,7 @@ from src.infrastructure.persistence.historical_regulation_repository import Hist
 from src.infrastructure.market_data.historical_ranking_repository import HistoricalRankingRepository
 from src.infrastructure.market_data.yahoo_finance_client import YahooFinanceClient
 from src.application.screening_usecase import ScreeningUseCase
+from src.domain.rules import is_trading_day
 
 def notify_result(message: str) -> None:
     notify_daily(message)
@@ -64,8 +65,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="スクリーニングを実行します")
     parser.add_argument("--date", dest="target_date", type=date.fromisoformat, help="対象日 (YYYY-MM-DD)。指定時は銘柄マスタと日足から再計算")
     args = parser.parse_args()
+    effective_target_date = args.target_date or date.today()
 
     configure_logging()
+    if not is_trading_day(effective_target_date):
+        logging.getLogger(__name__).info('休場日のため、スクリーニングを開始しません。')
+        return
     with market_workflow_lock() as acquired:
         if not acquired:
             logging.getLogger(__name__).warning("他の市場処理が実行中のため、スクリーニングを中止します。")
@@ -86,7 +91,6 @@ def main() -> None:
             # 価格を意識した絞り込みができない。上場銘柄マスタ+日足データから
             # 全銘柄のランキングを自前計算するHistoricalRankingRepositoryを、
             # 通常運用(過去日付指定なし)でも常用する。
-            effective_target_date = args.target_date or date.today()
             ranking_repository = HistoricalRankingRepository(
                 ListedSecurityRepository(root / 'data' / 'universe' / 'listed_securities.csv'),
                 YahooFinanceClient(),

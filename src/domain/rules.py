@@ -5,8 +5,10 @@
 ================================================================================
 """
 import logging
-from datetime import datetime, time, timedelta
+from datetime import date, datetime, time, timedelta
 from typing import List, Optional
+
+import jpholiday
 
 from src.domain.enums import OrderSide
 from src.domain.models import ExclusionResult, OrderHistoryEntry, PriceFilterResult, PriceLimit, ScoredCandidate, TradeSignal
@@ -82,9 +84,31 @@ def is_market_closed(now: time, close_hour: int, close_minute: int) -> bool:
     return (now.hour, now.minute) >= (close_hour, close_minute)
 
 
+def is_trading_day(target_date: date) -> bool:
+    """
+    指定日が株式市場の稼働日かどうかを判定します。
+    土曜・日曜・祝日・年末年始(12/31, 1/2, 1/3)を非稼働日とします。
+
+    Args:
+        target_date: 判定対象の日付
+
+    Returns:
+        稼働日の場合True
+    """
+    if target_date.weekday() >= 5:
+        return False
+    if jpholiday.is_holiday(target_date):
+        return False
+    if target_date.month == 12 and target_date.day == 31:
+        return False
+    if target_date.month == 1 and target_date.day in (2, 3):
+        return False
+    return True
+
+
 def is_trading_session(now: datetime, open_hour: int, open_minute: int, close_hour: int, close_minute: int) -> bool:
-    """平日の市場時間内かを判定します。"""
-    if now.weekday() >= 5:
+    """稼働日かつ市場時間内かを判定します。"""
+    if not is_trading_day(now.date()):
         return False
     session_start = time(open_hour, open_minute)
     session_end = time(close_hour, close_minute)

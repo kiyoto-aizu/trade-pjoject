@@ -1,5 +1,6 @@
 python-dotenv
 requests==2.34.2
+jpholiday
 pytest
 pytest-cov
 pyarrow

@@ -1,0 +1,143 @@
+"""実注文を発生させないペーパートレード用の注文実行実装。"""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import date
+from typing import Dict, List, Optional
+from pathlib import Path
+
+from src.config import config
+from src.infrastructure.persistence.storage import read_json, write_json
+
+
+@dataclass
+class PaperOrderClient:
+    """現在価格を使って仮想残高と保有株を更新する注文実行器。"""
+
+    prices: Dict[str, float]
+    cash: float = 1_000_000.0
+    order_qty: int = field(default_factory=lambda: config.ORDER_UNIT)
+    fee_rate: float = field(default_factory=lambda: config.PAPER_FEE_RATE)
+    market_slippage_bps: float = field(default_factory=lambda: config.PAPER_MARKET_SLIPPAGE_BPS)
+    holdings: Dict[str, int] = field(default_factory=dict)
+    average_costs: Dict[str, float] = field(default_factory=dict)
+    orders: List[dict] = field(default_factory=list)
+    realized_pnl: float = 0.0
+    realized_pnl_date: str = field(default_factory=lambda: date.today().isoformat())
+    state_path: Optional[Path] = None
+    _next_order_id: int = 1
+
+    def __post_init__(self) -> None:
+        if self.state_path is None:
+            return
+        state = read_json(self.state_path)
+        if not isinstance(state, dict):
+            return
+        self.cash = float(state.get('cash', self.cash))
+        self.holdings = {
+            str(symbol): int(quantity)
+            for symbol, quantity in state.get('holdings', {}).items()
+            if int(quantity) > 0
+        }
+        self.average_costs = {
+            str(symbol): float(cost)
+            for symbol, cost in state.get('average_costs', {}).items()
+            if symbol in self.holdings
+        }
+        self._next_order_id = max(1, int(state.get('next_order_id', self._next_order_id)))
+        self.realized_pnl_date = state.get('realized_pnl_date', self.realized_pnl_date)
+        self.realized_pnl = float(state.get('realized_pnl', 0.0)) if self.realized_pnl_date == date.today().isoformat() else 0.0
+
+    def _save_state(self) -> None:
+        if self.state_path is not None:
+            write_json(self.state_path, {
+                'cash': self.cash,
+                'holdings': self.holdings,
+                'average_costs': self.average_costs,
+                'next_order_id': self._next_order_id,
+                'realized_pnl': self.realized_pnl,
+                'realized_pnl_date': self.realized_pnl_date,
+            })
+
+    def set_price(self, symbol: str, price: float) -> None:
+        self.prices[symbol] = price
+
+    def place_market_order(self, token: str, symbol: str, side: str, quantity: Optional[int] = None) -> Optional[dict]:
+        """成行注文を不利方向のスリッページ・手数料込みで仮想約定する。"""
+        del token
+        price = self.prices.get(symbol)
+        if price is None:
+            return None
+
+        quantity = quantity if quantity is not None else self.order_qty
+        held_quantity = self.holdings.get(symbol, 0)
+        slippage_rate = self.market_slippage_bps / 10_000.0
+        if side == config.OrderSide.BUY.value:
+            execution_price = price * (1.0 + slippage_rate)
+            fee = execution_price * quantity * self.fee_rate
+            required_cash = execution_price * quantity + fee
+            if self.cash < required_cash:
+                return None
+            self.cash -= required_cash
+            self.holdings[symbol] = held_quantity + quantity
+            previous_cost = self.average_costs.get(symbol, 0.0) * held_quantity
+            self.average_costs[symbol] = (previous_cost + required_cash) / self.holdings[symbol]
+        elif side == config.OrderSide.SELL.value:
+            if held_quantity < quantity:
+                return None
+            execution_price = price * (1.0 - slippage_rate)
+            fee = execution_price * quantity * self.fee_rate
+            self._reset_daily_realized_pnl_if_needed()
+            self.realized_pnl += (execution_price - self.average_costs.get(symbol, 0.0)) * quantity - fee
+            self.cash += execution_price * quantity - fee
+            remaining_quantity = held_quantity - quantity
+            if remaining_quantity:
+                self.holdings[symbol] = remaining_quantity
+            else:
+                self.holdings.pop(symbol, None)
+                self.average_costs.pop(symbol, None)
+        else:
+            return None
+
+        order_id = f"paper-{self._next_order_id}"
+        self._next_order_id += 1
+        order = {
+            "Result": 0,
+            "OrderId": order_id,
+            "Symbol": symbol,
+            "Side": side,
+            "Qty": quantity,
+            "Price": execution_price,
+            "SignalPrice": price,
+            "Fee": fee,
+            "SlippageBps": self.market_slippage_bps,
+        }
+        self.orders.append(order)
+        self._save_state()
+        return order
+
+    def get_wallet_cash(self, token: str) -> dict:
+        del token
+        return {'StockAccountWallet': self.cash}
+
+    def _reset_daily_realized_pnl_if_needed(self) -> None:
+        today = date.today().isoformat()
+        if self.realized_pnl_date != today:
+            self.realized_pnl_date = today
+            self.realized_pnl = 0.0
+
+    def get_daily_realized_pnl(self) -> float:
+        self._reset_daily_realized_pnl_if_needed()
+        return round(self.realized_pnl, 2)
+
+    def get_positions(self, token: str) -> list[dict]:
+        del token
+        return [
+            {
+                'Symbol': symbol,
+                'Side': config.OrderSide.SELL.value,
+                'HoldQty': quantity,
+                'ProfitLoss': round((self.prices.get(symbol, 0.0) - self.average_costs.get(symbol, 0.0)) * quantity, 2),
+            }
+            for symbol, quantity in self.holdings.items()
+        ]

@@ -11,7 +11,7 @@ from src.infrastructure.persistence.storage import read_json, write_json
 
 
 @dataclass
-class PaperOrderExecutor:
+class PaperOrderClient:
     """現在価格を使って仮想残高と保有株を更新する注文実行器。"""
 
     prices: Dict[str, float]

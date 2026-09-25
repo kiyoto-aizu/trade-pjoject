@@ -12,7 +12,7 @@ from src.infrastructure.persistence.filter_decision_repository import FilterDeci
 from src.domain.volatility import VolatilityLevel
 from src.domain.rules import is_market_closed
 from src.application.trading_usecase import TradingUseCase
-from src.infrastructure.paper.paper_order_executor import PaperOrderExecutor
+from src.infrastructure.paper.paper_order_client import PaperOrderClient
 from src.entrypoints.run_trading import create_trading_use_case
 
 
@@ -457,7 +457,7 @@ def test_trading_use_case_factory_uses_paper_executor_by_default(monkeypatch):
 
     bot = create_trading_use_case(token='dummy')
 
-    assert isinstance(bot.order_sender, PaperOrderExecutor)
+    assert isinstance(bot.order_sender, PaperOrderClient)
 
 
 def test_trading_use_case_factory_rejects_live_mode_without_explicit_production_settings(monkeypatch):
@@ -965,7 +965,7 @@ def test_trading_use_case_does_not_record_rejected_order(monkeypatch, tmp_path):
 def test_trading_use_case_liquidates_all_holdings_before_market_close(monkeypatch, tmp_path):
     symbols_path = tmp_path / 'top_symbols.json'
     symbols_path.write_text(json.dumps(['7203']), encoding='utf-8')
-    executor = PaperOrderExecutor(prices={'7203': 100.0}, cash=20_000.0, order_qty=100)
+    executor = PaperOrderClient(prices={'7203': 100.0}, cash=20_000.0, order_qty=100)
     executor.place_market_order('unused', '7203', config.OrderSide.BUY.value)
 
     class BoardClient:

@@ -10,9 +10,12 @@ if (-not (Test-Path $python)) {
     exit 1
 }
 
+. (Join-Path $PSScriptRoot 'common\stderr_logging.ps1')
+$stderrLog = Initialize-StderrLogging -ProjectRoot $projectRoot -ScriptName 'run_monthly_analysis'
+
 Push-Location $projectRoot
 try {
-    & $python -m src.entrypoints.run_monthly_analysis
+    & $python -m src.entrypoints.run_monthly_analysis 2>> $stderrLog
     exit $LASTEXITCODE
 }
 finally {

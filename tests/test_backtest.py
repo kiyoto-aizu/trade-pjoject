@@ -14,13 +14,13 @@ from src.domain.enums import OrderSide
 from src.domain.market_regime import MarketRegime
 from src.config import config
 from src.domain.rules import calculate_rsi
+from src.application.backtest_report_usecase import save_backtest_result
+from src.infrastructure.market_data.yahoo_backtest_history_client import fetch_yahoo_history
+from src.infrastructure.persistence.backtest_input_repository import load_history
 from src.entrypoints.run_backtest import (
     _build_sizing_kwargs,
     _filter_daily_symbols,
     _validate_backtest_arguments,
-    fetch_yahoo_history,
-    load_history,
-    save_backtest_result,
 )
 from src.infrastructure.analysis.daily_analyzer import OpenAIDailyAnalyzer
 from src.domain.models import MinuteBar

@@ -18,7 +18,7 @@ from src.infrastructure.persistence.filtering_result_repository import Filtering
 from src.infrastructure.persistence.filter_decision_repository import FilterDecisionRepository
 from src.infrastructure.execution_lock import market_workflow_lock
 from src.infrastructure.notification.slack_notify import notify_daily, process_notification
-from src.infrastructure.paper.paper_order_executor import PaperOrderExecutor
+from src.infrastructure.paper.paper_order_client import PaperOrderClient
 from src.infrastructure.market_data.yahoo_index_client import YahooIndexClient
 from src.infrastructure.calendar.japanese_calendar import is_trading_session
 
@@ -29,7 +29,7 @@ def create_trading_use_case(token: str) -> TradingUseCase:
     runtime_state_dir.mkdir(parents=True, exist_ok=True)
     order_sender = None
     if config.TRADING_MODE == 'paper':
-        order_sender = PaperOrderExecutor(
+        order_sender = PaperOrderClient(
             prices={},
             cash=config.OPERATING_CAPITAL,
             state_path=root / config.PAPER_ACCOUNT_STATE_FILE,

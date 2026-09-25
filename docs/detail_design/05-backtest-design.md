@@ -4,6 +4,16 @@
 担当ユースケース: `application/backtest_usecase.py`
 エントリポイント: `entrypoints/run_backtest.py`（coding-guidelines.md記載の構成に対応、ただし5節参照）
 
+バックテスト実行に必要な責務は次のモジュールに分離する。
+
+| 責務 | モジュール |
+|---|---|
+| Yahoo Finance履歴取得 | `infrastructure/market_data/yahoo_backtest_history_client.py` |
+| 銘柄・履歴ファイル読み込み | `infrastructure/persistence/backtest_input_repository.py` |
+| シミュレーション | `application/backtest_usecase.py` |
+| 結果比較・保存 | `application/backtest_report_usecase.py` |
+| CLI引数解析と実行調整 | `entrypoints/run_backtest.py` |
+
 ---
 
 ## 1. 2つの実行モードと使い分け
@@ -121,9 +131,9 @@
 
 ## 9. 既知の課題（coding-guidelines.md逸脱・技術的負債）
 
-- **entrypointsが「薄いラッパー」の責務を超えている**: `run_backtest.py`（628行）はYahoo Financeからの取得関数（`fetch_yahoo_history`/`fetch_yahoo_dated_history`/`fetch_yahoo_dated_ohlc`）や、比較結果の整形関数（`_comparison_summary`/`_market_regime_comparison_summary`）を直接持っている。coding-guidelines.md 5節は「市場セッション判定・ロック・事前データ取得までを行う場合は薄いラッパーの責務を超えるため、application側へ移すか、例外として設計書に明記する」としているため、本設計書をもってこれを正式な例外として明記する。ただし将来的には`infrastructure/market_data/`配下（既存の`YahooFinanceClient`等）へ寄せて重複を解消したい。
+- **entrypointの実行調整**: `run_backtest.py`は引数解析、依存オブジェクトの組み立て、バックテスト呼び出し、結果通知に限定する。Yahoo Finance取得、入力ファイル読み込み、結果比較・保存は上表のinfrastructure/applicationモジュールが担当する。
 - **`simulate_backtest`と`simulate_timeseries_backtest`のロジック重複**: 約定価格計算・ATR評価・シグナル判定など多くの処理が両関数にほぼ同じ形で存在する。1節の通り本線は`simulate_timeseries_backtest`なので、`simulate_backtest`を薄いラッパー（内部で`daily_symbols`を全期間固定で組み立てて`simulate_timeseries_backtest`を呼ぶ形）に置き換えられないか、次回リファクタリング時に検討する。
-- **`run_backtest.py`内の比較ロジック（`_comparison_summary`等）が`backtest_usecase.py`の`compare_*_backtest()`と役割が重複**している。CLIオプション（`--compare-atr`等）とライブラリ関数側で別々にA/Bテストを組み立てており、将来どちらかに統一したい。
+- **CLI比較実行の重複**: `--compare-atr`等のCLI比較と`backtest_usecase.py`の`compare_*_backtest()`は別経路でA/Bテストを組み立てている。将来どちらかに統一したい。
 
 ---
 
@@ -134,4 +144,4 @@
 - ATR/MarketRegimeの適用有無はいずれもデフォルトで有効（`enable_volatility_adjustment=True`, `market_regime_enabled=True`）
 - 数量計算はデフォルトで本番相当の予算配分を使い、固定数量が必要な場合だけ`--fixed-qty`を指定する（ADR-0004）
 - 週次など期間を完全一致させる評価では、`--start-date`と`--end-date`を両方指定する。未指定時は`--days`による相対カットオフを使う（ADR-0005）
-- entrypointsの肥大化（データ取得・比較整形の内包）は、coding-guidelines.md 5節の「例外」として本設計書で正式に許容する
+- entrypointsは引数解析と実行調整に限定し、データ取得・入力読込・結果比較・保存はapplication/infrastructureへ分離する

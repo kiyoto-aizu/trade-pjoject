@@ -1,113 +1,21 @@
 import argparse
-import csv
 import json
 import logging
-import re
-import urllib.request
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
-import requests
-
-from src.application.backtest_usecase import simulate_backtest, simulate_timeseries_backtest
+from src.application.backtest_execution_usecase import execute_backtest
+from src.application.backtest_report_usecase import save_backtest_result
 from src.config import config
-from src.domain.volatility import DailyBar
-from src.domain.market_regime import calculate_market_regime_series
-from src.infrastructure.market_data.yahoo_index_client import YahooIndexClient
 from src.infrastructure.analysis.daily_analyzer import create_daily_analyzer
-from src.infrastructure.notification.slack_notify import format_result_notification, notify_analysis, process_notification
+from src.infrastructure.notification.slack_notify import (
+    format_result_notification,
+    notify_analysis,
+    process_notification,
+)
 from src.infrastructure.persistence.parquet_minute_bar_repository import ParquetMinuteBarRepository
-from src.infrastructure.persistence.filter_decision_repository import FilterDecisionRepository
 
 logger = logging.getLogger(__name__)
-
-
-def _to_yahoo_ticker(symbol: str) -> str:
-    """日本株コードをYahoo Financeのticker形式へ変換します。"""
-    symbol_text = str(symbol).upper()
-    if re.fullmatch(r"\d{3,4}[A-Z]?", symbol_text):
-        return f"{symbol_text}.T"
-    return symbol_text
-
-
-def fetch_yahoo_history(symbols: list[str], days: int = 30) -> dict[str, list[float]]:
-    """Yahoo Finance から最新の終値履歴を取得して、銘柄ごとの価格一覧を返す。"""
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        "Accept": "application/json",
-        "Accept-Language": "ja-JP,ja;q=0.9,en-US;q=0.8,en;q=0.7",
-    }
-    history: dict[str, list[float]] = {}
-    for symbol in symbols:
-        symbol_text = str(symbol)
-        ticker = _to_yahoo_ticker(symbol_text)
-        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
-        payload = None
-        try:
-            response = requests.get(url, params={"interval": "1d", "range": f"{days}d"}, headers=headers, timeout=30)
-            if hasattr(response, "raise_for_status"):
-                response.raise_for_status()
-            if hasattr(response, "json") and callable(response.json):
-                payload = response.json()
-            elif hasattr(response, "read"):
-                raw = response.read()
-                payload = json.loads(raw.decode("utf-8") if isinstance(raw, bytes) else raw)
-            else:
-                raise ValueError("unsupported response type")
-        except Exception as exc:
-            logger.warning("%s の価格取得(requests)に失敗しました: %s", symbol_text, exc)
-            try:
-                request = urllib.request.Request(
-                    url + f"?interval=1d&range={days}d",
-                    headers=headers,
-                    method="GET",
-                )
-                with urllib.request.urlopen(request, timeout=20) as response:
-                    payload = json.loads(response.read().decode("utf-8"))
-            except Exception as fallback_exc:
-                logger.warning("%s の価格取得(urllib)に失敗しました: %s", symbol_text, fallback_exc)
-                continue
-
-        result = payload.get("chart", {}).get("result", [])
-        if not result:
-            continue
-
-        closes: list[float] = []
-        for quote in result[0].get("indicators", {}).get("quote", []):
-            for close in quote.get("close", []):
-                if close is not None:
-                    closes.append(float(close))
-
-        if closes:
-            history[symbol_text] = closes[-days:]
-    return history
-
-
-def load_symbols(path: Path) -> list[str]:
-    if not path.exists():
-        raise FileNotFoundError(f"銘柄ファイルが見つかりません: {path}")
-
-    data = json.loads(path.read_text(encoding="utf-8"))
-    if isinstance(data, dict):
-        if "symbols" in data:
-            return [str(symbol) for symbol in data["symbols"]]
-        return [str(symbol) for symbol in data.keys()]
-    if isinstance(data, list):
-        return [str(symbol) for symbol in data]
-    raise ValueError(f"銘柄ファイルの形式が不正です: {path}")
-
-
-def load_daily_filtering_symbols(directory: Path) -> dict[str, list[str]]:
-    """日付別のフィルタリング結果を読み込みます。"""
-    if not directory.exists():
-        raise FileNotFoundError(f"フィルタリング結果ディレクトリが見つかりません: {directory}")
-
-    daily_symbols: dict[str, list[str]] = {}
-    for path in sorted(directory.glob("*.json")):
-        data = json.loads(path.read_text(encoding="utf-8"))
-        date_text = str(data.get("date") or path.stem) if isinstance(data, dict) else path.stem
-        daily_symbols[date_text] = load_symbols(path)
-    return daily_symbols
 
 
 def _validate_backtest_arguments(args: argparse.Namespace) -> None:
@@ -171,507 +79,76 @@ def _filter_daily_symbols(
     return daily_symbols
 
 
-def fetch_yahoo_dated_history(symbols: list[str], days: int = 90) -> dict[str, dict[str, float]]:
-    """Yahoo Financeから日付付きの日足終値を取得します。"""
-    dated_history: dict[str, dict[str, float]] = {}
-    for symbol in symbols:
-        symbol_text = str(symbol)
-        ticker = _to_yahoo_ticker(symbol_text)
-        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
-        payload = None
-        try:
-            response = requests.get(
-                url,
-                params={"interval": "1d", "range": f"{days}d"},
-                headers={"User-Agent": "Mozilla/5.0"},
-                timeout=30,
-            )
-            response.raise_for_status()
-            payload = response.json()
-        except Exception as exc:
-            logger.warning("%s の日付付き価格取得に失敗しました: %s", symbol_text, exc)
-            continue
-
-        result = payload.get("chart", {}).get("result", [])
-        if not result:
-            continue
-        timestamps = result[0].get("timestamp", [])
-        quotes = result[0].get("indicators", {}).get("quote", [])
-        closes = quotes[0].get("close", []) if quotes else []
-        history = {
-            datetime.fromtimestamp(timestamp, tz=timezone.utc).date().isoformat(): float(close)
-            for timestamp, close in zip(timestamps, closes)
-            if close is not None
-        }
-        if history:
-            dated_history[symbol_text] = history
-    return dated_history
+def _build_parser(repo_root: Path) -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="バックテストを実行します")
+    parser.add_argument("--symbols", type=Path, default=repo_root / "data" / "filtering" / "2026-09-01.json", help="銘柄一覧のJSONファイル")
+    parser.add_argument("--filtering-dir", type=Path, default=None, help="日付別フィルタリング結果のディレクトリ")
+    parser.add_argument("--history", type=Path, default=repo_root / "data" / "backtest" / "sample_history.json", help="銘柄ごとの終値履歴JSONファイル")
+    parser.add_argument("--cash", type=float, default=100000.0, help="開始現金")
+    parser.add_argument("--qty", type=int, default=100, help="1回の売買数量（--fixed-qty指定時のみ使用）")
+    parser.add_argument("--production-sizing", action="store_true", help="非推奨。指定しても挙動は変わらず、本番相当サイジングがデフォルトで適用される")
+    parser.add_argument("--fixed-qty", action="store_true", help="固定数量モードを使用する（--qtyを使用）")
+    parser.add_argument("--target-positions", type=int, default=None, help="同時保有銘柄数の上限（既定: config.TARGET_POSITIONS）")
+    parser.add_argument("--max-order-amount", type=float, default=None, help="1回あたりの発注上限額（既定: config.MAX_ORDER_AMOUNT_PER_TRADE）")
+    parser.add_argument("--fee", type=float, default=config.BACKTEST_FEE_RATE, help="片道手数料率 (例: 0.001 = 0.1%%)")
+    parser.add_argument("--market-slippage-bps", type=float, default=config.BACKTEST_MARKET_SLIPPAGE_BPS, help="成行の片道スリッページ（bps、買いは加算・売りは減算）")
+    parser.add_argument("--execution-delay-bars", type=int, default=config.BACKTEST_EXECUTION_DELAY_BARS, help="シグナルから想定約定までの遅延バー数")
+    parser.add_argument("--order-type", choices=("market", "limit"), default=config.BACKTEST_ORDER_TYPE, help="想定注文種別（market: 成行、limit: シグナル価格の指値）")
+    parser.add_argument("--live", action="store_true", help="Yahoo Finance から実データを取得してバックテストを実行")
+    parser.add_argument("--days", type=int, default=730, help="Yahoo Finance から取得する日数（既定: 約2年）")
+    parser.add_argument("--start-date", type=date.fromisoformat, default=None, help="評価開始日（YYYY-MM-DD。--end-dateと同時指定）")
+    parser.add_argument("--end-date", type=date.fromisoformat, default=None, help="評価終了日（YYYY-MM-DD。--start-dateと同時指定）")
+    parser.add_argument("--allow-overnight", action="store_true", help="持ち越しを許可し、当日終値での強制決済を無効にする")
+    parser.add_argument("--minute-bars-dir", type=Path, default=None, help="分足データディレクトリ。指定時は分足ごとに判定・約定を再生します")
+    parser.add_argument("--indicator-source", choices=("daily", "minute"), default="daily", help="SMA5/RSIの算出元（既定: daily）")
+    parser.add_argument("--output", type=Path, default=None, help="結果JSONの保存先")
+    parser.add_argument("--compare-atr", action="store_true", help="同じOHLCデータでATRなし・ありを比較する（--liveが必要）")
+    parser.add_argument("--compare-market-regime", action="store_true", help="MarketRegime導入前後を比較する（--liveの日付付きバックテストが必要）")
+    return parser
 
 
-def fetch_yahoo_dated_ohlc(symbols: list[str], days: int = 90) -> dict[str, dict[str, DailyBar]]:
-    """Yahoo Financeから日付付きの日足OHLCを取得します。"""
-    ohlc_history: dict[str, dict[str, DailyBar]] = {}
-    for symbol in symbols:
-        ticker = _to_yahoo_ticker(str(symbol))
-        try:
-            response = requests.get(
-                f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}",
-                params={"interval": "1d", "range": f"{days}d"},
-                headers={"User-Agent": "Mozilla/5.0"},
-                timeout=30,
-            )
-            response.raise_for_status()
-            result = response.json().get("chart", {}).get("result", [])
-            if not result:
-                continue
-            chart = result[0]
-            timestamps = chart.get("timestamp", [])
-            quote = chart.get("indicators", {}).get("quote", [{}])[0]
-            highs = quote.get("high", [])
-            lows = quote.get("low", [])
-            closes = quote.get("close", [])
-            history = {
-                datetime.fromtimestamp(timestamp, tz=timezone.utc).date().isoformat(): DailyBar(
-                    high=float(high), low=float(low), close=float(close),
-                )
-                for timestamp, high, low, close in zip(timestamps, highs, lows, closes)
-                if high is not None and low is not None and close is not None
-            }
-            if history:
-                ohlc_history[str(symbol)] = history
-        except (requests.RequestException, KeyError, TypeError, ValueError, OverflowError) as exc:
-            logger.warning("%s の日付付きOHLC取得に失敗しました: %s", symbol, exc)
-    return ohlc_history
-
-
-def _comparison_summary(result: dict) -> dict:
-    signals = result.get("signals", [])
-    return {
-        "total_pnl": result.get("total_pnl", 0.0),
-        "total_trades": result.get("total_trades", 0),
-        "final_position": result.get("final_position", 0),
-        "cash": result.get("cash", 0.0),
-        "volatility_adjustment": result.get("volatility_adjustment", {}),
-        "atr_stop_loss_count": sum(1 for signal in signals if signal.get("note") == "atr_stop_loss"),
-        "fixed_stop_loss_count": sum(1 for signal in signals if signal.get("note") == "stop_loss"),
-        "trade_history": result.get("trade_history", []),
+def _display_result(result: dict, atr_comparison: dict | None, market_regime_comparison: dict | None) -> dict:
+    display_result = {
+        "総損益": result.get("総損益", result.get("total_pnl", 0.0)),
+        "勝率": result.get("勝率", result.get("win_rate", 0.0)),
+        "利益因子": result.get("利益因子", result.get("profit_factor", 0.0)),
+        "最大ドローダウン": result.get("最大ドローダウン", result.get("max_drawdown", 0.0)),
+        "総取引数": result.get("総取引数", result.get("total_trades", 0)),
+        "現金残高": result.get("現金残高", result.get("cash", 0.0)),
+        "最終保有数": result.get("最終保有数", result.get("final_position", 0)),
+        "取引履歴": result.get("取引履歴", result.get("trade_history", [])),
+        "銘柄別要約": result.get("銘柄別要約", result.get("summary_by_symbol", [])),
+        "日別要約": result.get("日別要約", result.get("daily_summary", [])),
+        "保有期間別要約": result.get("保有期間別要約", result.get("holding_bucket_summary", [])),
+        "対象期間": f"{result['period_start']} - {result['period_end']}" if result.get("period_start") else None,
     }
-
-
-def _market_regime_comparison_summary(baseline: dict, enabled: dict) -> dict:
-    return {
-        "baseline": {
-            "total_pnl": baseline.get("total_pnl", 0.0),
-            "total_trades": baseline.get("total_trades", 0),
-            "max_drawdown": baseline.get("max_drawdown", 0.0),
-        },
-        "with_market_regime": {
-            "total_pnl": enabled.get("total_pnl", 0.0),
-            "total_trades": enabled.get("total_trades", 0),
-            "max_drawdown": enabled.get("max_drawdown", 0.0),
-        },
-        "delta": {
-            "total_pnl": round(enabled.get("total_pnl", 0.0) - baseline.get("total_pnl", 0.0), 2),
-            "total_trades": enabled.get("total_trades", 0) - baseline.get("total_trades", 0),
-            "max_drawdown": round(enabled.get("max_drawdown", 0.0) - baseline.get("max_drawdown", 0.0), 2),
-        },
-        "market_regime_adjustment": enabled.get("market_regime_adjustment", {}),
-    }
-
-
-def load_history(path: Path) -> dict[str, list[float]]:
-    if not path.exists():
-        raise FileNotFoundError(f"価格履歴ファイルが見つかりません: {path}")
-
-    suffix = path.suffix.lower()
-    if suffix == ".json":
-        data = json.loads(path.read_text(encoding="utf-8"))
-        if not isinstance(data, dict):
-            raise ValueError(f"価格履歴ファイルの形式が不正です: {path}")
-        history: dict[str, list[float]] = {}
-        for symbol, values in data.items():
-            history[str(symbol)] = [float(value) for value in values]
-        return history
-
-    if suffix == ".csv":
-        history: dict[str, list[float]] = {}
-        with path.open("r", encoding="utf-8", newline="") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                symbol = str(row.get("symbol") or row.get("Symbol") or row.get("ticker") or row.get("Ticker"))
-                close_value = row.get("close") or row.get("Close") or row.get("price") or row.get("Price")
-                if not symbol or close_value is None:
-                    continue
-                history.setdefault(symbol, []).append(float(close_value))
-        return history
-
-    raise ValueError(f"対応していない履歴形式です: {path}")
-
-
-def save_backtest_result(output_path: Path, result: dict) -> Path:
-    """最新結果を保存し、同じ内容を実行時刻付きの履歴として保存します。"""
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    serialized = json.dumps(result, ensure_ascii=False, indent=2)
-    output_path.write_text(serialized, encoding="utf-8")
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-    archive_path = output_path.with_name(f"{output_path.stem}_{timestamp}{output_path.suffix}")
-    archive_path.write_text(serialized, encoding="utf-8")
-    return archive_path
+    if atr_comparison:
+        display_result["ATR比較"] = atr_comparison
+    if market_regime_comparison:
+        display_result["MarketRegime比較"] = market_regime_comparison
+    return display_result
 
 
 def main() -> None:
-    with process_notification('バックテスト', notify_lifecycle=False, trigger='手動実行'):
+    with process_notification("バックテスト", notify_lifecycle=False, trigger="手動実行"):
         repo_root = Path(__file__).resolve().parents[2]
-        default_symbols_path = repo_root / "data" / "filtering" / "2026-09-01.json"
-        default_history_path = repo_root / "data" / "backtest" / "sample_history.json"
-
-        parser = argparse.ArgumentParser(description="バックテストを実行します")
-        parser.add_argument("--symbols", type=Path, default=default_symbols_path, help="銘柄一覧のJSONファイル")
-        parser.add_argument("--filtering-dir", type=Path, default=None, help="日付別フィルタリング結果のディレクトリ")
-        parser.add_argument("--history", type=Path, default=default_history_path, help="銘柄ごとの終値履歴JSONファイル")
-        parser.add_argument("--cash", type=float, default=100000.0, help="開始現金")
-        parser.add_argument("--qty", type=int, default=100, help="1回の売買数量（--fixed-qty指定時のみ使用）")
-        parser.add_argument(
-            "--production-sizing",
-            action="store_true",
-            help=(
-                "非推奨。指定しても挙動は変わらず、本番相当サイジングがデフォルトで適用される"
-            ),
-        )
-        parser.add_argument(
-            "--fixed-qty",
-            action="store_true",
-            help="固定数量モードを使用する（--qtyを使用）",
-        )
-        parser.add_argument(
-            "--target-positions",
-            type=int,
-            default=None,
-            help="同時保有銘柄数の上限（既定: config.TARGET_POSITIONS）",
-        )
-        parser.add_argument(
-            "--max-order-amount",
-            type=float,
-            default=None,
-            help="1回あたりの発注上限額（既定: config.MAX_ORDER_AMOUNT_PER_TRADE）",
-        )
-        parser.add_argument("--fee", type=float, default=config.BACKTEST_FEE_RATE, help="片道手数料率 (例: 0.001 = 0.1%%)")
-        parser.add_argument(
-            "--market-slippage-bps",
-            type=float,
-            default=config.BACKTEST_MARKET_SLIPPAGE_BPS,
-            help="成行の片道スリッページ（bps、買いは加算・売りは減算）",
-        )
-        parser.add_argument(
-            "--execution-delay-bars",
-            type=int,
-            default=config.BACKTEST_EXECUTION_DELAY_BARS,
-            help="シグナルから想定約定までの遅延バー数",
-        )
-        parser.add_argument(
-            "--order-type",
-            choices=("market", "limit"),
-            default=config.BACKTEST_ORDER_TYPE,
-            help="想定注文種別（market: 成行、limit: シグナル価格の指値）",
-        )
-        parser.add_argument("--live", action="store_true", help="Yahoo Finance から実データを取得してバックテストを実行")
-        parser.add_argument("--days", type=int, default=730, help="Yahoo Finance から取得する日数（既定: 約2年）")
-        parser.add_argument("--start-date", type=date.fromisoformat, default=None, help="評価開始日（YYYY-MM-DD。--end-dateと同時指定）")
-        parser.add_argument("--end-date", type=date.fromisoformat, default=None, help="評価終了日（YYYY-MM-DD。--start-dateと同時指定）")
-        parser.add_argument("--allow-overnight", action="store_true", help="持ち越しを許可し、当日終値での強制決済を無効にする")
-        parser.add_argument(
-            "--minute-bars-dir",
-            type=Path,
-            default=None,
-            help="分足データディレクトリ。指定時は分足ごとに判定・約定を再生します",
-        )
-        parser.add_argument(
-            "--indicator-source",
-            choices=("daily", "minute"),
-            default="daily",
-            help="SMA5/RSIの算出元（既定: daily）",
-        )
-        parser.add_argument("--output", type=Path, default=None, help="結果JSONの保存先")
-        parser.add_argument(
-            "--compare-atr",
-            action="store_true",
-            help="同じOHLCデータでATRなし・ありを比較する（--liveが必要）",
-        )
-        parser.add_argument(
-            "--compare-market-regime",
-            action="store_true",
-            help="MarketRegime導入前後を比較する（--liveの日付付きバックテストが必要）",
-        )
-        args = parser.parse_args()
+        args = _build_parser(repo_root).parse_args()
         _validate_backtest_arguments(args)
-        minute_bar_repository = ParquetMinuteBarRepository(args.minute_bars_dir) if args.minute_bars_dir else None
-
         sizing_kwargs = _build_sizing_kwargs(args)
-        target_positions = sizing_kwargs["target_positions"]
-        max_order_amount_per_trade = sizing_kwargs["max_order_amount_per_trade"]
-        # simulate_backtest（固定銘柄・レガシーモード）は対象外。target_positions等を
-        # 明示指定した場合のみ simulate_timeseries_backtest 側の呼び出しに反映する。
-        if (target_positions is not None or max_order_amount_per_trade is not None) and not args.filtering_dir:
-            logger.warning(
-                "--fixed-qty/--target-positions/--max-order-amount は "
-                "--filtering-dir（simulate_timeseries_backtest）でのみ有効です。固定銘柄モードでは無視されます。"
-            )
-
+        if (sizing_kwargs["target_positions"] is not None or sizing_kwargs["max_order_amount_per_trade"] is not None) and not args.filtering_dir:
+            logger.warning("--fixed-qty/--target-positions/--max-order-amount は --filtering-dirでのみ有効です。固定銘柄モードでは無視されます。")
         if args.compare_atr and not args.live:
-            raise ValueError("--compare-atr を使う場合は --live を指定してください")
+            raise ValueError("--compare-atrを使う場合は--liveを指定してください")
         if args.compare_market_regime and not args.live:
-            raise ValueError("--compare-market-regime を使う場合は --live を指定してください")
-
-        atr_comparison = None
-        market_regime_comparison = None
-
+            raise ValueError("--compare-market-regimeを使う場合は--liveを指定してください")
+        minute_bar_repository = ParquetMinuteBarRepository(args.minute_bars_dir) if args.minute_bars_dir else None
         if args.indicator_source == "minute" and minute_bar_repository is None:
-            raise ValueError("--indicator-source minute を使う場合は --minute-bars-dir を指定してください")
+            raise ValueError("--indicator-source minuteを使う場合は--minute-bars-dirを指定してください")
+        result, atr_comparison, market_regime_comparison = execute_backtest(
+            args, sizing_kwargs, minute_bar_repository, repo_root,
+        )
 
-        if args.filtering_dir:
-            if not args.live:
-                raise ValueError("--filtering-dir を使う場合は --live も指定してください")
-            daily_symbols = load_daily_filtering_symbols(args.filtering_dir)
-            daily_symbols = _filter_daily_symbols(
-                daily_symbols, args.start_date, args.end_date, args.days
-            )
-            symbols = sorted({symbol for symbols_on_day in daily_symbols.values() for symbol in symbols_on_day})
-            history = fetch_yahoo_dated_history(symbols, days=args.days + 5)
-            ohlc_history = fetch_yahoo_dated_ohlc(symbols, days=args.days + 5) if args.compare_atr else None
-            market_regime_by_date = None
-            if args.compare_market_regime:
-                index_client = YahooIndexClient()
-                market_regime_by_date = {
-                    target_date.isoformat(): regime
-                    for target_date, regime in calculate_market_regime_series(
-                        index_client.get_daily_ohlc("^N225", range_=f"{args.days + 30}d"),
-                        index_client.get_daily_ohlc("^VIX", range_=f"{args.days + 30}d"),
-                        config.MARKET_REGIME_REALIZED_VOL_WINDOW,
-                        config.MARKET_REGIME_THRESHOLDS,
-                    ).items()
-                }
-            result = simulate_timeseries_backtest(
-                daily_symbols,
-                history,
-                starting_cash=args.cash,
-                qty_per_trade=args.qty, **sizing_kwargs,
-                fee_rate=args.fee,
-                market_slippage_bps=args.market_slippage_bps,
-                execution_delay_bars=args.execution_delay_bars,
-                order_type=args.order_type,
-                minute_bar_repository=minute_bar_repository,
-                indicator_source=args.indicator_source,
-                close_at_eod=not args.allow_overnight,
-                ohlc_history_by_symbol_date=ohlc_history,
-                market_regime_by_date=market_regime_by_date,
-                filter_decision_repository=FilterDecisionRepository(
-                    Path(__file__).resolve().parents[2] / "data" / "filter_decision_events.sqlite3"
-                ),
-            )
-            if args.compare_market_regime:
-                baseline = simulate_timeseries_backtest(
-                    daily_symbols,
-                    history,
-                    starting_cash=args.cash,
-                    qty_per_trade=args.qty, **sizing_kwargs,
-                    fee_rate=args.fee,
-                    market_slippage_bps=args.market_slippage_bps,
-                    execution_delay_bars=args.execution_delay_bars,
-                    order_type=args.order_type,
-                    minute_bar_repository=minute_bar_repository,
-                    indicator_source=args.indicator_source,
-                    close_at_eod=not args.allow_overnight,
-                    ohlc_history_by_symbol_date=ohlc_history,
-                    market_regime_enabled=False,
-                )
-                market_regime_comparison = _market_regime_comparison_summary(baseline, result)
-            if args.compare_atr:
-                baseline = simulate_timeseries_backtest(
-                    daily_symbols,
-                    history,
-                    starting_cash=args.cash,
-                    qty_per_trade=args.qty, **sizing_kwargs,
-                    fee_rate=args.fee,
-                    market_slippage_bps=args.market_slippage_bps,
-                    execution_delay_bars=args.execution_delay_bars,
-                    order_type=args.order_type,
-                    minute_bar_repository=minute_bar_repository,
-                    indicator_source=args.indicator_source,
-                    close_at_eod=not args.allow_overnight,
-                    ohlc_history_by_symbol_date=ohlc_history,
-                    enable_volatility_adjustment=False,
-                )
-                lot_only = simulate_timeseries_backtest(
-                    daily_symbols, history, starting_cash=args.cash, qty_per_trade=args.qty, **sizing_kwargs,
-                    fee_rate=args.fee, market_slippage_bps=args.market_slippage_bps,
-                    execution_delay_bars=args.execution_delay_bars, order_type=args.order_type,
-                    minute_bar_repository=minute_bar_repository, indicator_source=args.indicator_source,
-                    close_at_eod=not args.allow_overnight, ohlc_history_by_symbol_date=ohlc_history,
-                    enable_volatility_sizing=True, enable_atr_stop_loss=False,
-                )
-                atr_comparison = {
-                    "without_atr": _comparison_summary(baseline),
-                    "lot_adjustment_only": _comparison_summary(lot_only),
-                    "lot_adjustment_and_stop": _comparison_summary(result),
-                }
-        else:
-            symbols = load_symbols(args.symbols)
-            history = load_history(args.history) if args.history.exists() else {}
-            if args.live:
-                history = fetch_yahoo_history(symbols, days=args.days)
-
-            if minute_bar_repository is not None:
-                if not args.live:
-                    raise ValueError("--minute-bars-dir を使う固定銘柄モードでは --live を指定してください")
-                dated_history = fetch_yahoo_dated_history(symbols, days=args.days + 5)
-                ohlc_history = fetch_yahoo_dated_ohlc(symbols, days=args.days + 5) if args.compare_atr else None
-                daily_symbols = {
-                    date_text: symbols
-                    for date_text in sorted({
-                        date_text
-                        for symbol_history in dated_history.values()
-                        for date_text in symbol_history
-                    })
-                }
-                market_regime_by_date = None
-                if args.compare_market_regime:
-                    index_client = YahooIndexClient()
-                    market_regime_by_date = {
-                        target_date.isoformat(): regime
-                        for target_date, regime in calculate_market_regime_series(
-                            index_client.get_daily_ohlc("^N225", range_=f"{args.days + 30}d"),
-                            index_client.get_daily_ohlc("^VIX", range_=f"{args.days + 30}d"),
-                            config.MARKET_REGIME_REALIZED_VOL_WINDOW,
-                            config.MARKET_REGIME_THRESHOLDS,
-                        ).items()
-                    }
-                result = simulate_timeseries_backtest(
-                    daily_symbols,
-                    dated_history,
-                    starting_cash=args.cash,
-                    qty_per_trade=args.qty, **sizing_kwargs,
-                    fee_rate=args.fee,
-                    market_slippage_bps=args.market_slippage_bps,
-                    execution_delay_bars=args.execution_delay_bars,
-                    order_type=args.order_type,
-                    minute_bar_repository=minute_bar_repository,
-                    indicator_source=args.indicator_source,
-                    close_at_eod=not args.allow_overnight,
-                    ohlc_history_by_symbol_date=ohlc_history,
-                    market_regime_by_date=market_regime_by_date,
-                )
-                if args.compare_market_regime:
-                    baseline = simulate_timeseries_backtest(
-                        daily_symbols,
-                        dated_history,
-                        starting_cash=args.cash,
-                        qty_per_trade=args.qty, **sizing_kwargs,
-                        fee_rate=args.fee,
-                        market_slippage_bps=args.market_slippage_bps,
-                        execution_delay_bars=args.execution_delay_bars,
-                        order_type=args.order_type,
-                        minute_bar_repository=minute_bar_repository,
-                        indicator_source=args.indicator_source,
-                        close_at_eod=not args.allow_overnight,
-                        ohlc_history_by_symbol_date=ohlc_history,
-                        market_regime_enabled=False,
-                    )
-                    market_regime_comparison = _market_regime_comparison_summary(baseline, result)
-                if args.compare_atr:
-                    baseline = simulate_timeseries_backtest(
-                        daily_symbols,
-                        dated_history,
-                        starting_cash=args.cash,
-                        qty_per_trade=args.qty, **sizing_kwargs,
-                        fee_rate=args.fee,
-                        market_slippage_bps=args.market_slippage_bps,
-                        execution_delay_bars=args.execution_delay_bars,
-                        order_type=args.order_type,
-                        minute_bar_repository=minute_bar_repository,
-                        indicator_source=args.indicator_source,
-                        close_at_eod=not args.allow_overnight,
-                        ohlc_history_by_symbol_date=ohlc_history,
-                        enable_volatility_adjustment=False,
-                    )
-                    lot_only = simulate_timeseries_backtest(
-                        daily_symbols, dated_history, starting_cash=args.cash, qty_per_trade=args.qty, **sizing_kwargs,
-                        fee_rate=args.fee, market_slippage_bps=args.market_slippage_bps,
-                        execution_delay_bars=args.execution_delay_bars, order_type=args.order_type,
-                        minute_bar_repository=minute_bar_repository, indicator_source=args.indicator_source,
-                        close_at_eod=not args.allow_overnight, ohlc_history_by_symbol_date=ohlc_history,
-                        enable_volatility_sizing=True, enable_atr_stop_loss=False,
-                    )
-                    atr_comparison = {
-                        "without_atr": _comparison_summary(baseline),
-                        "lot_adjustment_only": _comparison_summary(lot_only),
-                        "lot_adjustment_and_stop": _comparison_summary(result),
-                    }
-            else:
-                ohlc_history = fetch_yahoo_dated_ohlc(symbols, days=args.days) if args.compare_atr else None
-                result = simulate_backtest(
-                    symbols,
-                    history,
-                    starting_cash=args.cash,
-                    qty_per_trade=args.qty,
-                    fee_rate=args.fee,
-                    market_slippage_bps=args.market_slippage_bps,
-                    execution_delay_bars=args.execution_delay_bars,
-                    order_type=args.order_type,
-                    close_at_eod=not args.allow_overnight,
-                    ohlc_history_by_symbol={
-                        symbol: [bar for _, bar in sorted((ohlc_history or {}).get(symbol, {}).items())]
-                        for symbol in symbols
-                    } if ohlc_history else None,
-                )
-                if args.compare_atr:
-                    baseline = simulate_backtest(
-                        symbols,
-                        history,
-                        starting_cash=args.cash,
-                        qty_per_trade=args.qty,
-                        fee_rate=args.fee,
-                        market_slippage_bps=args.market_slippage_bps,
-                        execution_delay_bars=args.execution_delay_bars,
-                        order_type=args.order_type,
-                        close_at_eod=not args.allow_overnight,
-                        enable_volatility_adjustment=False,
-                    )
-                    lot_only = simulate_backtest(
-                        symbols, history, starting_cash=args.cash, qty_per_trade=args.qty,
-                        fee_rate=args.fee, market_slippage_bps=args.market_slippage_bps,
-                        execution_delay_bars=args.execution_delay_bars, order_type=args.order_type,
-                        close_at_eod=not args.allow_overnight,
-                        ohlc_history_by_symbol={
-                            symbol: [bar for _, bar in sorted((ohlc_history or {}).get(symbol, {}).items())]
-                            for symbol in symbols
-                        } if ohlc_history else None,
-                        enable_volatility_sizing=True, enable_atr_stop_loss=False,
-                    )
-                    atr_comparison = {
-                        "without_atr": _comparison_summary(baseline),
-                        "lot_adjustment_only": _comparison_summary(lot_only),
-                        "lot_adjustment_and_stop": _comparison_summary(result),
-                    }
-
-        # CLI 出力は日本語ラベルを優先して見やすくする
-        display_result = {
-            "総損益": result.get("総損益", result.get("total_pnl", 0.0)),
-            "勝率": result.get("勝率", result.get("win_rate", 0.0)),
-            "利益因子": result.get("利益因子", result.get("profit_factor", 0.0)),
-            "最大ドローダウン": result.get("最大ドローダウン", result.get("max_drawdown", 0.0)),
-            "総取引数": result.get("総取引数", result.get("total_trades", 0)),
-            "現金残高": result.get("現金残高", result.get("cash", 0.0)),
-            "最終保有数": result.get("最終保有数", result.get("final_position", 0)),
-            "取引履歴": result.get("取引履歴", result.get("trade_history", [])),
-            "銘柄別要約": result.get("銘柄別要約", result.get("summary_by_symbol", [])),
-            "日別要約": result.get("日別要約", result.get("daily_summary", [])),
-            "保有期間別要約": result.get("保有期間別要約", result.get("holding_bucket_summary", [])),
-            "対象期間": f"{result['period_start']} - {result['period_end']}" if result.get("period_start") else None,
-        }
-        if atr_comparison:
-            display_result["ATR比較"] = atr_comparison
-        if market_regime_comparison:
-            display_result["MarketRegime比較"] = market_regime_comparison
+        display_result = _display_result(result, atr_comparison, market_regime_comparison)
         analyzer = create_daily_analyzer()
         llm_analysis = analyzer.analyze_backtest(display_result) if analyzer else None
         result["generated_at"] = datetime.now().isoformat(timespec="seconds")
@@ -682,10 +159,7 @@ def main() -> None:
         if llm_analysis:
             result["llm_analysis"] = llm_analysis
 
-        archive_path = None
-        if args.output:
-            archive_path = save_backtest_result(args.output, result)
-
+        archive_path = save_backtest_result(args.output, result) if args.output else None
         print(json.dumps(display_result, ensure_ascii=False, indent=2))
         report_lines = [
             f"対象期間: {display_result['対象期間'] or '指定なし'}",
@@ -712,10 +186,7 @@ def main() -> None:
             report_lines.append(f"履歴: {archive_path}")
         if llm_analysis:
             report_lines.extend(["LLMバックテスト評価(参考):", llm_analysis])
-        message = format_result_notification(
-            "分析運用", "バックテスト", "バックテストが完了しました。", report_lines
-        )
-        notify_analysis(message)
+        notify_analysis(format_result_notification("分析運用", "バックテスト", "バックテストが完了しました。", report_lines))
 
 
 if __name__ == "__main__":

@@ -14,13 +14,9 @@ if (-not (Test-Path $python)) {
 $env:TRADING_MODE = 'paper'
 $env:ENABLE_LIVE_ORDERING = 'false'
 
-# configure_logging()が呼ばれる前(importエラー等)の異常はアプリ側のログに
-# 一切残らないため、stderrだけここで別ファイルに捕捉する。中身が空のままなら正常。
-$logDir = Join-Path $projectRoot 'data\logs'
-if (-not (Test-Path $logDir)) {
-    New-Item -ItemType Directory -Path $logDir | Out-Null
-}
-$stderrLog = Join-Path $logDir 'run_trading_stderr.log'
+# configure_logging()が呼ばれる前(importエラー等)の異常を日付別stderrログへ保存する。
+. (Join-Path $PSScriptRoot 'common\stderr_logging.ps1')
+$stderrLog = Initialize-StderrLogging -ProjectRoot $projectRoot -ScriptName 'run_trading'
 
 Push-Location $projectRoot
 try {

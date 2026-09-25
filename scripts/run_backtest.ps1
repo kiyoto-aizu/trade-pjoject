@@ -10,6 +10,9 @@ if (-not (Test-Path $python)) {
     exit 1
 }
 
+. (Join-Path $PSScriptRoot 'common\stderr_logging.ps1')
+$stderrLog = Initialize-StderrLogging -ProjectRoot $projectRoot -ScriptName 'run_backtest'
+
 Push-Location $projectRoot
 try {
     & $python -m src.entrypoints.run_backtest `
@@ -19,7 +22,7 @@ try {
         --minute-bars-dir data/minute_bars_parquet `
         --indicator-source daily `
         --compare-market-regime `
-        --output data/backtest/latest_timeseries.json
+        --output data/backtest/latest_timeseries.json 2>> $stderrLog
     if ($LASTEXITCODE -ne 0) {
         exit $LASTEXITCODE
     }
@@ -37,7 +40,7 @@ try {
         --minute-bars-dir data/minute_bars_parquet `
         --indicator-source daily `
         --compare-market-regime `
-        --output data/backtest/latest_weekly.json
+        --output data/backtest/latest_weekly.json 2>> $stderrLog
     exit $LASTEXITCODE
 }
 finally {

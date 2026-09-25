@@ -16,7 +16,7 @@ from datetime import date, datetime, timedelta
 from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
 
-from src.entrypoints.run_backtest import load_daily_filtering_symbols
+from src.infrastructure.persistence.backtest_input_repository import load_daily_filtering_symbols
 from src.application.minute_bar_backfill_usecase import MinuteBarBackfillUseCase
 from src.config import config
 from src.infrastructure.market_data.get_intraday_bars import get_yahoo_intraday_bars

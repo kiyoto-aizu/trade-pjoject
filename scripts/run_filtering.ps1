@@ -12,13 +12,16 @@ if (-not (Test-Path $python)) {
     exit 1
 }
 
+. (Join-Path $PSScriptRoot 'common\stderr_logging.ps1')
+$stderrLog = Initialize-StderrLogging -ProjectRoot $projectRoot -ScriptName 'run_filtering'
+
 Push-Location $projectRoot
 try {
     $arguments = @('-m', 'src.entrypoints.run_filtering')
     if ($Date) {
         $arguments += @('--date', $Date)
     }
-    & $python @arguments
+    & $python @arguments 2>> $stderrLog
     exit $LASTEXITCODE
 }
 finally {

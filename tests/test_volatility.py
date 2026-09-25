@@ -8,6 +8,7 @@ from src.domain.volatility import (
     calculate_atr,
     calculate_true_range,
     is_atr_stop_loss_triggered,
+    resolve_atr_exit_multiplier,
     stop_loss_multiplier,
 )
 from src.domain.models import PriceLimit, TradeSignal
@@ -68,8 +69,30 @@ def test_backtest_quantity_uses_the_same_atr_adjustment():
 def test_atr_stop_loss_uses_level_specific_multiplier(level, multiplier):
     assert stop_loss_multiplier(level, 1.5, 1.0, 0.7) == multiplier
     stop_price = 100.0 - 10.0 * multiplier
-    assert is_atr_stop_loss_triggered(stop_price, 100.0, 10.0, level, 1.5, 1.0, 0.7)
-    assert not is_atr_stop_loss_triggered(stop_price + 0.01, 100.0, 10.0, level, 1.5, 1.0, 0.7)
+    assert is_atr_stop_loss_triggered(stop_price, 100.0, 10.0, multiplier)
+    assert not is_atr_stop_loss_triggered(stop_price + 0.01, 100.0, 10.0, multiplier)
+
+
+@pytest.mark.parametrize(
+    ("level", "stop_multiplier", "profit_lock_multiplier"),
+    [
+        (VolatilityLevel.NORMAL, 1.5, 2.5),
+        (VolatilityLevel.CAUTION, 1.0, 2.0),
+        (VolatilityLevel.DANGER, 0.7, 1.0),
+    ],
+)
+def test_resolve_atr_exit_multiplier_switches_on_unrealized_gain(level, stop_multiplier, profit_lock_multiplier):
+    stop_multipliers = (1.5, 1.0, 0.7)
+    profit_lock_multipliers = (2.5, 2.0, 1.0)
+
+    # 含み益がトリガー未満なら、従来通り損切り用倍率を使う
+    assert resolve_atr_exit_multiplier(
+        4.9, 10.0, level, *stop_multipliers, *profit_lock_multipliers, 0.5,
+    ) == stop_multiplier
+    # 含み益がトリガー以上なら、利確用倍率に切り替わる
+    assert resolve_atr_exit_multiplier(
+        5.0, 10.0, level, *stop_multipliers, *profit_lock_multipliers, 0.5,
+    ) == profit_lock_multiplier
 
 
 def test_trade_signal_combines_regular_exit_and_atr_stop_with_or():

@@ -20,6 +20,7 @@ from src.domain.volatility import (
     adjust_quantity_for_volatility,
     assess_volatility,
     is_atr_stop_loss_triggered,
+    resolve_atr_exit_multiplier,
     stop_loss_multiplier,
 )
 from src.infrastructure.persistence.parquet_minute_bar_repository import ParquetMinuteBarRepository
@@ -282,6 +283,7 @@ def simulate_backtest(
     holdings: dict[str, int] = {symbol: 0 for symbol in symbols}
     avg_cost: dict[str, float] = {symbol: 0.0 for symbol in symbols}
     entry_prices: dict[str, float] = {symbol: 0.0 for symbol in symbols}
+    holding_high_prices: dict[str, float] = {symbol: 0.0 for symbol in symbols}
     entry_fees: dict[str, float] = {symbol: 0.0 for symbol in symbols}
     buy_index: dict[str, int] = {symbol: -1 for symbol in symbols}
     total_trades = 0
@@ -330,6 +332,7 @@ def simulate_backtest(
                     "entry_day": buy_index[symbol],
                     "exit_day": index,
                     "holding_days": max(0, index - buy_index[symbol]),
+                    "holding_high_at_exit": holding_high_prices.get(symbol, entry_prices[symbol]),
                     "atr_diagnostic": _atr_trade_diagnostic(
                         entry_prices[symbol],
                         closes,
@@ -342,6 +345,7 @@ def simulate_backtest(
                 holdings[symbol] = 0
                 avg_cost[symbol] = 0.0
                 entry_prices[symbol] = 0.0
+                holding_high_prices[symbol] = 0.0
                 entry_fees[symbol] = 0.0
                 buy_index[symbol] = -1
                 total_trades += 1
@@ -359,6 +363,11 @@ def simulate_backtest(
 
             daily_bars = (ohlc_history_by_symbol or {}).get(symbol, [])[:index + 1]
             atr_stop_triggered = False
+            if holdings[symbol] > 0:
+                holding_high_prices[symbol] = max(
+                    holding_high_prices.get(symbol, entry_prices[symbol]),
+                    price,
+                )
             if enable_atr_stop_loss and holdings[symbol] > 0 and daily_bars:
                 assessment = assess_volatility(
                     daily_bars,
@@ -367,14 +376,23 @@ def simulate_backtest(
                     config.ATR_DANGER_RATIO,
                 )
                 if assessment is not None:
-                    atr_stop_triggered = is_atr_stop_loss_triggered(
-                        price,
-                        entry_prices[symbol],
+                    multiplier = resolve_atr_exit_multiplier(
+                        holding_high_prices[symbol] - entry_prices[symbol],
                         assessment.atr,
                         assessment.level,
                         config.ATR_STOP_NORMAL_MULTIPLIER,
                         config.ATR_STOP_CAUTION_MULTIPLIER,
                         config.ATR_STOP_DANGER_MULTIPLIER,
+                        config.ATR_PROFIT_LOCK_NORMAL_MULTIPLIER,
+                        config.ATR_PROFIT_LOCK_CAUTION_MULTIPLIER,
+                        config.ATR_PROFIT_LOCK_DANGER_MULTIPLIER,
+                        config.ATR_PROFIT_LOCK_TRIGGER_ATR_MULTIPLE,
+                    )
+                    atr_stop_triggered = is_atr_stop_loss_triggered(
+                        price,
+                        holding_high_prices[symbol],
+                        assessment.atr,
+                        multiplier,
                     )
             regular_stop_triggered = (
                 holdings[symbol] > 0
@@ -405,6 +423,7 @@ def simulate_backtest(
                         "entry_day": buy_index[symbol],
                         "exit_day": index,
                         "holding_days": max(0, index - buy_index[symbol]),
+                        "holding_high_at_exit": holding_high_prices.get(symbol, entry_prices[symbol]),
                         "atr_diagnostic": _atr_trade_diagnostic(
                             entry_prices[symbol],
                             closes,
@@ -417,6 +436,7 @@ def simulate_backtest(
                     holdings[symbol] = 0
                     avg_cost[symbol] = 0.0
                     entry_prices[symbol] = 0.0
+                    holding_high_prices[symbol] = 0.0
                     entry_fees[symbol] = 0.0
                     buy_index[symbol] = -1
                     total_trades += 1
@@ -488,6 +508,7 @@ def simulate_backtest(
                 holdings[symbol] = qty
                 avg_cost[symbol] = execution_price + fee / qty
                 entry_prices[symbol] = execution_price
+                holding_high_prices[symbol] = execution_price
                 entry_fees[symbol] = fee
                 buy_index[symbol] = index
                 total_trades += 1
@@ -522,6 +543,7 @@ def simulate_backtest(
                     "entry_day": buy_index[symbol],
                     "exit_day": index,
                     "holding_days": holding_days,
+                    "holding_high_at_exit": holding_high_prices.get(symbol, entry_prices[symbol]),
                     "atr_diagnostic": _atr_trade_diagnostic(
                         entry_prices[symbol],
                         closes,
@@ -534,6 +556,7 @@ def simulate_backtest(
                 holdings[symbol] = 0
                 avg_cost[symbol] = 0.0
                 entry_prices[symbol] = 0.0
+                holding_high_prices[symbol] = 0.0
                 entry_fees[symbol] = 0.0
                 buy_index[symbol] = -1
                 total_trades += 1
@@ -732,6 +755,7 @@ def simulate_timeseries_backtest(
     holdings: dict[str, int] = {}
     avg_cost: dict[str, float] = {}
     entry_prices: dict[str, float] = {}
+    holding_high_prices: dict[str, float] = {}
     entry_fees: dict[str, float] = {}
     buy_dates: dict[str, str] = {}
     buy_times: dict[str, str] = {}
@@ -830,6 +854,7 @@ def simulate_timeseries_backtest(
             "entry_date": entry_date,
             "exit_date": date_text,
             "holding_days": holding_days,
+            "holding_high_at_exit": holding_high_prices.get(symbol, entry_prices[symbol]),
             "atr_diagnostic": atr_diagnostic,
         })
         if symbol in buy_times:
@@ -866,6 +891,7 @@ def simulate_timeseries_backtest(
         holdings[symbol] = 0
         avg_cost[symbol] = 0.0
         entry_prices.pop(symbol, None)
+        holding_high_prices.pop(symbol, None)
         entry_fees.pop(symbol, None)
         buy_dates.pop(symbol, None)
         buy_times.pop(symbol, None)
@@ -992,6 +1018,11 @@ def simulate_timeseries_backtest(
                     if bar_date < date_text
                 ]
                 atr_stop_triggered = False
+                if holdings.get(symbol, 0) > 0:
+                    holding_high_prices[symbol] = max(
+                        holding_high_prices.get(symbol, entry_prices[symbol]),
+                        price,
+                    )
                 if enable_atr_stop_loss and holdings.get(symbol, 0) > 0 and daily_bars:
                     assessment = assess_volatility(
                         daily_bars,
@@ -1000,14 +1031,23 @@ def simulate_timeseries_backtest(
                         config.ATR_DANGER_RATIO,
                     )
                     if assessment is not None:
-                        atr_stop_triggered = is_atr_stop_loss_triggered(
-                            price,
-                            entry_prices[symbol],
+                        multiplier = resolve_atr_exit_multiplier(
+                            holding_high_prices[symbol] - entry_prices[symbol],
                             assessment.atr,
                             assessment.level,
                             config.ATR_STOP_NORMAL_MULTIPLIER,
                             config.ATR_STOP_CAUTION_MULTIPLIER,
                             config.ATR_STOP_DANGER_MULTIPLIER,
+                            config.ATR_PROFIT_LOCK_NORMAL_MULTIPLIER,
+                            config.ATR_PROFIT_LOCK_CAUTION_MULTIPLIER,
+                            config.ATR_PROFIT_LOCK_DANGER_MULTIPLIER,
+                            config.ATR_PROFIT_LOCK_TRIGGER_ATR_MULTIPLE,
+                        )
+                        atr_stop_triggered = is_atr_stop_loss_triggered(
+                            price,
+                            holding_high_prices[symbol],
+                            assessment.atr,
+                            multiplier,
                         )
                 regular_stop_triggered = (
                     holdings.get(symbol, 0) > 0
@@ -1108,6 +1148,7 @@ def simulate_timeseries_backtest(
                     holdings[symbol] = qty
                     avg_cost[symbol] = execution_price + fee / qty
                     entry_prices[symbol] = execution_price
+                    holding_high_prices[symbol] = execution_price
                     entry_fees[symbol] = fee
                     buy_dates[symbol] = date_text
                     if time_text:

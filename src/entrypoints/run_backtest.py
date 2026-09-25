@@ -102,7 +102,7 @@ def _build_parser(repo_root: Path) -> argparse.ArgumentParser:
     parser.add_argument("--minute-bars-dir", type=Path, default=None, help="分足データディレクトリ。指定時は分足ごとに判定・約定を再生します")
     parser.add_argument("--indicator-source", choices=("daily", "minute"), default="daily", help="SMA5/RSIの算出元（既定: daily）")
     parser.add_argument("--output", type=Path, default=None, help="結果JSONの保存先")
-    parser.add_argument("--compare-atr", action="store_true", help="同じOHLCデータでATRなし・ありを比較する（--liveが必要）")
+    parser.add_argument("--compare-atr", action="store_true", help="ATRなし・ロット調整のみ・ATRありの比較を追加する（--liveが必要。ATRはライブ実行時に標準適用）")
     parser.add_argument("--compare-market-regime", action="store_true", help="MarketRegime導入前後を比較する（--liveの日付付きバックテストが必要）")
     return parser
 

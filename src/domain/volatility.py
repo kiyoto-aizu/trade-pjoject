@@ -45,24 +45,53 @@ def stop_loss_multiplier(
     return multiplier
 
 
+def resolve_atr_exit_multiplier(
+    unrealized_gain: float,
+    atr: float,
+    level: VolatilityLevel,
+    stop_normal_multiplier: float,
+    stop_caution_multiplier: float,
+    stop_danger_multiplier: float,
+    profit_lock_normal_multiplier: float,
+    profit_lock_caution_multiplier: float,
+    profit_lock_danger_multiplier: float,
+    profit_lock_trigger_atr_multiple: float,
+) -> float:
+    """含み益がATR基準で一定以上乗っているかに応じて、損切り用/利確用いずれかの倍率を返します。
+
+    ADR-0006: 損切り用とは別に利確(トレーリングストップ)専用の倍率を用意し、
+    保有中最高値がエントリー価格からATR×profit_lock_trigger_atr_multiple以上
+    乖離している(=含み益がすでに一定以上乗っている)場合にのみ利確用倍率を使う。
+    """
+    if profit_lock_trigger_atr_multiple < 0:
+        raise ValueError("利確トリガーのATR倍数は0以上で指定してください")
+    is_profit_locking = atr > 0 and unrealized_gain >= atr * profit_lock_trigger_atr_multiple
+    if is_profit_locking:
+        return stop_loss_multiplier(
+            level,
+            profit_lock_normal_multiplier,
+            profit_lock_caution_multiplier,
+            profit_lock_danger_multiplier,
+        )
+    return stop_loss_multiplier(
+        level,
+        stop_normal_multiplier,
+        stop_caution_multiplier,
+        stop_danger_multiplier,
+    )
+
+
 def is_atr_stop_loss_triggered(
     current_price: float,
     entry_price: float,
     atr: float,
-    level: VolatilityLevel,
-    normal_multiplier: float,
-    caution_multiplier: float,
-    danger_multiplier: float,
+    multiplier: float,
 ) -> bool:
-    """現在価格がレベル別ATR損切り価格以下かを判定します。"""
+    """現在価格が(あらかじめ選択済みの倍率による)ATR決済価格以下かを判定します。"""
     if current_price <= 0 or entry_price <= 0 or atr < 0:
         raise ValueError("価格は正数、ATRは0以上で指定してください")
-    multiplier = stop_loss_multiplier(
-        level,
-        normal_multiplier,
-        caution_multiplier,
-        danger_multiplier,
-    )
+    if multiplier <= 0:
+        raise ValueError("ATR倍率は正数で指定してください")
     return current_price <= entry_price - atr * multiplier
 
 

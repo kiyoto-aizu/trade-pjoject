@@ -101,7 +101,7 @@ def _run_filtering_backtest(args, sizing_kwargs, minute_bar_repository, repo_roo
         }
     symbols = sorted({symbol for symbols_on_day in daily_symbols.values() for symbol in symbols_on_day})
     history = fetch_yahoo_dated_history(symbols, days=args.days + 5)
-    ohlc_history = fetch_yahoo_dated_ohlc(symbols, days=args.days + 5) if args.compare_atr else None
+    ohlc_history = fetch_yahoo_dated_ohlc(symbols, days=args.days + 5) if args.live else None
     market_regime_by_date = _market_regime_by_date(args) if args.compare_market_regime else None
     result = simulate_timeseries_backtest(
         daily_symbols,
@@ -123,7 +123,7 @@ def _run_filtering_backtest(args, sizing_kwargs, minute_bar_repository, repo_roo
 
 def _run_minute_backtest(args, sizing_kwargs, minute_bar_repository, symbols):
     dated_history = fetch_yahoo_dated_history(symbols, days=args.days + 5)
-    ohlc_history = fetch_yahoo_dated_ohlc(symbols, days=args.days + 5) if args.compare_atr else None
+    ohlc_history = fetch_yahoo_dated_ohlc(symbols, days=args.days + 5) if args.live else None
     daily_symbols = {
         date_text: symbols
         for date_text in sorted({
@@ -149,7 +149,7 @@ def _run_minute_backtest(args, sizing_kwargs, minute_bar_repository, symbols):
 
 
 def _run_fixed_backtest(args, symbols, history):
-    ohlc_history = fetch_yahoo_dated_ohlc(symbols, days=args.days) if args.compare_atr else None
+    ohlc_history = fetch_yahoo_dated_ohlc(symbols, days=args.days) if args.live else None
     result = simulate_backtest(
         symbols,
         history,

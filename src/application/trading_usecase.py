@@ -17,7 +17,7 @@ from typing import List, Optional
 from src.config import config
 from src.domain.models import OrderHistoryEntry, PriceLimit, TradeSignal
 from src.domain.rules import calculate_buy_quantity, calculate_price_limit, calculate_rsi, check_kill_switch, is_buy_order_amount_allowed, is_market_closed, is_safe_to_order
-from src.domain.volatility import DailyBar, VolatilityLevel, adjust_quantity_for_volatility, assess_volatility, stop_loss_multiplier
+from src.domain.volatility import DailyBar, VolatilityLevel, adjust_quantity_for_volatility, assess_volatility, resolve_atr_exit_multiplier, stop_loss_multiplier
 from src.domain.market_regime import MarketRegime, resolve_rsi_entry_threshold
 from src.infrastructure.kabu.get_board import get_current_board
 from src.infrastructure.kabu.get_positions import get_positions
@@ -1031,11 +1031,19 @@ class TradingUseCase:
                                 float(board['current_price']),
                             )
                             self._holding_high_prices[symbol] = held_high
-                            atr_stop_multiplier = stop_loss_multiplier(
+                            # ADR-0006: 含み益がATR基準で一定以上乗っている場合のみ、
+                            # 利確専用の(より広い)倍率を使う。乗っていなければ従来の損切り倍率のまま。
+                            atr_stop_multiplier = resolve_atr_exit_multiplier(
+                                held_high - entry_price,
+                                assessment.atr,
                                 assessment.level,
                                 config.ATR_STOP_NORMAL_MULTIPLIER,
                                 config.ATR_STOP_CAUTION_MULTIPLIER,
                                 config.ATR_STOP_DANGER_MULTIPLIER,
+                                config.ATR_PROFIT_LOCK_NORMAL_MULTIPLIER,
+                                config.ATR_PROFIT_LOCK_CAUTION_MULTIPLIER,
+                                config.ATR_PROFIT_LOCK_DANGER_MULTIPLIER,
+                                config.ATR_PROFIT_LOCK_TRIGGER_ATR_MULTIPLE,
                             )
                             trailing_stop_line = held_high - assessment.atr * atr_stop_multiplier
                             signal = TradeSignal.evaluate(

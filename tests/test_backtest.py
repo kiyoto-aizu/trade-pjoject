@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from src.application import backtest_usecase
 from src.application.backtest_usecase import (
     compare_market_regime_backtest,
     compare_trend_relief_backtest,
@@ -23,8 +24,8 @@ from src.entrypoints.run_backtest import (
     _validate_backtest_arguments,
 )
 from src.infrastructure.analysis.daily_analyzer import OpenAIDailyAnalyzer
-from src.domain.models import MinuteBar
-from src.domain.volatility import DailyBar
+from src.domain.models import MinuteBar, TradeSignal
+from src.domain.volatility import DailyBar, is_atr_stop_loss_triggered
 from src.entrypoints.run_monthly_analysis import build_monthly_summary
 from src.infrastructure.persistence.parquet_minute_bar_repository import ParquetMinuteBarRepository
 from src.infrastructure.persistence.filter_decision_repository import FilterDecisionRepository
@@ -293,6 +294,14 @@ def test_simulate_backtest_exits_on_atr_stop_loss(monkeypatch):
 
     assert any(signal.get("note") == "atr_stop_loss" for signal in result["signals"])
     assert result["final_position"] == 0
+
+
+def test_atr_stop_uses_high_water_mark_not_entry_price():
+    holding_high = 150.0
+    atr = 10.0
+
+    assert not is_atr_stop_loss_triggered(140.0, holding_high, atr, 1.5)
+    assert is_atr_stop_loss_triggered(130.0, holding_high, atr, 1.5)
 
 
 def test_simulate_timeseries_backtest_uses_daily_symbol_sets():

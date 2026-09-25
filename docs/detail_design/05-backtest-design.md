@@ -80,7 +80,8 @@
 ## 4. ボラティリティ連動（ATR）とMarketRegime連携
 
 - **数量調整**: `assess_volatility()`（ATR_PERIOD日のATR比率）でNORMAL/CAUTION/DANGERを判定し、`adjust_quantity_for_volatility()`でCAUTION時は`ATR_CAUTION_LOT_RATIO`（既定0.5）に基づき単元単位で減らし、DANGER時は`ATR_DANGER_ACTION`（既定`skip`）に従いスキップまたは最小単位にする。`volatility_stats`に集計を記録し出力に含める。
-- **ATR損切り**: `is_atr_stop_loss_triggered()`で、レジーム別の`ATR_STOP_{NORMAL,CAUTION,DANGER}_MULTIPLIER`に応じた損切りラインを判定。固定%損切り（`stop_loss_ratio`）とは独立して評価し、どちらか一方が成立すれば決済する。
+- **ATR損切り・利確**: `is_atr_stop_loss_triggered()`で、`resolve_atr_exit_multiplier()`が選択した倍率に応じた決済ラインを判定。固定%損切り（`stop_loss_ratio`）とは独立して評価し、どちらか一方が成立すれば決済する。
+  - ADR-0006: 保有中最高値がエントリー価格からATR×`ATR_PROFIT_LOCK_TRIGGER_ATR_MULTIPLE`(既定0.5)以上乖離している(含み益が一定以上乗っている)場合のみ、利確専用の`ATR_PROFIT_LOCK_{NORMAL,CAUTION,DANGER}_MULTIPLIER`(既定2.5/2.0/1.0、損切り用より広め)を使う。含み益がその水準に届いていない間は、従来通り`ATR_STOP_{NORMAL,CAUTION,DANGER}_MULTIPLIER`(1.5/1.0/0.7)のまま。
 - **MarketRegime**: 日経平均VIX・実現ボラティリティから算出したレジームがDANGERの日は新規BUYを一律スキップする（`market_regime_stats`に`danger_skipped`等を記録）。`market_regime_trend_relief_enabled`が有効な場合、ADXが`MARKET_REGIME_ADX_TREND_THRESHOLD`を超えるトレンド局面ではDANGER判定を緩和する日（trend_relief_dates）があり、これも件数を記録する。
 - **既知の設計判断**: ATR評価とMarketRegime評価はそれぞれ独立した関数呼び出しになっており、同一日に対して重複してassess_volatility()相当の計算が走る箇所がある（パフォーマンス上の無駄はあるが、正確性には影響しない）。
 

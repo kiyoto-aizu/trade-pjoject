@@ -61,6 +61,7 @@ class TradingUseCase:
         daily_report_directory: Optional[Path] = None,
         market_regime_usecase=None,
         filter_decision_repository: FilterDecisionRepository | None = None,
+        kill_switch_baseline_path: Optional[Path] = None,
     ):
         """
         TradingUseCaseを初期化します。
@@ -91,6 +92,9 @@ class TradingUseCase:
         self.daily_report_directory = daily_report_directory or Path(__file__).resolve().parents[2] / "data" / "reports"
         self.filter_decision_repository = filter_decision_repository or FilterDecisionRepository(
             order_history_path.parent / "filter_decision_events.sqlite3"
+        )
+        self.kill_switch_baseline_path = kill_switch_baseline_path or (
+            order_history_path.parent / Path(config.KILL_SWITCH_BASELINE_FILE).name
         )
         self.market_regime_usecase = market_regime_usecase
         self.market_regime = MarketRegime.NORMAL
@@ -414,6 +418,41 @@ class TradingUseCase:
             for position in positions
         )
         return float(wallet_amount or 0) + position_value
+
+    def _initialize_paper_prices(self, preflight_market_data=None) -> None:
+        """ペーパートレードの保有銘柄に再起動直後の現在値を設定します。"""
+        if not self.order_sender or not hasattr(self.order_sender, "holdings"):
+            return
+        holdings = getattr(self.order_sender, "holdings", {})
+        set_price = getattr(self.order_sender, "set_price", None)
+        if not holdings or not callable(set_price):
+            return
+
+        for symbol in holdings:
+            snapshot = preflight_market_data.get(symbol) if preflight_market_data else None
+            board = snapshot.get("board") if snapshot else (
+                self.board_client.get_current_board(self.token, symbol)
+                if self.board_client else get_current_board(self.token, symbol)
+            )
+            current_price = board.get("current_price") if board else None
+            if current_price is not None:
+                set_price(symbol, float(current_price))
+
+    def _initialize_daily_starting_capital(self, today, initial_wallet_amount, initial_positions) -> None:
+        """当日の初回起動時だけキルスイッチ基準資本を保存します。"""
+        baseline = read_json(self.kill_switch_baseline_path)
+        if isinstance(baseline, dict) and baseline.get("date") == today:
+            self.daily_starting_capital = float(baseline.get("capital", config.OPERATING_CAPITAL))
+            return
+
+        computed_capital = self._calculate_total_equity(initial_wallet_amount, initial_positions)
+        self.daily_starting_capital = (
+            computed_capital if computed_capital > 0 else config.OPERATING_CAPITAL
+        )
+        write_json(
+            self.kill_switch_baseline_path,
+            {"date": today, "capital": self.daily_starting_capital},
+        )
 
     # ================================================================================
     # 口座状態の取得
@@ -850,9 +889,11 @@ class TradingUseCase:
         self._logged_initial_judgment_symbols.clear()
         now_provider = now_provider or datetime.now
         sleep = sleep or time.sleep
+        initial_now = None
         if self.filtering_result_repository:
             result = self.filtering_result_repository.load_latest()
-            today = now_provider().date().isoformat()
+            initial_now = now_provider()
+            today = initial_now.date().isoformat()
             if not result or result.date != today or not result.symbols:
                 message = "当日のフィルタ結果がないため、取引を開始しません"
                 if self.notifier:
@@ -868,6 +909,10 @@ class TradingUseCase:
             logger.info("上位銘柄リストが空です。取引を行いません。")
             return
 
+        if initial_now is None:
+            initial_now = now_provider()
+        today = initial_now.date().isoformat()
+
         if self.market_regime_usecase is not None:
             self.prepare_market_regime()
             logger.info(
@@ -877,14 +922,15 @@ class TradingUseCase:
                 self.market_regime_assessment.failure_reason or "なし",
             )
 
+        self._initialize_paper_prices(preflight_market_data)
         initial_wallet_amount, initial_positions = self._load_account_state()
-        computed_capital = self._calculate_total_equity(initial_wallet_amount, initial_positions)
-        self.daily_starting_capital = (
-            computed_capital if computed_capital > 0 else config.OPERATING_CAPITAL
+        self._initialize_daily_starting_capital(
+            today, initial_wallet_amount, initial_positions
         )
 
         kill_switch_triggered = False
         filter_decisions_initialized = False
+        first_loop = True
         # 市場終了時刻まで取引ループを実行
         use_preflight_market_data = bool(preflight_market_data)
         while not kill_switch_triggered:
@@ -893,7 +939,8 @@ class TradingUseCase:
                 self._trigger_kill_switch("手動緊急停止フラグが検知されました")
                 self._liquidate_all_positions()
                 break
-            now = now_provider()
+            now = initial_now if first_loop else now_provider()
+            first_loop = False
             if not filter_decisions_initialized:
                 self._finalize_filter_decisions_safely(now)
                 filter_decisions_initialized = True
@@ -1180,21 +1227,23 @@ class TradingUseCase:
                     if signal.qty <= 0:
                         logger.info("注文数量が0のため見送ります: 銘柄=%s", symbol)
                         continue
-                    # キルスイッチ判定
-                    daily_pnl = self._calculate_daily_pnl(positions)
-                    daily_orders = sum(
-                        1 for entry in self.order_history
-                        if entry.timestamp.startswith(now_provider().date().isoformat())
-                    )
-                    if not check_kill_switch(
-                        daily_orders, daily_pnl, self.daily_starting_capital, config
-                    ):
-                        logger.warning("キルスイッチにより発注を停止しました。")
-                        self._trigger_kill_switch(
-                            f"日次損益または発注回数の上限超過（損益={daily_pnl:.1f}円、発注件数={daily_orders}件）"
+                    if signal.side == config.OrderSide.BUY:
+                        daily_pnl = self._calculate_daily_pnl(positions)
+                        # 発注回数上限は新規買いだけを対象とし、決済売りは除外する。
+                        daily_orders = sum(
+                            1 for entry in self.order_history
+                            if entry.side == config.OrderSide.BUY
+                            and entry.timestamp.startswith(now_provider().date().isoformat())
                         )
-                        kill_switch_triggered = True
-                        break
+                        if not check_kill_switch(
+                            daily_orders, daily_pnl, self.daily_starting_capital, config
+                        ):
+                            logger.warning("キルスイッチにより新規買い注文を停止しました。")
+                            self._trigger_kill_switch(
+                                f"日次損益または発注回数の上限超過（損益={daily_pnl:.1f}円、発注件数={daily_orders}件）"
+                            )
+                            kill_switch_triggered = True
+                            break
                     if (
                         signal.side == config.OrderSide.BUY
                         and not is_buy_order_amount_allowed(

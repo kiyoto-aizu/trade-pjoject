@@ -137,6 +137,7 @@ class PaperOrderClient:
                 'Symbol': symbol,
                 'Side': config.OrderSide.SELL.value,
                 'HoldQty': quantity,
+                'CurrentPrice': self.prices.get(symbol, 0.0),
                 'ProfitLoss': round((self.prices.get(symbol, 0.0) - self.average_costs.get(symbol, 0.0)) * quantity, 2),
             }
             for symbol, quantity in self.holdings.items()

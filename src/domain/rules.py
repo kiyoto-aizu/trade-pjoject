@@ -357,7 +357,7 @@ def select_top_n_by_surge_ratio(scored: List[ScoredCandidate], n: int = 10):
     return [candidate.symbol for candidate in sorted(scored, key=lambda item: (-item.surge_ratio, item.symbol))[:n]]
 
 
-def どcheck_kill_switch(daily_orders, daily_pnl, capital, settings):
+def check_kill_switch(daily_orders, daily_pnl, capital, settings):
     if daily_orders >= settings.MAX_ORDER_COUNT_PER_DAY:
         return False
     if capital > 0 and daily_pnl <= -(capital * settings.DAILY_LOSS_LIMIT_RATIO):

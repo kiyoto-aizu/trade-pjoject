@@ -41,6 +41,7 @@ def create_trading_use_case(token: str) -> TradingUseCase:
     return TradingUseCase(
         token=token,
         order_history_path=root / config.ORDER_HISTORY_FILE,
+        kill_switch_baseline_path=root / config.KILL_SWITCH_BASELINE_FILE,
         order_sender=order_sender,
         filtering_result_repository=FilteringResultRepository(root / 'data' / 'filtering'),
         filter_decision_repository=FilterDecisionRepository(root / 'data' / 'filter_decision_events.sqlite3'),

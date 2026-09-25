@@ -180,6 +180,86 @@ def test_trading_use_case_uses_daily_starting_total_equity_for_kill_switch(monke
     assert use_case.kill_switch_triggered is False
 
 
+def test_daily_starting_capital_is_restored_for_same_day_restart(tmp_path):
+    baseline_path = tmp_path / 'kill_switch_baseline.json'
+    use_case = TradingUseCase(
+        token='dummy',
+        order_history_path=tmp_path / 'order_history.json',
+        kill_switch_baseline_path=baseline_path,
+    )
+
+    use_case._initialize_daily_starting_capital('2026-09-25', 100_000.0, [])
+    use_case._initialize_daily_starting_capital('2026-09-25', 1.0, [])
+
+    assert use_case.daily_starting_capital == 100_000.0
+    assert json.loads(baseline_path.read_text(encoding='utf-8')) == {
+        'date': '2026-09-25',
+        'capital': 100_000.0,
+    }
+
+
+def test_daily_starting_capital_is_recalculated_when_date_changes(tmp_path):
+    baseline_path = tmp_path / 'kill_switch_baseline.json'
+    baseline_path.write_text(
+        json.dumps({'date': '2026-09-24', 'capital': 100_000.0}),
+        encoding='utf-8',
+    )
+    use_case = TradingUseCase(
+        token='dummy',
+        order_history_path=tmp_path / 'order_history.json',
+        kill_switch_baseline_path=baseline_path,
+    )
+
+    use_case._initialize_daily_starting_capital(
+        '2026-09-25',
+        80_000.0,
+        [{'HoldQty': 100, 'CurrentPrice': 250.0}],
+    )
+
+    assert use_case.daily_starting_capital == 105_000.0
+    assert json.loads(baseline_path.read_text(encoding='utf-8'))['date'] == '2026-09-25'
+
+
+def test_paper_prices_are_warmed_for_existing_holdings_only(tmp_path):
+    class BoardClient:
+        def __init__(self):
+            self.calls = []
+
+        def get_current_board(self, token, symbol):
+            self.calls.append(symbol)
+            return {'current_price': 110.0}
+
+    executor = PaperOrderClient(
+        prices={}, cash=20_000.0, order_qty=100,
+        fee_rate=0.0, market_slippage_bps=0.0,
+    )
+    executor.holdings = {'7203': 100}
+    executor.average_costs = {'7203': 100.0}
+    board_client = BoardClient()
+    use_case = TradingUseCase(
+        token='dummy',
+        order_history_path=tmp_path / 'order_history.json',
+        board_client=board_client,
+        order_sender=executor,
+    )
+
+    use_case._initialize_paper_prices()
+
+    assert board_client.calls == ['7203']
+    assert executor.get_positions('unused')[0]['ProfitLoss'] == 1_000.0
+
+    empty_board_client = BoardClient()
+    empty_executor = PaperOrderClient(prices={})
+    empty_use_case = TradingUseCase(
+        token='dummy',
+        order_history_path=tmp_path / 'empty-order-history.json',
+        board_client=empty_board_client,
+        order_sender=empty_executor,
+    )
+    empty_use_case._initialize_paper_prices()
+    assert empty_board_client.calls == []
+
+
 def test_trading_use_case_falls_back_to_operating_capital_when_starting_equity_is_zero(monkeypatch, tmp_path):
     symbols_path = tmp_path / 'top_symbols.json'
     symbols_path.write_text(json.dumps(['7203']), encoding='utf-8')

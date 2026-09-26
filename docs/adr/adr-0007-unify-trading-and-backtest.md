@@ -143,7 +143,7 @@
 ダックタイピング(メソッド名一致のみで動作)で、かつ`order_sender`が
 `get_wallet_cash`/`get_positions`等を持っていれば`wallet_client`/`positions_client`が
 未注入でも自動的にフォールバックする設計になっていた。さらに、ペーパートレードで
-実際に使われている`PaperOrderClient`(`src/infrastructure/paper/paper_order_executor.py`)が
+実際に使われている`PaperOrderClient`(`src/infrastructure/paper/paper_order_client.py`)が
 現金・保有株・平均取得単価・手数料・スリッページ・実現損益計算を一手に担っており、
 これは**バックテストの注文約定シミュレーションが本来必要とする処理そのもの**である。
 

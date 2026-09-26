@@ -6,7 +6,7 @@
 使って集計する。読み取り専用の分析であり、本番コード・閾値は一切変更しない。
 
 実行方法:
-    python scripts/analyze_filter_entry_alignment.py
+    python scripts/analysis/analyze_filter_entry_alignment.py
 
 【注意】
 ・MarketRegimeによる閾値変動(CAUTION時はRSI60以上)は考慮せず、
@@ -29,7 +29,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 

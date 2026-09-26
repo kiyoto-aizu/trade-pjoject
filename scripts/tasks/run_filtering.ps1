@@ -4,7 +4,8 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$projectRoot = Split-Path -Parent $PSScriptRoot
+$scriptsRoot = Split-Path -Parent $PSScriptRoot
+$projectRoot = Split-Path -Parent $scriptsRoot
 $python = Join-Path $projectRoot '.venv\Scripts\python.exe'
 
 if (-not (Test-Path $python)) {
@@ -12,14 +13,14 @@ if (-not (Test-Path $python)) {
     exit 1
 }
 
-. (Join-Path $PSScriptRoot 'common\stderr_logging.ps1')
-$stderrLog = Initialize-StderrLogging -ProjectRoot $projectRoot -ScriptName 'run_screening'
+. (Join-Path $scriptsRoot 'common\stderr_logging.ps1')
+$stderrLog = Initialize-StderrLogging -ProjectRoot $projectRoot -ScriptName 'run_filtering'
 
 # stderrへのINFOログ出力を終端エラー扱いさせないため、ネイティブ実行時のみContinueにする
 $ErrorActionPreference = 'Continue'
 Push-Location $projectRoot
 try {
-    $arguments = @('-m', 'src.entrypoints.run_screening')
+    $arguments = @('-m', 'src.entrypoints.run_filtering')
     if ($Date) {
         $arguments += @('--date', $Date)
     }

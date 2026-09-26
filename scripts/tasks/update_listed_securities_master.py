@@ -2,7 +2,7 @@
 東証上場銘柄一覧(data_j.xlsx)を使って更新するスクリプト。ADR-0001。
 
 実行方法:
-    python scripts/update_listed_securities_master.py
+    python scripts/tasks/update_listed_securities_master.py
 
 週次(例: 毎週土曜)での実行を想定している。東証全体のIPO・上場廃止は
 月に数件〜十数件程度であり、週次更新で実用上十分と判断している
@@ -43,7 +43,7 @@ import requests
 logger = logging.getLogger(__name__)
 
 DATA_J_XLSX_URL = "https://www.jpx.co.jp/markets/statistics-equities/misc/tvdivq0000001vg2-att/data_j.xlsx"
-MASTER_CSV_PATH = Path(__file__).resolve().parents[1] / "data" / "universe" / "listed_securities.csv"
+MASTER_CSV_PATH = Path(__file__).resolve().parents[2] / "data" / "universe" / "listed_securities.csv"
 FIELDNAMES = ["symbol", "exchange_division", "listed_from", "listed_to"]
 
 # config.SCREENING_EXCHANGE_DIVISIONSのデフォルト値(TP/TS/TG)に合わせる

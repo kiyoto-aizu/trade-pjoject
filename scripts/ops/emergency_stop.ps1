@@ -3,7 +3,7 @@ param(
 )
 
 if ([string]::IsNullOrWhiteSpace($StopFile)) {
-    $StopFile = Join-Path $PSScriptRoot "..\data\trading\emergency_stop"
+    $StopFile = Join-Path $PSScriptRoot "..\..\data\trading\emergency_stop"
 }
 
 $parent = Split-Path -Parent $StopFile

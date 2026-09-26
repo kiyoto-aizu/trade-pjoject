@@ -76,7 +76,8 @@ src/
 ├── trading/            TradingBot
 └── executor/           取引実行ラッパー
 
-docs/                   設計書、フロー図、コーディング規約
+docs/                   ADR、詳細設計、フロー、レビュー、改修タスク
+scripts/                analysis/、common/、ops/、tasks/ に用途別分類
 references/             kabuステーションAPI仕様書
 tests/                  pytestテスト
 ```
@@ -222,7 +223,7 @@ python -m src.entrypoints.run_screening
 kabuステーションを起動・ログインしたWindowsユーザーで、平日15:35にスクリーニングを実行するタスクを登録します。初回のみ、PowerShellから次を実行してください。
 
 ```
-.\scripts\register_screening_task.ps1
+.\scripts\tasks\register_screening_task.ps1
 ```
 
 登録内容の確認と手動起動は次のとおりです。
@@ -235,8 +236,8 @@ Start-ScheduledTask -TaskName trade-pjoject-screening
 タスクはログオン中にのみ実行されます。実行時刻の変更と削除は次のコマンドで行えます。
 
 ```
-.\scripts\register_screening_task.ps1 -At '15:40'
-.\scripts\register_screening_task.ps1 -Remove
+.\scripts\tasks\register_screening_task.ps1 -At '15:40'
+.\scripts\tasks\register_screening_task.ps1 -Remove
 ```
 
 実行時にはkabuステーションが起動済みで、`.env` に本番用の `IS_DEMO=false`、`API_PASSWORD_PRD`、`API_PORT_PRD` が設定されている必要があります。休場日またはランキング未取得時は、スクリーニング処理がエラー終了し、推測値で候補を作成しません。
@@ -253,7 +254,7 @@ python -m src.entrypoints.run_filtering
 
 ```
 python -m src.entrypoints.run_filtering --date 2026-09-08
-.\scripts\run_filtering.ps1 -Date '2026-09-08'
+.\scripts\tasks\run_filtering.ps1 -Date '2026-09-08'
 ```
 
 スクリーニングのランキングAPIには過去日を指定して取得する機能がないため、過去のランキングを後から完全に再現することはできません。スクリーニング結果は実行日に `data/screening/YYYY-MM-DD.json` として保存されるため、今後の条件変更に備えてこのファイルを履歴として保管してください。過去のスクリーニング条件自体を変更して再計算するには、ランキング取得元の履歴データを別途保存する必要があります。
@@ -289,7 +290,7 @@ symbol,primary_exchange,restricted_from,restricted_to,reason
 kabuステーションを起動・ログインしたWindowsユーザーで、平日9:30にフィルタリングを実行するタスクを登録します。初回のみ、PowerShellから次を実行してください。
 
 ```
-.\scripts\register_filtering_task.ps1
+.\scripts\tasks\register_filtering_task.ps1
 ```
 
 登録内容の確認と手動起動は次のとおりです。
@@ -302,8 +303,8 @@ Start-ScheduledTask -TaskName trade-pjoject-filtering
 実行時刻の変更と削除は次のコマンドで行えます。
 
 ```
-.\scripts\register_filtering_task.ps1 -At '09:35'
-.\scripts\register_filtering_task.ps1 -Remove
+.\scripts\tasks\register_filtering_task.ps1 -At '09:35'
+.\scripts\tasks\register_filtering_task.ps1 -Remove
 ```
 
 タスクはログオン中にのみ実行されます。前営業日のスクリーニング結果がない場合は、フィルタリング結果を0件として保存・通知します。
@@ -319,27 +320,27 @@ python -m src.entrypoints.run_trading
 Windowsの計画実行では、スクリーニング・フィルタリングと同じ本番API設定を使用し、取引注文だけをペーパー約定に固定できます。初回のみ、次を実行してください。
 
 ```
-.\scripts\register_trading_task.ps1
+.\scripts\tasks\register_trading_task.ps1
 ```
 
 このタスクは `TRADING_MODE=paper` と `ENABLE_LIVE_ORDERING=false` をプロセス内で設定するため、`.env` の本番API設定を変更せずにペーパートレードを実行します。kabuステーションは起動・ログイン済みにしてください。
 
 `register_trading_task.ps1`で登録した取引タスクは常にペーパー固定です。本番モードで実注文を行う場合は、設定を確認したうえで `python -m src.entrypoints.run_trading` を直接起動してください。
 
-取引終了時のレポートはLINEへ通知されるほか、日付別に `data/reports/YYYY-MM-DD.json` へ保存されます。JSONには注文数、注文内容、保有銘柄の評価損益、キルスイッチ状態、LINE本文、LLM日次評価（有効時）が含まれます。注文履歴は `data/trading/order_history.json`、ペーパー口座状態は `data/trading/paper_account_state.json` に保存されます。
+取引終了時のレポートはLINEへ通知されるほか、日付別に `data/reports/daily/YYYY-MM-DD.json` へ保存されます。JSONには注文数、注文内容、保有銘柄の評価損益、キルスイッチ状態、LINE本文、LLM日次評価（有効時）が含まれます。注文履歴は `data/trading/order_history.json`、ペーパー口座状態は `data/trading/paper_account_state.json` に保存されます。
 
 #### 緊急停止
 
 取引プロセスの次ループで停止フラグを検知し、即時LINE通知を送信したうえで保有ポジションを成行決済します。停止を実行するには次を実行してください。
 
 ```
-.\scripts\emergency_stop.ps1
+.\scripts\ops\emergency_stop.ps1
 ```
 
 停止解除後に再起動する場合は、次を実行します。解除前に注文・口座状態を確認してください。
 
 ```
-.\scripts\clear_emergency_stop.ps1
+.\scripts\ops\clear_emergency_stop.ps1
 ```
 
 キルスイッチ（損失上限・発注回数上限・API上限取得失敗）の発動時も、日次レポートを待たず即時LINE通知されます。自動キルスイッチは新規発注を停止し、手動緊急停止は保有ポジションも決済します。
@@ -349,15 +350,15 @@ Windowsの計画実行では、スクリーニング・フィルタリングと�
 日付ごとのフィルタリング結果を時系列に再生し、その日に選ばれた銘柄だけを対象にバックテストします。過去の銘柄を未来の日付へ持ち越さないため、実運用に近い評価になります。価格データはYahoo Financeから取得し、直近730日（約2年）分のフィルタリング結果を対象にします。通常の週次確認は2年、売買ルールや設定を変更したときは3〜5年を再検証の目安にします。
 
 ```
-.\scripts\run_backtest.ps1
+.\scripts\tasks\run_backtest.ps1
 ```
 
-結果は最新結果として `data/backtest/latest_timeseries.json` に保存され、同じ内容が `data/backtest/latest_timeseries_YYYYMMDD_HHMMSS_ffffff.json` の形式で履歴保存されます。LINE設定がある場合は、対象期間・総損益・勝率・取引数・最大ドローダウン・最終保有数のサマリーと、LLMによる参考評価（有効時）も通知します。LLM評価は投資判断やロジック変更の指示ではなく、統計の解釈・不確実性・追加確認事項を扱います。詳細な取引履歴はJSONで確認できます。毎週土曜08:00に自動実行するタスクは、初回のみ次で登録します。
+結果は最新結果として `data/backtest/latest/latest_timeseries.json` に保存され、日時付き履歴は `data/backtest/runs/latest_timeseries_YYYYMMDD_HHMMSS_ffffff.json` に保存されます。LINE設定がある場合は、対象期間・総損益・勝率・取引数・最大ドローダウン・最終保有数のサマリーと、LLMによる参考評価（有効時）も通知します。LLM評価は投資判断やロジック変更の指示ではなく、統計の解釈・不確実性・追加確認事項を扱います。詳細な取引履歴はJSONで確認できます。毎週土曜08:00に自動実行するタスクは、初回のみ次で登録します。
 
 バックテストは既定で片道手数料0.055%、成行スリッページ5bps、1バーの執行遅延を反映します。成行は遅延後の観測価格に対し、買いは上振れ・売りは下振れで約定させます。指値はkabuステーションAPIの `FrontOrderType=20` に対応する想定として、シグナル時価格で約定し成行スリッページは加えません。分足がない日足再生では遅延は次の終値、分足再生では次の分足価格を使います。手数料プランと実運用の約定履歴に合わせる場合は、`BACKTEST_FEE_RATE`、`BACKTEST_MARKET_SLIPPAGE_BPS`、`BACKTEST_EXECUTION_DELAY_BARS`、`BACKTEST_ORDER_TYPE` を環境変数で上書きするか、`--fee`、`--market-slippage-bps`、`--execution-delay-bars`、`--order-type` を指定します。
 
 ```
-.\scripts\register_backtest_task.ps1
+.\scripts\tasks\register_backtest_task.ps1
 ```
 
 登録内容の確認、手動起動、削除は次のとおりです。
@@ -365,7 +366,7 @@ Windowsの計画実行では、スクリーニング・フィルタリングと�
 ```
 Get-ScheduledTask -TaskName trade-pjoject-backtest
 Start-ScheduledTask -TaskName trade-pjoject-backtest
-.\scripts\register_backtest_task.ps1 -Remove
+.\scripts\tasks\register_backtest_task.ps1 -Remove
 ```
 
 ### 5. 月次総合分析
@@ -375,7 +376,7 @@ Start-ScheduledTask -TaskName trade-pjoject-backtest
 初回のみ、毎日17:00に起動し、Python側のガードで月末だけ実行するタスクを登録します。Windows PowerShellの標準タスク登録では月末指定に制約があるため、この方式を採用しています。
 
 ```
-.\scripts\register_monthly_analysis_task.ps1
+.\scripts\tasks\register_monthly_analysis_task.ps1
 ```
 
 手動で前月分を実行する場合は次のコマンドを使います。月末以外に当月分を確認する場合は `--force` を追加します。
@@ -390,7 +391,7 @@ python -m src.entrypoints.run_monthly_analysis --month 2026-09 --force
 土曜の分足バックフィルとバックテスト後に、直近の月曜から金曜までの日次ペーパートレードとバックテストを集計します。結果は `data/reports/weekly/YYYY-MM-DD_YYYY-MM-DD.json` に保存し、LLM評価（有効時）とともにLINEへ通知します。
 
 ```
-.\scripts\register_weekly_analysis_task.ps1
+.\scripts\tasks\register_weekly_analysis_task.ps1
 python -m src.entrypoints.run_weekly_analysis --week-start 2026-09-07 --force
 ```
 
@@ -418,7 +419,7 @@ python -m src.entrypoints.run_weekly_analysis --week-start 2026-09-07 --force
 ## 設計書
 
 - [コーディング規約](docs/coding-guidelines.md)
-- [全体フロー](docs/flow.md)
+- [全体フロー](docs/architecture/flow.md)
 - [スクリーニング詳細設計](docs/detail_design/01-screening-design.md)
 - [フィルタリング詳細設計](docs/detail_design/02-filtering-design.md)
 - [取引ループ詳細設計](docs/detail_design/03-trading-loop-design.md)

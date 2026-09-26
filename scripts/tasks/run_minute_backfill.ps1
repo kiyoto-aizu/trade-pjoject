@@ -2,7 +2,8 @@
 param()
 
 $ErrorActionPreference = 'Stop'
-$projectRoot = Split-Path -Parent $PSScriptRoot
+$scriptsRoot = Split-Path -Parent $PSScriptRoot
+$projectRoot = Split-Path -Parent $scriptsRoot
 $python = Join-Path $projectRoot '.venv\Scripts\python.exe'
 
 if (-not (Test-Path $python)) {
@@ -10,14 +11,14 @@ if (-not (Test-Path $python)) {
     exit 1
 }
 
-. (Join-Path $PSScriptRoot 'common\stderr_logging.ps1')
-$stderrLog = Initialize-StderrLogging -ProjectRoot $projectRoot -ScriptName 'run_weekly_analysis'
+. (Join-Path $scriptsRoot 'common\stderr_logging.ps1')
+$stderrLog = Initialize-StderrLogging -ProjectRoot $projectRoot -ScriptName 'run_minute_backfill'
 
 # stderrへのINFOログ出力を終端エラー扱いさせないため、ネイティブ実行時のみContinueにする
 $ErrorActionPreference = 'Continue'
 Push-Location $projectRoot
 try {
-    & $python -m src.entrypoints.run_weekly_analysis 2>> $stderrLog
+    & $python -m src.entrypoints.run_minute_backfill 2>> $stderrLog
     exit $LASTEXITCODE
 }
 finally {

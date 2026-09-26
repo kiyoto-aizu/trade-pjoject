@@ -2,7 +2,8 @@
 param()
 
 $ErrorActionPreference = 'Stop'
-$projectRoot = Split-Path -Parent $PSScriptRoot
+$scriptsRoot = Split-Path -Parent $PSScriptRoot
+$projectRoot = Split-Path -Parent $scriptsRoot
 $python = Join-Path $projectRoot '.venv\Scripts\python.exe'
 
 if (-not (Test-Path $python)) {
@@ -10,14 +11,14 @@ if (-not (Test-Path $python)) {
     exit 1
 }
 
-. (Join-Path $PSScriptRoot 'common\stderr_logging.ps1')
+. (Join-Path $scriptsRoot 'common\stderr_logging.ps1')
 $stderrLog = Initialize-StderrLogging -ProjectRoot $projectRoot -ScriptName 'run_update_listed_securities_master'
 
 # stderrへのINFOログ出力を終端エラー扱いさせないため、ネイティブ実行時のみContinueにする
 $ErrorActionPreference = 'Continue'
 Push-Location $projectRoot
 try {
-    & $python scripts\update_listed_securities_master.py 2>> $stderrLog
+    & $python scripts\tasks\update_listed_securities_master.py 2>> $stderrLog
     exit $LASTEXITCODE
 }
 finally {

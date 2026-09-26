@@ -2,7 +2,7 @@
 
 - ステータス: Accepted
 - 日付: 2026-09-19
-- 関連: `docs/task-backtest-quantity-parity.md`, `docs/detail_design/05-backtest-design.md`（5節・10節）
+- 関連: `docs/tasks/task-backtest-quantity-parity.md`, `docs/detail_design/05-backtest-design.md`（5節・10節）
 
 ## コンテキスト
 
@@ -31,5 +31,5 @@
 
 - 良い点: 既存スクリプト・cronジョブ・既存テスト29件は無変更のまま通過する（実際に確認済み）。戦略ロジックだけを見たい場合（固定数量）と、資金効率まで含めた現実的な検証（本番相当サイジング）を同じ関数で両方サポートできる
 - 悪い点: **デフォルトのままでは今まで通り本番と乖離した数量で結果が出る**。`--production-sizing`を付け忘れると、資金効率の面で楽観的すぎる/悲観的すぎる数値を本番相当だと誤解するリスクが残る
-  - 当面の緩和策: `docs/task-backtest-quantity-parity.md`に今週末の実行コマンド例として`--production-sizing`を明記済み
+   - 当面の緩和策: `docs/tasks/task-backtest-quantity-parity.md`に今週末の実行コマンド例として`--production-sizing`を明記済み
   - 将来的な見直し候補: `--filtering-dir`使用時の警告表示、または十分な運用実績が積み上がった段階で既定値を本番相当に切り替えることを再検討する

@@ -1,13 +1,14 @@
 [CmdletBinding(SupportsShouldProcess)]
 param(
-    [string]$TaskName = 'trade-pjoject-filtering',
-    [datetime]$At = [datetime]'09:30',
+    [string]$TaskName = 'trade-pjoject-screening',
+    [datetime]$At = [datetime]'15:35',
     [switch]$Remove
 )
 
 $ErrorActionPreference = 'Stop'
-$projectRoot = Split-Path -Parent $PSScriptRoot
-$runner = Join-Path $PSScriptRoot 'run_filtering.ps1'
+$scriptsRoot = Split-Path -Parent $PSScriptRoot
+$projectRoot = Split-Path -Parent $scriptsRoot
+$runner = Join-Path $PSScriptRoot 'run_screening.ps1'
 
 if ($Remove) {
     if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
@@ -19,16 +20,16 @@ if ($Remove) {
 }
 
 if (-not (Test-Path $runner)) {
-    throw "Filtering runner was not found: $runner"
+    throw "Screening runner was not found: $runner"
 }
 
 $trigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday, Tuesday, Wednesday, Thursday, Friday -At $At
 $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$runner`""
 # -WakeToRun: PCがスリープしても目覚めさせて実行を継続する
 $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -WakeToRun
-$description = "Runs trade-pjoject filtering from $projectRoot on business weekdays."
+$description = "Runs trade-pjoject screening from $projectRoot on business weekdays."
 
-if ($PSCmdlet.ShouldProcess($TaskName, "Register weekday filtering task at $($At.ToString('HH:mm'))")) {
+if ($PSCmdlet.ShouldProcess($TaskName, "Register weekday screening task at $($At.ToString('HH:mm'))")) {
     Register-ScheduledTask `
         -TaskName $TaskName `
         -Action $action `

@@ -18,6 +18,8 @@ $env:ENABLE_LIVE_ORDERING = 'false'
 . (Join-Path $PSScriptRoot 'common\stderr_logging.ps1')
 $stderrLog = Initialize-StderrLogging -ProjectRoot $projectRoot -ScriptName 'run_trading'
 
+# stderrへのINFOログ出力を終端エラー扱いさせないため、ネイティブ実行時のみContinueにする
+$ErrorActionPreference = 'Continue'
 Push-Location $projectRoot
 try {
     & $python -m src.entrypoints.run_trading 2>> $stderrLog

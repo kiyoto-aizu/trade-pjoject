@@ -13,6 +13,8 @@ if (-not (Test-Path $python)) {
 . (Join-Path $PSScriptRoot 'common\stderr_logging.ps1')
 $stderrLog = Initialize-StderrLogging -ProjectRoot $projectRoot -ScriptName 'run_update_listed_securities_master'
 
+# stderrへのINFOログ出力を終端エラー扱いさせないため、ネイティブ実行時のみContinueにする
+$ErrorActionPreference = 'Continue'
 Push-Location $projectRoot
 try {
     & $python scripts\update_listed_securities_master.py 2>> $stderrLog

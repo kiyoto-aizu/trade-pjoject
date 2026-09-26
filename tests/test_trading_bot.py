@@ -33,10 +33,11 @@ def test_required_env_helper_raises_when_missing():
         config._load_required_env('MISSING_ENV_FOR_TEST', allow_missing=False)
 
 
-def test_application_logs_are_stored_under_data_logs():
+def test_pytest_logs_are_stored_under_data_logs_tests():
     assert Path(config.LOG_FILE_PATH) == config.LOG_DIRECTORY / 'pytest.log'
-    assert config.LOG_DIRECTORY.name == 'logs'
-    assert config.LOG_DIRECTORY.parent.name == 'data'
+    assert config.LOG_DIRECTORY.name == 'tests'
+    assert config.LOG_DIRECTORY.parent.name == 'logs'
+    assert config.LOG_DIRECTORY.parent.parent.name == 'data'
 
 
 def test_is_market_closed_boundary():
@@ -669,7 +670,7 @@ def test_end_of_day_report_marks_market_conditions_unavailable(tmp_path):
 
 def test_end_of_day_report_counts_only_errors_during_trading_session(monkeypatch, tmp_path):
     monkeypatch.setattr(config, 'LOG_DIRECTORY', tmp_path)
-    today = datetime.now().date().isoformat()
+    today = '2026-09-25'
     (tmp_path / 'trade_project.log').write_text(
         f"{today} 08:59:59 ERROR test: before market\n"
         f"{today} 09:00:00 ERROR test: opening error\n"

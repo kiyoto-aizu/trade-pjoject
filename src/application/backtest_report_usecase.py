@@ -39,12 +39,16 @@ def market_regime_comparison_summary(baseline: dict, enabled: dict) -> dict:
     }
 
 
-def save_backtest_result(output_path: Path, result: dict) -> Path:
+def save_backtest_result(
+    output_path: Path, result: dict, archive_directory: Path | None = None
+) -> Path:
     """最新結果を保存し、同じ内容を実行時刻付きの履歴として保存します。"""
     output_path.parent.mkdir(parents=True, exist_ok=True)
     serialized = json.dumps(result, ensure_ascii=False, indent=2)
     output_path.write_text(serialized, encoding="utf-8")
+    archive_dir = archive_directory or output_path.parent
+    archive_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-    archive_path = output_path.with_name(f"{output_path.stem}_{timestamp}{output_path.suffix}")
+    archive_path = archive_dir / f"{output_path.stem}_{timestamp}{output_path.suffix}"
     archive_path.write_text(serialized, encoding="utf-8")
     return archive_path

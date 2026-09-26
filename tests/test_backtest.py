@@ -93,6 +93,18 @@ def test_save_backtest_result_keeps_latest_and_timestamped_archive(tmp_path):
     assert archive_path.stem.startswith("latest_timeseries_")
     assert output_path.read_text(encoding="utf-8") == archive_path.read_text(encoding="utf-8")
 
+def test_save_backtest_result_can_archive_separately_from_latest(tmp_path):
+    output_path = tmp_path / "latest" / "latest_timeseries.json"
+    archive_directory = tmp_path / "runs"
+
+    archive_path = save_backtest_result(
+        output_path, {"total_pnl": 10.0}, archive_directory
+    )
+
+    assert output_path.exists()
+    assert archive_path.parent == archive_directory
+    assert archive_path.name.startswith("latest_timeseries_")
+
 
 def _backtest_args(**overrides):
     values = {

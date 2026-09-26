@@ -256,7 +256,10 @@ MINUTE_BAR_PARQUET_DIR = Path(
 ORDER_HISTORY_FILE = "data/trading/order_history.json"
 PAPER_ACCOUNT_STATE_FILE = "data/trading/paper_account_state.json"
 KILL_SWITCH_BASELINE_FILE = "data/trading/kill_switch_baseline.json"
-EMERGENCY_STOP_FILE = Path(os.getenv("EMERGENCY_STOP_FILE", str(_repo_root / "data" / "emergency_stop")))
+FILTER_DECISION_DATABASE_FILE = _repo_root / "data" / "state" / "filter_decision_events.sqlite3"
+EMERGENCY_STOP_FILE = Path(
+    os.getenv("EMERGENCY_STOP_FILE", str(_repo_root / "data" / "trading" / "emergency_stop"))
+)
 
 # 市場クローズ時刻（日本標準時）
 MARKET_OPEN_HOUR = 9
@@ -316,8 +319,9 @@ BASE_URL = f"http://localhost:{API_PORT}/kabusapi"
 # ログ設定
 # ================================================================================
 
-# アプリケーションログの保存先
-LOG_DIRECTORY = _repo_root / "data" / "logs"
+# ログは実行元ごとに保存先を分ける
+_LOG_CATEGORY = "tests" if _is_test_runtime() else "application"
+LOG_DIRECTORY = _repo_root / "data" / "logs" / _LOG_CATEGORY
 LOG_DIRECTORY.mkdir(parents=True, exist_ok=True)
 _LOG_FILE_NAME = "pytest.log" if _is_test_runtime() else "trade_project.log"
 LOG_FILE_PATH = str(LOG_DIRECTORY / _LOG_FILE_NAME)

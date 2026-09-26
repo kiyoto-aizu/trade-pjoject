@@ -8,7 +8,7 @@ function Initialize-StderrLogging {
         [int]$RetentionDays = 30
     )
 
-    $logDir = Join-Path $ProjectRoot 'data\logs'
+    $logDir = Join-Path $ProjectRoot 'data\logs\jobs'
     if (-not (Test-Path $logDir)) {
         New-Item -ItemType Directory -Path $logDir | Out-Null
     }

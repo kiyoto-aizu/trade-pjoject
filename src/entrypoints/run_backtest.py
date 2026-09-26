@@ -83,7 +83,7 @@ def _build_parser(repo_root: Path) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="バックテストを実行します")
     parser.add_argument("--symbols", type=Path, default=repo_root / "data" / "filtering" / "2026-09-01.json", help="銘柄一覧のJSONファイル")
     parser.add_argument("--filtering-dir", type=Path, default=None, help="日付別フィルタリング結果のディレクトリ")
-    parser.add_argument("--history", type=Path, default=repo_root / "data" / "backtest" / "sample_history.json", help="銘柄ごとの終値履歴JSONファイル")
+    parser.add_argument("--history", type=Path, default=repo_root / "data" / "backtest" / "fixtures" / "sample_history.json", help="銘柄ごとの終値履歴JSONファイル")
     parser.add_argument("--cash", type=float, default=100000.0, help="開始現金")
     parser.add_argument("--qty", type=int, default=100, help="1回の売買数量（--fixed-qty指定時のみ使用）")
     parser.add_argument("--production-sizing", action="store_true", help="非推奨。指定しても挙動は変わらず、本番相当サイジングがデフォルトで適用される")
@@ -102,6 +102,7 @@ def _build_parser(repo_root: Path) -> argparse.ArgumentParser:
     parser.add_argument("--minute-bars-dir", type=Path, default=None, help="分足データディレクトリ。指定時は分足ごとに判定・約定を再生します")
     parser.add_argument("--indicator-source", choices=("daily", "minute"), default="daily", help="SMA5/RSIの算出元（既定: daily）")
     parser.add_argument("--output", type=Path, default=None, help="結果JSONの保存先")
+    parser.add_argument("--archive-directory", type=Path, default=None, help="日時付き結果の保存先")
     parser.add_argument("--compare-atr", action="store_true", help="ATRなし・ロット調整のみ・ATRありの比較を追加する（--liveが必要。ATRはライブ実行時に標準適用）")
     parser.add_argument("--compare-market-regime", action="store_true", help="MarketRegime導入前後を比較する（--liveの日付付きバックテストが必要）")
     return parser
@@ -159,7 +160,10 @@ def main() -> None:
         if llm_analysis:
             result["llm_analysis"] = llm_analysis
 
-        archive_path = save_backtest_result(args.output, result) if args.output else None
+        archive_path = (
+            save_backtest_result(args.output, result, args.archive_directory)
+            if args.output else None
+        )
         print(json.dumps(display_result, ensure_ascii=False, indent=2))
         report_lines = [
             f"対象期間: {display_result['対象期間'] or '指定なし'}",

@@ -13,6 +13,7 @@ from src.infrastructure.analysis.summary_loader import (
     summarize_daily_reports,
 )
 from src.infrastructure.persistence.filter_decision_repository import FilterDecisionRepository
+from src.config import config
 from src.infrastructure.notification.slack_notify import format_result_notification, notify_analysis, process_notification
 from src.infrastructure.persistence.storage import write_json
 
@@ -61,8 +62,8 @@ def build_weekly_summary(
 def main() -> None:
     parser = argparse.ArgumentParser(description="週次のペーパートレード・バックテスト総合分析を実行します")
     parser.add_argument("--week-start", default=None, help="対象週の月曜（YYYY-MM-DD）。省略時は実行日が属する週")
-    parser.add_argument("--reports", type=Path, default=Path("data/reports"))
-    parser.add_argument("--backtests", type=Path, default=Path("data/backtest"))
+    parser.add_argument("--reports", type=Path, default=Path("data/reports/daily"))
+    parser.add_argument("--backtests", type=Path, default=Path("data/backtest/runs"))
     parser.add_argument("--output", type=Path, default=Path("data/reports/weekly"))
     parser.add_argument("--force", action="store_true", help="土曜以外でも実行する")
     args = parser.parse_args()
@@ -82,7 +83,7 @@ def main() -> None:
     with process_notification("週次分析", notify_lifecycle=False, trigger="土曜または手動実行"):
         summary = build_weekly_summary(
             week_start, week_end, args.reports, args.backtests,
-            FilterDecisionRepository(Path("data/filter_decision_events.sqlite3")), today,
+            FilterDecisionRepository(config.FILTER_DECISION_DATABASE_FILE), today,
         )
         analyzer = create_daily_analyzer()
         analysis = analyzer.analyze_weekly(summary) if analyzer else None

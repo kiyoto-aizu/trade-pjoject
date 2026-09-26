@@ -19,7 +19,11 @@ instance/
 *.log.*
 
 # Runtime data
-data/
+/data/*
+!/data/用途_*.md
+!/data/*/
+/data/*/*
+!/data/*/用途_*.md
 
 # Others
 .DS_Store

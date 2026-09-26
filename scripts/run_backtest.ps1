@@ -24,7 +24,8 @@ try {
         --minute-bars-dir data/minute_bars_parquet `
         --indicator-source daily `
         --compare-market-regime `
-        --output data/backtest/latest_timeseries.json 2>> $stderrLog
+        --output data/backtest/latest/latest_timeseries.json `
+        --archive-directory data/backtest/runs 2>> $stderrLog
     if ($LASTEXITCODE -ne 0) {
         exit $LASTEXITCODE
     }
@@ -42,7 +43,8 @@ try {
         --minute-bars-dir data/minute_bars_parquet `
         --indicator-source daily `
         --compare-market-regime `
-        --output data/backtest/latest_weekly.json 2>> $stderrLog
+        --output data/backtest/latest/latest_weekly.json `
+        --archive-directory data/backtest/runs 2>> $stderrLog
     exit $LASTEXITCODE
 }
 finally {

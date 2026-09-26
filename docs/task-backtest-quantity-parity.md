@@ -57,7 +57,7 @@ qty = calculate_buy_quantity(price, budget_per_position, config.ORDER_UNIT)
 python -m src.entrypoints.run_backtest \
   --live --filtering-dir data/filtering \
   --production-sizing \
-  --output data/backtest/result_production_sizing.json
+  --output data/backtest/comparisons/result_production_sizing.json
 ```
 
 `--target-positions`/`--max-order-amount`を省略すると、現在の本番設定値（`config.TARGET_POSITIONS`, `config.MAX_ORDER_AMOUNT_PER_TRADE`）がそのまま使われる。

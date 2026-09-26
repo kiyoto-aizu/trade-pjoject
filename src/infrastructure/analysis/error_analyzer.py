@@ -13,7 +13,7 @@ from src.infrastructure.persistence.storage import read_json, write_json
 
 logger = logging.getLogger(__name__)
 
-_STATE_FILE = Path(__file__).resolve().parents[3] / "data" / "analysis" / "llm_error_state.json"
+_STATE_FILE = Path(__file__).resolve().parents[3] / "data" / "state" / "llm_error_state.json"
 _STATE_RETENTION_DAYS = 14
 _FRAME_DEPTH = 3
 

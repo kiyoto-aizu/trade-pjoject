@@ -113,7 +113,9 @@ def _run_filtering_backtest(args, sizing_kwargs, minute_bar_repository, repo_roo
             ohlc_history,
             market_regime_by_date,
         ),
-        filter_decision_repository=FilterDecisionRepository(repo_root / "data" / "filter_decision_events.sqlite3"),
+        filter_decision_repository=FilterDecisionRepository(
+            repo_root / "data" / "state" / "filter_decision_events.sqlite3"
+        ),
     )
     atr_comparison, market_regime_comparison = _run_timeseries_comparisons(
         args, daily_symbols, history, sizing_kwargs, minute_bar_repository, ohlc_history, result,

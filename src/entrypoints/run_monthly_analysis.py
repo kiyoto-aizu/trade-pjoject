@@ -16,6 +16,7 @@ from src.infrastructure.analysis.summary_loader import (
 from src.infrastructure.notification.slack_notify import format_result_notification, notify_analysis, process_notification
 from src.infrastructure.persistence.storage import write_json
 from src.infrastructure.persistence.filter_decision_repository import FilterDecisionRepository
+from src.config import config
 
 logger = logging.getLogger(__name__)
 
@@ -76,8 +77,8 @@ def build_monthly_summary(
 def main() -> None:
     parser = argparse.ArgumentParser(description="月次のペーパートレード・バックテスト総合分析を実行します")
     parser.add_argument("--month", default=None, help="対象月（YYYY-MM）。省略時は当月")
-    parser.add_argument("--reports", type=Path, default=Path("data/reports"))
-    parser.add_argument("--backtests", type=Path, default=Path("data/backtest"))
+    parser.add_argument("--reports", type=Path, default=Path("data/reports/daily"))
+    parser.add_argument("--backtests", type=Path, default=Path("data/backtest/runs"))
     parser.add_argument("--output", type=Path, default=Path("data/reports/monthly"))
     parser.add_argument("--force", action="store_true", help="月末以外でも実行する")
     args = parser.parse_args()
@@ -90,7 +91,7 @@ def main() -> None:
     with process_notification("月次総合分析", notify_lifecycle=False, trigger="月末または手動実行"):
         summary = build_monthly_summary(
             month_text, args.reports, args.backtests,
-            FilterDecisionRepository(Path("data/filter_decision_events.sqlite3")), today,
+            FilterDecisionRepository(config.FILTER_DECISION_DATABASE_FILE), today,
         )
         analyzer = create_daily_analyzer()
         analysis = analyzer.analyze_monthly(summary) if analyzer else None

@@ -18,7 +18,7 @@
 
 根拠データ:
 
-- `data/reports/2026-09-09.json`、`data/reports/2026-09-10.json`、`data/reports/2026-09-11.json`
+- `data/reports/daily/2026-09-09.json`、`data/reports/daily/2026-09-10.json`、`data/reports/daily/2026-09-11.json`
 - `data/filtering/2026-09-08.json`から`data/filtering/2026-09-11.json`
 - `trade_project.log.2026-09-08`から`trade_project.log.2026-09-10`
 
@@ -26,7 +26,7 @@
 
 旧ルールの結果は、取引数0、損益0円だった。日足指標・分足評価を用いた再生では、分足シグナル評価8,245回、日足終値評価30回にもかかわらずシグナルは発生していない。
 
-根拠データ: `data/backtest/latest_timeseries_20260911_184744_330910.json`
+根拠データ: `data/backtest/runs/latest_timeseries_20260911_184744_330910.json`
 
 ## 原因分析
 
@@ -67,7 +67,7 @@
 
 買いシグナルは3031（9/1）、8518（9/1）、4598（9/2）、4564（9/8）で発生した。
 
-根拠データ: `data/backtest/latest_timeseries.json`および`data/backtest/latest_timeseries_20260911_191029_783116.json`
+根拠データ: `data/backtest/latest/latest_timeseries.json`および`data/backtest/runs/latest_timeseries_20260911_191029_783116.json`
 
 ## 判断と次回評価
 

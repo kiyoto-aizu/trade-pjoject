@@ -14,10 +14,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="note.com向けの日次開発・トレード日記を生成します")
     parser.add_argument("--date", default=None, help="対象最終日（YYYY-MM-DD）。省略時は実行日")
     parser.add_argument("--days", type=int, default=1, help="対象日数")
-    parser.add_argument("--reports", type=Path, default=Path("data/reports"))
-    parser.add_argument("--backtests", type=Path, default=Path("data/backtest"))
-    parser.add_argument("--notes", type=Path, default=Path("data/diary_notes"))
-    parser.add_argument("--output", type=Path, default=Path("data/diary"))
+    parser.add_argument("--reports", type=Path, default=Path("data/reports/daily"))
+    parser.add_argument("--backtests", type=Path, default=Path("data/backtest/runs"))
+    parser.add_argument("--notes", type=Path, default=Path("data/notes/operations"))
+    parser.add_argument("--output", type=Path, default=Path("data/notes/diary"))
     args = parser.parse_args()
 
     if args.days < 1:

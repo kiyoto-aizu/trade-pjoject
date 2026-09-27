@@ -40,7 +40,11 @@ from pathlib import Path
 import openpyxl
 import requests
 from src.infrastructure.logging_config import configure_logging
-from src.infrastructure.notification.slack_notify import process_notification
+from src.infrastructure.notification.slack_notify import (
+    format_result_notification,
+    notify_daily,
+    process_notification,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -182,6 +186,17 @@ def main() -> None:
 
         write_master(MASTER_CSV_PATH, updated_rows)
         logger.info("上場銘柄マスタを更新しました: %s (全%d行)", MASTER_CSV_PATH, len(updated_rows))
+        notify_daily(format_result_notification(
+            "銘柄情報管理",
+            "上場銘柄マスタ更新",
+            "上場銘柄マスタを更新しました。",
+            [
+                f"JPX取得銘柄数: {len(current_listing)}件",
+                f"マスタ行数: {len(updated_rows)}行",
+                f"更新日: {today}",
+                f"保存先: {MASTER_CSV_PATH}",
+            ],
+        ))
 
 
 if __name__ == "__main__":

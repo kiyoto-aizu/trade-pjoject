@@ -13,6 +13,7 @@ from src.infrastructure.notification.slack_notify import (
     notify_analysis,
     process_notification,
 )
+from src.infrastructure.logging_config import configure_logging
 from src.infrastructure.persistence.parquet_minute_bar_repository import ParquetMinuteBarRepository
 
 logger = logging.getLogger(__name__)
@@ -131,6 +132,7 @@ def _display_result(result: dict, atr_comparison: dict | None, market_regime_com
 
 
 def main() -> None:
+    configure_logging()
     with process_notification("バックテスト", notify_lifecycle=False, trigger="手動実行"):
         repo_root = Path(__file__).resolve().parents[2]
         args = _build_parser(repo_root).parse_args()

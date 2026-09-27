@@ -39,6 +39,8 @@ from pathlib import Path
 
 import openpyxl
 import requests
+from src.infrastructure.logging_config import configure_logging
+from src.infrastructure.notification.slack_notify import process_notification
 
 logger = logging.getLogger(__name__)
 
@@ -167,18 +169,19 @@ def write_master(path: Path, rows: list[dict]) -> None:
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO)
-    today = date.today().isoformat()
+    configure_logging()
+    with process_notification("上場銘柄マスタ更新", notify_lifecycle=False, trigger="週次スケジュール"):
+        today = date.today().isoformat()
 
-    logger.info("JPXから最新の上場銘柄一覧を取得します...")
-    current_listing = fetch_current_listing()
-    logger.info("取得した対象銘柄数(プライム/スタンダード/グロース): %d件", len(current_listing))
+        logger.info("JPXから最新の上場銘柄一覧を取得します...")
+        current_listing = fetch_current_listing()
+        logger.info("取得した対象銘柄数(プライム/スタンダード/グロース): %d件", len(current_listing))
 
-    existing_rows = load_master(MASTER_CSV_PATH)
-    updated_rows = build_updated_master(existing_rows, current_listing, today)
+        existing_rows = load_master(MASTER_CSV_PATH)
+        updated_rows = build_updated_master(existing_rows, current_listing, today)
 
-    write_master(MASTER_CSV_PATH, updated_rows)
-    logger.info("上場銘柄マスタを更新しました: %s (全%d行)", MASTER_CSV_PATH, len(updated_rows))
+        write_master(MASTER_CSV_PATH, updated_rows)
+        logger.info("上場銘柄マスタを更新しました: %s (全%d行)", MASTER_CSV_PATH, len(updated_rows))
 
 
 if __name__ == "__main__":

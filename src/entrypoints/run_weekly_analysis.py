@@ -16,6 +16,7 @@ from src.infrastructure.persistence.filter_decision_repository import FilterDeci
 from src.config import config
 from src.infrastructure.notification.slack_notify import format_result_notification, notify_analysis, process_notification
 from src.infrastructure.persistence.storage import write_json
+from src.infrastructure.logging_config import configure_logging
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +61,7 @@ def build_weekly_summary(
 
 
 def main() -> None:
+    configure_logging()
     parser = argparse.ArgumentParser(description="週次のペーパートレード・バックテスト総合分析を実行します")
     parser.add_argument("--week-start", default=None, help="対象週の月曜（YYYY-MM-DD）。省略時は実行日が属する週")
     parser.add_argument("--reports", type=Path, default=Path("data/reports/daily"))

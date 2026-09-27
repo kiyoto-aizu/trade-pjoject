@@ -16,6 +16,8 @@ from src.infrastructure.analysis.summary_loader import (
 from src.infrastructure.notification.slack_notify import format_result_notification, notify_analysis, process_notification
 from src.infrastructure.persistence.storage import write_json
 from src.infrastructure.persistence.filter_decision_repository import FilterDecisionRepository
+from src.infrastructure.logging_config import configure_logging
+from src.config.task_schedule import is_last_trading_day_of_month
 from src.config import config
 
 logger = logging.getLogger(__name__)
@@ -75,6 +77,7 @@ def build_monthly_summary(
 
 
 def main() -> None:
+    configure_logging()
     parser = argparse.ArgumentParser(description="月次のペーパートレード・バックテスト総合分析を実行します")
     parser.add_argument("--month", default=None, help="対象月（YYYY-MM）。省略時は当月")
     parser.add_argument("--reports", type=Path, default=Path("data/reports/daily"))
@@ -85,8 +88,8 @@ def main() -> None:
 
     today = date.today()
     month_text = args.month or f"{today.year:04d}-{today.month:02d}"
-    if not args.force and today != _month_bounds(f"{today.year:04d}-{today.month:02d}")[1]:
-        logger.info("月末ではないため月次分析をスキップします")
+    if not args.force and not is_last_trading_day_of_month(today):
+        logger.info("月末営業日ではないため月次分析をスキップします")
         return
     with process_notification("月次総合分析", notify_lifecycle=False, trigger="月末または手動実行"):
         summary = build_monthly_summary(

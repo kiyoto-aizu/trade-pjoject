@@ -1,4 +1,4 @@
-﻿[CmdletBinding()]
+[CmdletBinding()]
 param()
 
 $ErrorActionPreference = 'Stop'
@@ -12,13 +12,11 @@ if (-not (Test-Path $python)) {
 }
 
 . (Join-Path $scriptsRoot 'common\stderr_logging.ps1')
-$stderrLog = Initialize-StderrLogging -ProjectRoot $projectRoot -ScriptName 'run_update_listed_securities_master'
-
-# stderrへのINFOログ出力を終端エラー扱いさせないため、ネイティブ実行時のみContinueにする
+$stderrLog = Initialize-StderrLogging -ProjectRoot $projectRoot -ScriptName 'run_daily_task_check'
 $ErrorActionPreference = 'Continue'
 Push-Location $projectRoot
 try {
-    & $python -m scripts.tasks.update_listed_securities_master 2>> $stderrLog
+    & $python -m src.entrypoints.run_daily_task_check 2>> $stderrLog
     exit $LASTEXITCODE
 }
 finally {

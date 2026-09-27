@@ -395,6 +395,19 @@ python -m src.entrypoints.run_monthly_analysis --month 2026-09 --force
 python -m src.entrypoints.run_weekly_analysis --week-start 2026-09-07 --force
 ```
 
+### 7. 日次タスク予定・実行結果通知
+
+毎朝07:00に当日の予定タスクをSlackのdailyチャンネルへ通知し、毎晩21:00にアプリケーションログと取引日報から実行結果を確認します。異常終了・未実行・終了記録や日報の欠落があればcriticalチャンネルにも通知します。土曜タスクは祝日にかかわらず週次予定として表示します。
+
+初回のみ、次のタスクを登録してください。
+
+```
+.\scripts\tasks\register_daily_task_plan_task.ps1
+.\scripts\tasks\register_daily_task_check_task.ps1
+```
+
+通知対象日の曜日・休場日・月末最終営業日の判定は `src/config/task_schedule.py` で一元管理します。
+
 従来の固定銘柄による検証を行う場合は、`run_backtest.py` に `--symbols` と `--history` を指定します。
 
 ## 取引フロー

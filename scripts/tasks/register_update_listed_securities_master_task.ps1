@@ -1,7 +1,7 @@
 ﻿[CmdletBinding(SupportsShouldProcess)]
 param(
     [string]$TaskName = 'trade-pjoject-update-listed-securities-master',
-    [datetime]$At = [datetime]'08:00',
+    [datetime]$At = [datetime]'09:00',
     [switch]$Remove
 )
 

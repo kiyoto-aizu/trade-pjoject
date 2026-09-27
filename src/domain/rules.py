@@ -127,7 +127,11 @@ def is_trading_session(
 # 注文重複チェック
 # ================================================================================
 
-def is_duplicate_order(signal: TradeSignal, order_history: List[OrderHistoryEntry]) -> bool:
+def is_duplicate_order(
+    signal: TradeSignal,
+    order_history: List[OrderHistoryEntry],
+    now: datetime | None = None,
+) -> bool:
     """
     同一銘柄・同一方向の注文が当日中に既に存在するかを確認します。
     
@@ -138,7 +142,7 @@ def is_duplicate_order(signal: TradeSignal, order_history: List[OrderHistoryEntr
     Returns:
         重複が存在する場合True、存在しない場合False
     """
-    today = datetime.now().date()
+    today = (now if now is not None else datetime.now()).date()
     return any(
         entry.symbol == signal.symbol and entry.side == signal.side
         and _entry_date(entry) == today
@@ -166,7 +170,12 @@ def _entry_date(entry: OrderHistoryEntry):
 # 最近の注文チェック
 # ================================================================================
 
-def is_recent_order(signal: TradeSignal, order_history: List[OrderHistoryEntry], lock_seconds: int) -> bool:
+def is_recent_order(
+    signal: TradeSignal,
+    order_history: List[OrderHistoryEntry],
+    lock_seconds: int,
+    now: datetime | None = None,
+) -> bool:
     """
     指定秒数以内に同一銘柄・同一方向の注文が存在するかを確認します。
     二重発注防止のため、ロック期間内の注文をチェックします。
@@ -179,7 +188,8 @@ def is_recent_order(signal: TradeSignal, order_history: List[OrderHistoryEntry],
     Returns:
         ロック期間内に重複が存在する場合True、存在しない場合False
     """
-    cutoff = datetime.now() - timedelta(seconds=lock_seconds)
+    current_time = now if now is not None else datetime.now()
+    cutoff = current_time - timedelta(seconds=lock_seconds)
     for entry in reversed(order_history):
         if entry.symbol == signal.symbol and entry.side == signal.side:
             try:
@@ -203,6 +213,7 @@ def is_safe_to_order(
     order_history: List[OrderHistoryEntry],
     lock_seconds: int,
     warn_on_missing_holdings: bool = True,
+    now: datetime | None = None,
 ) -> bool:
     """
     取引シグナルに基づいて注文を実行しても安全かどうかを総合的に判定します。
@@ -238,11 +249,11 @@ def is_safe_to_order(
             logger.warning("保有株が確認できないため、売り注文を見送ります。")
         return False
 
-    if is_duplicate_order(signal, order_history):
+    if is_duplicate_order(signal, order_history, now):
         logger.warning("当日同一シンボル・同一方向の注文が既にあります。")
         return False
 
-    if is_recent_order(signal, order_history, lock_seconds):
+    if is_recent_order(signal, order_history, lock_seconds, now):
         logger.warning("同一注文が %s 秒以内に発生しています。二重発注を防止します。", lock_seconds)
         return False
 

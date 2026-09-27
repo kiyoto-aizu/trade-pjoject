@@ -88,6 +88,8 @@ class TradingUseCase:
         self.order_sender = order_sender
         self.filtering_result_repository = filtering_result_repository
         self.notifier = notifier
+        self._now_provider = datetime.now
+        self._current_now: datetime | None = None
         self.daily_analyzer = daily_analyzer if daily_analyzer is not None else create_daily_analyzer()
         self.daily_report_directory = (
             daily_report_directory
@@ -367,7 +369,14 @@ class TradingUseCase:
                     config.ATR_STOP_DANGER_MULTIPLIER,
                 ),
             })
-        self.order_history.append(signal.to_order_history_entry(limit, order_response, order_diagnostics))
+        self.order_history.append(
+            signal.to_order_history_entry(
+                limit,
+                order_response,
+                order_diagnostics,
+                timestamp=self._current_now or self._now_provider(),
+            )
+        )
         self._save_order_history()
         # ADR-0002: 約定成立時に保有中最高値を初期化(買い)・クリア(売り)する。
         # 通常決済・ATR損切り・大引けの強制決済(_liquidate_all_positions)は
@@ -648,10 +657,11 @@ class TradingUseCase:
     def _send_end_of_day_report(self) -> None:
         """市場終了時に本日の取引レポートを送信します。"""
         self._load_order_history()
-        today = datetime.now().date().isoformat()
+        report_now = self._current_now or self._now_provider()
+        today = report_now.date().isoformat()
         log_error_summary = self._daily_log_error_summary(today)
         daily_orders = [entry for entry in self.order_history if entry.timestamp.startswith(today)]
-        self._finalize_filter_decisions_safely(datetime.now())
+        self._finalize_filter_decisions_safely(report_now)
         atr_danger_skips = self._atr_danger_skip_summary()
         atr_stop_exits = self._atr_stop_exit_summary()
         market_regime_danger_skips = self._filter_decision_summaries("MARKET_REGIME_DANGER_SKIP")
@@ -782,7 +792,7 @@ class TradingUseCase:
         report_text = "\n".join(lines)
         report_data = {
             **daily_summary,
-            "generated_at": datetime.now().isoformat(timespec="seconds"),
+            "generated_at": report_now.isoformat(timespec="seconds"),
             "report_text": report_text,
             "llm_analysis": analysis if self.daily_analyzer else None,
         }
@@ -891,11 +901,14 @@ class TradingUseCase:
         self._holding_high_prices.clear()
         self._logged_initial_judgment_symbols.clear()
         now_provider = now_provider or datetime.now
+        self._now_provider = now_provider
+        self._current_now = None
         sleep = sleep or time.sleep
         initial_now = None
         if self.filtering_result_repository:
             result = self.filtering_result_repository.load_latest()
             initial_now = now_provider()
+            self._current_now = initial_now
             today = initial_now.date().isoformat()
             if not result or result.date != today or not result.symbols:
                 message = "当日のフィルタ結果がないため、取引を開始しません"
@@ -914,6 +927,7 @@ class TradingUseCase:
 
         if initial_now is None:
             initial_now = now_provider()
+            self._current_now = initial_now
         today = initial_now.date().isoformat()
 
         if self.market_regime_usecase is not None:
@@ -943,6 +957,7 @@ class TradingUseCase:
                 self._liquidate_all_positions()
                 break
             now = initial_now if first_loop else now_provider()
+            self._current_now = now
             first_loop = False
             if not filter_decisions_initialized:
                 self._finalize_filter_decisions_safely(now)
@@ -1244,7 +1259,7 @@ class TradingUseCase:
                         daily_orders = sum(
                             1 for entry in self.order_history
                             if entry.side == config.OrderSide.BUY
-                            and entry.timestamp.startswith(now_provider().date().isoformat())
+                            and entry.timestamp.startswith(now.date().isoformat())
                         )
                         if not check_kill_switch(
                             daily_orders, daily_pnl, self.daily_starting_capital, config
@@ -1284,6 +1299,7 @@ class TradingUseCase:
                         self.order_history,
                         config.ORDER_LOCK_SECONDS,
                         warn_on_missing_holdings=should_warn_missing_holdings,
+                        now=now,
                     ):
                         if signal.side == config.OrderSide.SELL and not has_holdings:
                             self._missing_holding_warning_symbols.add(symbol)

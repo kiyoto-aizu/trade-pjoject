@@ -203,6 +203,7 @@ class TradeSignal:
         limit: 'PriceLimit',
         order_response: Optional[Dict] = None,
         diagnostics: Optional[Dict] = None,
+        timestamp: Optional[datetime] = None,
     ) -> 'OrderHistoryEntry':
         """
         TradeSignalを注文履歴エントリに変換します。
@@ -221,7 +222,7 @@ class TradeSignal:
             side=self.side,
             price=self.price,
             qty=self.qty,
-            timestamp=datetime.now().isoformat(),
+            timestamp=(timestamp if timestamp is not None else datetime.now()).isoformat(),
             result_code=order_response.get('Result'),
             order_id=order_response.get('OrderId'),
             basis_lower_band=limit.lower_band,

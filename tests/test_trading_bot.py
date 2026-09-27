@@ -1,16 +1,16 @@
 import json
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from src.config import config
-from src.domain.models import PriceLimit, TradeSignal
+from src.domain.models import OrderHistoryEntry, PriceLimit, TradeSignal
 from src.domain.market_regime import MarketRegime
 from src.infrastructure.persistence.filter_decision_repository import FilterDecisionRepository
 from src.domain.volatility import VolatilityLevel
-from src.domain.rules import is_market_closed
+from src.domain.rules import is_duplicate_order, is_market_closed, is_recent_order, is_safe_to_order
 from src.application.trading_usecase import TradingUseCase
 from src.infrastructure.paper.paper_order_client import PaperOrderClient
 from src.entrypoints.run_trading import create_trading_use_case
@@ -101,6 +101,66 @@ def test_order_history_register_records_audit_fields(tmp_path):
     assert len(reloaded.order_history) == 1
     assert reloaded.order_history[0].order_id == 'abc123'
     assert reloaded.order_history[0].allocated_budget == 30_000.0
+
+
+def test_order_history_and_end_of_day_report_use_injected_clock(tmp_path):
+    simulated_now = datetime(2026, 9, 25, 15, 30, 1)
+    messages = []
+    use_case = TradingUseCase(
+        token='dummy',
+        order_history_path=tmp_path / 'order_history.json',
+        notifier=messages.append,
+        daily_analyzer=SimpleNamespace(analyze=lambda daily_summary: None),
+        daily_report_directory=tmp_path / 'reports',
+    )
+    use_case._now_provider = lambda: simulated_now
+    use_case._load_order_history()
+    use_case._register_order(
+        TradeSignal('7203', config.OrderSide.BUY, 100.0, 100),
+        PriceLimit(99.0, 101.0),
+        {'Result': 0, 'OrderId': 'historical-order'},
+    )
+
+    use_case._send_end_of_day_report()
+
+    report = json.loads(
+        (tmp_path / 'reports' / '2026-09-25.json').read_text(encoding='utf-8')
+    )
+    assert use_case.order_history[0].timestamp == simulated_now.isoformat()
+    assert report['date'] == '2026-09-25'
+    assert report['generated_at'] == simulated_now.isoformat(timespec='seconds')
+    assert report['order_count'] == 1
+    assert report['orders'][0]['symbol'] == '7203'
+    assert '発注件数: 1' in messages[-1]
+
+
+def test_order_guards_compare_history_against_injected_simulation_time():
+    simulated_now = datetime(2026, 9, 25, 10, 0)
+    signal = TradeSignal('7203', config.OrderSide.BUY, 100.0, 100)
+    previous_order = OrderHistoryEntry(
+        symbol='7203',
+        side=config.OrderSide.BUY,
+        price=100.0,
+        qty=100,
+        timestamp=(simulated_now - timedelta(minutes=1)).isoformat(),
+    )
+
+    assert is_duplicate_order(signal, [previous_order], now=simulated_now)
+    assert is_recent_order(signal, [previous_order], 60, now=simulated_now)
+    assert not is_recent_order(
+        signal,
+        [previous_order],
+        30,
+        now=simulated_now,
+    )
+    assert not is_safe_to_order(
+        signal,
+        wallet_amount=20_000.0,
+        has_holdings=False,
+        order_history=[previous_order],
+        lock_seconds=60,
+        now=simulated_now,
+    )
 
 
 def test_has_holdings_checks_sell_side_positions():
@@ -1124,8 +1184,9 @@ def test_trading_use_case_records_kill_switch_in_daily_report(monkeypatch, tmp_p
         sleep=lambda seconds: None,
     )
 
-    report = json.loads((tmp_path / 'reports' / f'{datetime.now().date().isoformat()}.json').read_text(encoding='utf-8'))
+    report = json.loads((tmp_path / 'reports' / '2026-09-04.json').read_text(encoding='utf-8'))
     assert use_case.kill_switch_triggered is True
+    assert report['date'] == '2026-09-04'
     assert report['kill_switch_triggered'] is True
     assert '【緊急停止】キルスイッチを発動しました' in messages[0]
     assert any('キルスイッチ: 発動' in message for message in messages)

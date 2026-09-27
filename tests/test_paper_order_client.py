@@ -1,4 +1,5 @@
 import pytest
+from datetime import date
 
 from src.config import config
 from src.application.trading_usecase import TradingUseCase
@@ -40,6 +41,28 @@ def test_paper_order_client_applies_market_slippage_and_round_trip_fees():
     assert executor.cash == pytest.approx(19_970.0)
     assert executor.holdings == {}
     assert executor.get_daily_realized_pnl() == pytest.approx(-30.0)
+
+
+def test_paper_order_client_uses_injected_date_for_daily_realized_pnl():
+    simulated_date = [date(2026, 9, 25)]
+    executor = PaperOrderClient(
+        prices={'7203': 100.0},
+        cash=20_000.0,
+        order_qty=100,
+        fee_rate=0.0,
+        market_slippage_bps=0.0,
+        realized_pnl_date=simulated_date[0].isoformat(),
+        today_provider=lambda: simulated_date[0],
+    )
+    executor.place_market_order('unused', '7203', config.OrderSide.BUY.value)
+    executor.set_price('7203', 90.0)
+    executor.place_market_order('unused', '7203', config.OrderSide.SELL.value)
+
+    assert executor.get_daily_realized_pnl() == -1_000.0
+
+    simulated_date[0] = date(2026, 9, 28)
+    assert executor.get_daily_realized_pnl() == 0.0
+    assert executor.realized_pnl_date == '2026-09-28'
 
 
 def test_paper_order_client_persists_fee_inclusive_average_cost(tmp_path):

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional
 from pathlib import Path
 
 from src.config import config
@@ -24,6 +24,7 @@ class PaperOrderClient:
     orders: List[dict] = field(default_factory=list)
     realized_pnl: float = 0.0
     realized_pnl_date: str = field(default_factory=lambda: date.today().isoformat())
+    today_provider: Callable[[], date] = field(default=date.today, repr=False, compare=False)
     state_path: Optional[Path] = None
     _next_order_id: int = 1
 
@@ -46,7 +47,11 @@ class PaperOrderClient:
         }
         self._next_order_id = max(1, int(state.get('next_order_id', self._next_order_id)))
         self.realized_pnl_date = state.get('realized_pnl_date', self.realized_pnl_date)
-        self.realized_pnl = float(state.get('realized_pnl', 0.0)) if self.realized_pnl_date == date.today().isoformat() else 0.0
+        self.realized_pnl = (
+            float(state.get('realized_pnl', 0.0))
+            if self.realized_pnl_date == self.today_provider().isoformat()
+            else 0.0
+        )
 
     def _save_state(self) -> None:
         if self.state_path is not None:
@@ -121,7 +126,7 @@ class PaperOrderClient:
         return {'StockAccountWallet': self.cash}
 
     def _reset_daily_realized_pnl_if_needed(self) -> None:
-        today = date.today().isoformat()
+        today = self.today_provider().isoformat()
         if self.realized_pnl_date != today:
             self.realized_pnl_date = today
             self.realized_pnl = 0.0

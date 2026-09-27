@@ -7,6 +7,18 @@ from src.config import config
 
 logger = logging.getLogger(__name__)
 
+STRATEGY_REVIEW_SYSTEM_PROMPT = """あなたは日本株自動売買システムの戦略レビューの総括役です。
+複数の仮説とその検証結果(支持/棄却/追加データ必要、それぞれの根拠)を踏まえて、
+全体として何が言えるかを一段階上の視点でまとめてください。
+以下を厳守すること:
+1. 個々の仮説の結論を繰り返すのではなく、複数の結果を横断して見えるパターンや、
+    より上位の構造的な結論があれば述べる。特にパターンが見えない場合は無理に作らない
+2. 実行可能な次のアクション案を1〜2個提示する
+    (「閾値をX円にすべき」のような具体的な数値変更の提案はしない)
+3. 検証結果にない情報を根拠にしない。飛躍した推測をしない
+4. 結論や優先度を上書きせず、投資判断やパラメータ変更を指示しない
+出力はSlack通知に収まる数行の日本語にしてください。"""
+
 
 def _build_period_review_prompt(period_label: str, period_summary: dict) -> str:
     return (
@@ -170,6 +182,38 @@ class OpenAIDailyAnalyzer:
             return content.strip()[:2400]
         except (requests.RequestException, ValueError, KeyError, IndexError, TypeError) as exc:
             logger.warning("週次LLM分析に失敗しました: %s", exc)
+            return None
+
+    def analyze_strategy_review(self, review_summary: dict) -> str | None:
+        prompt = (
+            "以下は複数の仮説と、それぞれの定量検証結果です。結果の個別要約ではなく、"
+            "横断的な構造パターンと1〜2個の次アクション案を作成してください。"
+            "未検証・検証不能の項目は判定済みとして扱わず、判定結果の上書きや数値変更案を出さないでください。\n\n"
+            f"戦略レビュー結果(JSON):\n{json.dumps(review_summary, ensure_ascii=False, indent=2)}"
+        )
+        try:
+            response = requests.post(
+                self.api_url,
+                headers={
+                    "Authorization": f"Bearer {self.api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": self.model,
+                    "messages": [
+                        {"role": "system", "content": STRATEGY_REVIEW_SYSTEM_PROMPT},
+                        {"role": "user", "content": prompt},
+                    ],
+                },
+                timeout=self.timeout,
+            )
+            response.raise_for_status()
+            content = response.json().get("choices", [{}])[0].get("message", {}).get("content")
+            if not isinstance(content, str) or not content.strip():
+                raise ValueError("LLM応答に総括本文がありません")
+            return content.strip()
+        except (requests.RequestException, ValueError, KeyError, IndexError, TypeError) as exc:
+            logger.warning("戦略レビュー総括に失敗しました: %s", exc)
             return None
 
 

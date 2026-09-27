@@ -129,6 +129,32 @@ def test_weekly_analyzer_uses_required_review_prompt(monkeypatch):
     assert "参考意見" in prompt
 
 
+def test_strategy_review_summary_reuses_existing_openai_auth_and_limits_scope(monkeypatch):
+    captured = {}
+
+    class DummyResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"choices": [{"message": {"content": "横断所見\n- 次の確認案"}}]}
+
+    def post(url, **kwargs):
+        captured["url"] = url
+        captured.update(kwargs)
+        return DummyResponse()
+
+    monkeypatch.setattr("src.infrastructure.analysis.daily_analyzer.requests.post", post)
+    analyzer = OpenAIDailyAnalyzer("existing-key", "existing-model", "https://example.test")
+    result = analyzer.analyze_strategy_review({"counts": {"supported": 1}, "hypotheses": []})
+
+    assert result == "横断所見\n- 次の確認案"
+    assert captured["headers"]["Authorization"] == "Bearer existing-key"
+    assert captured["json"]["model"] == "existing-model"
+    assert len(captured["json"]["messages"]) == 2
+    assert "結論や優先度を上書きせず" in captured["json"]["messages"][0]["content"]
+
+
 def test_daily_analyzer_prompt_uses_event_agnostic_review_contract(monkeypatch):
     captured = {}
 

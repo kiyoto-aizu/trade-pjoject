@@ -194,7 +194,9 @@ def test_order_history_and_end_of_day_report_use_injected_clock(tmp_path):
     assert report['generated_at'] == simulated_now.isoformat(timespec='seconds')
     assert report['order_count'] == 1
     assert report['orders'][0]['symbol'] == '7203'
-    assert '発注件数: 1' in messages[-1]
+    assert '約定件数: 1件（買い: 1件 / 売り: 0件）' in messages[-1]
+    assert '約定価格:' not in messages[-1]
+    assert '判断理由:' not in messages[-1]
 
 
 def test_order_guards_compare_history_against_injected_simulation_time():
@@ -737,7 +739,9 @@ def test_end_of_day_report_keeps_market_conditions_in_data_but_not_notification(
     assert report['orders'][0]['atr'] == 3.2
     assert report['orders'][0]['atr_level'] == 'CAUTION'
     assert 'MarketRegime: CAUTION' not in messages[-1]
-    assert 'ATR: 3.200円' in messages[-1]
+    assert 'ATR: 3.200円' not in messages[-1]
+    assert '約定件数: 1件（買い: 1件 / 売り: 0件）' in messages[-1]
+    assert '銘柄: 7203' not in messages[-1]
 
 
 def test_end_of_day_report_marks_market_conditions_not_evaluated(tmp_path):

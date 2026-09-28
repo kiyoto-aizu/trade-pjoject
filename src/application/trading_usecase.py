@@ -673,19 +673,14 @@ class TradingUseCase:
             "【概要】",
             f"{config.TRADING_MODE_LABEL}の本日の取引を終了しました。",
             "【詳細】",
-            f"発注件数: {len(daily_orders)}",
+            f"約定件数: {len(daily_orders)}件（買い: {sum(entry.side == config.OrderSide.BUY for entry in daily_orders)}件 / 売り: {sum(entry.side == config.OrderSide.SELL for entry in daily_orders)}件）",
         ]
         if self.kill_switch_triggered:
             lines.append("キルスイッチ: 発動")
         if self.emergency_stop_triggered:
             lines.append("手動緊急停止: 発動")
-        if daily_orders:
-            lines.append("注文履歴:")
-            for entry in daily_orders:
-                lines.extend(self._order_detail_lines(entry, include_market_regime=False))
-                lines.append("")
-        else:
-            lines.append("本日実行された注文はありませんでした。")
+        if not daily_orders:
+            lines.append("本日の約定はありませんでした。")
         daily_realized_pnl = 0.0
         if self.order_sender and hasattr(self.order_sender, 'get_daily_realized_pnl'):
             daily_realized_pnl = float(self.order_sender.get_daily_realized_pnl() or 0)

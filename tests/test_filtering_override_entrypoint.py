@@ -3,6 +3,7 @@ from datetime import date
 
 from src.entrypoints import run_filtering_override
 from src.domain.models import ScreeningResult
+from src.infrastructure import execution_lock
 
 
 class _StubScreeningRepository:
@@ -28,8 +29,9 @@ def test_fixed_date_screening_repository_ignores_requested_date():
     assert inner.requested_dates == [date(2026, 9, 18)]
 
 
-def test_main_uses_live_board_and_fixed_screening_date(monkeypatch):
+def test_main_uses_live_board_and_fixed_screening_date(monkeypatch, tmp_path):
     monkeypatch.setattr(sys, 'argv', ['run_filtering_override.py', '--screening-date', '2026-09-18'])
+    monkeypatch.setattr(execution_lock, 'LOCK_FILE', tmp_path / '.market_workflow.lock')
     monkeypatch.setattr(run_filtering_override, 'configure_logging', lambda: None)
     monkeypatch.setattr(run_filtering_override, 'get_api_token', lambda: 'dummy-token')
     monkeypatch.setattr(run_filtering_override, 'unregister_all', lambda token: True)

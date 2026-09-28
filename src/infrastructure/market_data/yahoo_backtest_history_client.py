@@ -3,13 +3,25 @@ import json
 import logging
 import re
 import urllib.request
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 import requests
 
 from src.domain.volatility import DailyBar
 
 logger = logging.getLogger(__name__)
+CALENDAR_DAY_BUFFER = 60
+"""30営業日前後の履歴を週末・祝日込みで取得する暦日バッファ。"""
+
+
+def calculate_required_fetch_days(
+    earliest_simulated_date: date,
+    today: date | None = None,
+) -> int:
+    """最古シミュレーション日より前の指標用履歴を含むYahoo取得日数を返す。"""
+    current_date = today or date.today()
+    days_to_earliest = (current_date - earliest_simulated_date).days
+    return max(days_to_earliest, 0) + CALENDAR_DAY_BUFFER
 
 
 def _to_yahoo_ticker(symbol: str) -> str:
@@ -132,11 +144,13 @@ def fetch_yahoo_dated_ohlc(symbols: list[str], days: int = 90) -> dict[str, dict
             highs = quote.get("high", [])
             lows = quote.get("low", [])
             closes = quote.get("close", [])
+            opens = quote.get("open", [])
             history = {
                 datetime.fromtimestamp(timestamp, tz=timezone.utc).date().isoformat(): DailyBar(
                     high=float(high), low=float(low), close=float(close),
+                    open=float(opens[index]) if index < len(opens) and opens[index] is not None else None,
                 )
-                for timestamp, high, low, close in zip(timestamps, highs, lows, closes)
+                for index, (timestamp, high, low, close) in enumerate(zip(timestamps, highs, lows, closes))
                 if high is not None and low is not None and close is not None
             }
             if history:

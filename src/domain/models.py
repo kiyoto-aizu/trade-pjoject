@@ -185,8 +185,6 @@ class TradeSignal:
         Returns:
             TradeSignalインスタンス（シグナルがない場合はNone）
         """
-        if rsi is not None and current_price >= limit.upper_band and rsi >= rsi_entry_threshold:
-            return cls(symbol=symbol, side=OrderSide.BUY, price=current_price, qty=0)
         regular_exit = rsi is not None and current_price <= limit.lower_band and rsi <= rsi_exit_threshold
         atr_exit = (
             entry_price is not None
@@ -196,6 +194,8 @@ class TradeSignal:
         )
         if regular_exit or atr_exit:
             return cls(symbol=symbol, side=OrderSide.SELL, price=current_price, qty=0)
+        if rsi is not None and current_price >= limit.upper_band and rsi >= rsi_entry_threshold:
+            return cls(symbol=symbol, side=OrderSide.BUY, price=current_price, qty=0)
         return None
 
     def to_order_history_entry(

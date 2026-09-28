@@ -686,6 +686,14 @@ class TradingUseCase:
                 lines.append("")
         else:
             lines.append("本日実行された注文はありませんでした。")
+        daily_realized_pnl = 0.0
+        if self.order_sender and hasattr(self.order_sender, 'get_daily_realized_pnl'):
+            daily_realized_pnl = float(self.order_sender.get_daily_realized_pnl() or 0)
+        total_unrealized_pnl = sum(
+            float(position.get('ProfitLoss', 0) or 0) for position in self.last_positions
+        )
+        lines.append("--- 損益 ---")
+        lines.append(f"実現損益: {daily_realized_pnl}円")
         if self.last_positions:
             lines.append("--- 評価損益 ---")
             for position in self.last_positions:
@@ -694,8 +702,8 @@ class TradingUseCase:
                     f"{position.get('ProfitLoss', 0)}円 "
                     f"({position.get('ProfitLossRate', 0)}%)"
                 )
-            total_pnl = sum(float(position.get('ProfitLoss', 0) or 0) for position in self.last_positions)
-            lines.append(f"合計損益: {total_pnl}円")
+        lines.append(f"評価損益: {total_unrealized_pnl}円")
+        lines.append(f"合計損益: {daily_realized_pnl + total_unrealized_pnl}円")
         lines.append("--- エラー概要 ---")
         if log_error_summary["has_errors"]:
             lines.append(f"エラーあり: {log_error_summary['count']}件")
@@ -772,7 +780,9 @@ class TradingUseCase:
                 }
                 for position in self.last_positions
             ],
-            "total_profit_loss": sum(float(position.get("ProfitLoss", 0) or 0) for position in self.last_positions),
+            "realized_profit_loss": daily_realized_pnl,
+            "unrealized_profit_loss": total_unrealized_pnl,
+            "total_profit_loss": daily_realized_pnl + total_unrealized_pnl,
             "kill_switch_triggered": self.kill_switch_triggered,
             "emergency_stop_triggered": self.emergency_stop_triggered,
             "log_errors": log_error_summary,
@@ -850,7 +860,10 @@ class TradingUseCase:
                             symbol, "通常SELL条件の観測なし（15:20以降の起動など）"
                         ),
                     })
-                    logger.info("持ち越し防止売りを発注しました: 銘柄=%s | 数量=%s", symbol, quantity)
+                    if self.order_sender and self.order_sender.__class__.__name__ == "PaperOrderClient":
+                        logger.info("持ち越し防止売りが成立しました: 銘柄=%s | 数量=%s", symbol, quantity)
+                    else:
+                        logger.info("持ち越し防止売りを発注しました: 銘柄=%s | 数量=%s", symbol, quantity)
                 else:
                     self._liquidation_results.append({
                         "symbol": symbol,
@@ -1021,15 +1034,10 @@ class TradingUseCase:
                         entry_threshold,
                         config.RSI_EXIT_THRESHOLD,
                     )
-                    if signal is not None:
-                        decision_reason = (
-                            "上側バンド突破・RSI条件成立"
-                            if signal.side == config.OrderSide.BUY
-                            else "下側バンド到達・RSI条件成立"
-                        )
-                    if signal is None and assessment is not None:
+                    held_position = None
+                    if signal is not None and signal.side == config.OrderSide.BUY:
                         _, current_positions = self._load_account_state()
-                        position = next(
+                        held_position = next(
                             (
                                 position for position in current_positions
                                 if position.get('Symbol') == symbol
@@ -1038,7 +1046,27 @@ class TradingUseCase:
                             ),
                             None,
                         )
-                        entry_price = self._get_position_entry_price(position) if position else None
+                    if signal is not None:
+                        decision_reason = (
+                            "上側バンド突破・RSI条件成立"
+                            if signal.side == config.OrderSide.BUY
+                            else "下側バンド到達・RSI条件成立"
+                        )
+                    if (
+                        signal is None or signal.side == config.OrderSide.BUY
+                    ) and assessment is not None:
+                        if held_position is None:
+                            _, current_positions = self._load_account_state()
+                            held_position = next(
+                                (
+                                    position for position in current_positions
+                                    if position.get('Symbol') == symbol
+                                    and position.get('Side') == config.OrderSide.SELL.value
+                                    and int(position.get('HoldQty', 0) or 0) > 0
+                                ),
+                                None,
+                            )
+                        entry_price = self._get_position_entry_price(held_position) if held_position else None
                         if entry_price is not None:
                             # ADR-0002: ATR損切りの基準点を、エントリー価格ではなく
                             # 「保有開始後の最高値」に置き換える(シャンデリア・イグジット)。
@@ -1064,7 +1092,7 @@ class TradingUseCase:
                                 config.ATR_PROFIT_LOCK_TRIGGER_ATR_MULTIPLE,
                             )
                             trailing_stop_line = held_high - assessment.atr * atr_stop_multiplier
-                            signal = TradeSignal.evaluate(
+                            atr_signal = TradeSignal.evaluate(
                                 symbol,
                                 board['current_price'],
                                 limit,
@@ -1075,7 +1103,8 @@ class TradingUseCase:
                                 assessment.atr,
                                 atr_stop_multiplier,
                             )
-                            if signal is not None:
+                            if atr_signal is not None:
+                                signal = atr_signal
                                 decision_reason = "ATR損切り基準到達"
                     if signal is None:
                         _, observed_positions = self._load_account_state()

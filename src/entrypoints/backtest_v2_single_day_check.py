@@ -15,7 +15,6 @@ from src.application import trading_usecase as trading_usecase_module
 from src.application.market_regime_usecase import MarketRegimeUseCase
 from src.application.trading_usecase import TradingUseCase
 from src.config import config
-from src.domain.market_volatility import MarketDailyBar
 from src.infrastructure.backtest.historical_clients import (
     DatedDailyBar,
     HistoricalBoardClient,
@@ -26,8 +25,8 @@ from src.infrastructure.backtest.historical_clients import (
     NoOpFilterDecisionRepository,
 )
 from src.infrastructure.calendar.japanese_calendar import is_trading_day, is_trading_session
-from src.infrastructure.market_data.yahoo_backtest_history_client import fetch_yahoo_dated_ohlc
-from src.infrastructure.market_data.yahoo_index_client import YahooIndexClient
+from src.infrastructure.market_data.yahoo_backtest_history_client import calculate_required_fetch_days
+from src.infrastructure.market_data.yahoo_daily_bar_cache import fetch_yahoo_dated_ohlc_cached
 from src.infrastructure.paper.paper_order_client import PaperOrderClient
 from src.infrastructure.persistence.filter_decision_repository import FilterDecisionRepository
 from src.infrastructure.persistence.filtering_result_repository import FilteringResultRepository
@@ -101,8 +100,15 @@ def _load_minute_bars(target_date: date, symbols: list[str]):
 
 
 def _load_daily_bars(target_date: date, symbols: list[str]) -> dict[str, list[DatedDailyBar]]:
-    # The existing dated Yahoo history loader has no disk cache; retain its date-keyed response.
-    fetched = fetch_yahoo_dated_ohlc(symbols, days=90)
+    required_days = calculate_required_fetch_days(target_date)
+    all_symbols = [*symbols, "^N225", "^VIX"]
+    fetched = fetch_yahoo_dated_ohlc_cached(
+        all_symbols,
+        days=required_days,
+        cache_dir=PROJECT_ROOT / "data" / "cache" / "yahoo_daily",
+        earliest_needed_date=target_date,
+        latest_needed_date=target_date,
+    )
     daily_bars: dict[str, list[DatedDailyBar]] = {}
     minimum_closes = config.RSI_MINIMUM_CLOSES
     missing_symbols = []
@@ -114,6 +120,7 @@ def _load_daily_bars(target_date: date, symbols: list[str]) -> dict[str, list[Da
                 high=bar.high,
                 low=bar.low,
                 close=bar.close,
+                open=bar.open,
             )
             for date_text, bar in sorted(rows.items())
         ]
@@ -127,26 +134,18 @@ def _load_daily_bars(target_date: date, symbols: list[str]) -> dict[str, list[Da
             f"(必要={minimum_closes}本以上): {', '.join(missing_symbols)}"
         )
 
-    index_client = YahooIndexClient()
     for symbol in ("^N225", "^VIX"):
-        try:
-            rows: list[MarketDailyBar] = index_client.get_daily_ohlc(
-                symbol,
-                range_=config.MARKET_REGIME_DATA_RANGE,
-            )
-        except Exception as exc:
-            raise RuntimeError(f"指数日足を取得できません: {symbol}: {exc}") from exc
         bars = [
             DatedDailyBar(
-                date=bar.date,
+                date=date.fromisoformat(date_text),
+                open=bar.open,
                 high=bar.high,
                 low=bar.low,
                 close=bar.close,
-                open=bar.open,
             )
-            for bar in rows
+            for date_text, bar in sorted(fetched.get(symbol, {}).items())
         ]
-        if not any(bar.date < target_date for bar in bars):
+        if not any(bar.date < target_date and bar.open is not None for bar in bars):
             raise RuntimeError(f"対象日以前の指数日足がありません: {symbol}")
         daily_bars[symbol] = bars
     return daily_bars
@@ -261,7 +260,9 @@ def main() -> None:
     filtering_result = _load_filter_result(target_date)
     symbols = filtering_result.symbols
     minute_bars, timestamps, missing_symbols = _load_minute_bars(target_date, symbols)
+    daily_history_started_at = perf_counter()
     daily_bars = _load_daily_bars(target_date, symbols)
+    daily_history_elapsed_seconds = perf_counter() - daily_history_started_at
 
     run_id = uuid4().hex
     scratch_root = PROJECT_ROOT / "data" / "backtest_v2_scratch" / target_date.isoformat() / run_id
@@ -294,6 +295,7 @@ def main() -> None:
         "symbol_count": len(symbols),
         "symbols_without_minute_bars": missing_symbols,
         "minute_bar_count": sum(len(bars) for bars in minute_bars.values()),
+        "daily_history_load_elapsed_seconds": round(daily_history_elapsed_seconds, 3),
         "clock_timestamp_count": len(timestamps),
         "daily_analyzer": "noop",
         "notifier": "noop",

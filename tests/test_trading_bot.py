@@ -58,6 +58,69 @@ def test_trade_signal_follows_trend_and_exits_when_it_weakens():
     assert exit_signal.side == config.OrderSide.SELL
 
 
+def test_trading_use_case_prefers_atr_exit_over_buy_signal_for_existing_holding(monkeypatch, tmp_path):
+    symbols_path = tmp_path / 'top_symbols.json'
+    symbols_path.write_text(json.dumps(['7203']), encoding='utf-8')
+    orders = []
+
+    class MarketDataClient:
+        def get_yahoo_daily_closes(self, symbol):
+            return [100.0] * 5
+
+        def get_yahoo_daily_bars(self, symbol):
+            return [object()]
+
+    class BoardClient:
+        def get_current_board(self, token, symbol):
+            return {'current_price': 90.0}
+
+    class WalletClient:
+        def get_wallet_cash(self, token):
+            return {'StockAccountWallet': 100_000.0}
+
+    class PositionsClient:
+        def get_positions(self, token):
+            return [{
+                'Symbol': '7203',
+                'Side': config.OrderSide.SELL.value,
+                'HoldQty': '100',
+                'AveragePrice': 100.0,
+            }]
+
+    class OrderSender:
+        def set_price(self, symbol, price):
+            pass
+
+        def place_market_order(self, token, symbol, side, quantity):
+            orders.append((symbol, side, quantity))
+            return {'Result': 0, 'OrderId': 'sell-1'}
+
+    monkeypatch.setattr(config, 'IS_DEMO', True)
+    monkeypatch.setattr(config, 'API_SOFT_LIMIT', 100_000.0)
+    monkeypatch.setattr(config, 'MAX_ORDER_AMOUNT_PER_TRADE', 100_000.0)
+    monkeypatch.setattr('src.application.trading_usecase.calculate_price_limit', lambda closes: PriceLimit(70.0, 80.0))
+    monkeypatch.setattr('src.application.trading_usecase.calculate_rsi', lambda *args, **kwargs: 60.0)
+    monkeypatch.setattr(
+        'src.application.trading_usecase.assess_volatility',
+        lambda *args, **kwargs: SimpleNamespace(atr=2.0, ratio=1.0, level=VolatilityLevel.NORMAL, latest_true_range=2.0),
+    )
+    current_times = iter([datetime(2026, 9, 4, 10, 0), datetime(2026, 9, 4, 15, 30)])
+    use_case = TradingUseCase(
+        token='dummy', order_history_path=tmp_path / 'order_history.json',
+        market_data_client=MarketDataClient(), board_client=BoardClient(),
+        wallet_client=WalletClient(), positions_client=PositionsClient(),
+        order_sender=OrderSender(), notifier=lambda message: None,
+    )
+
+    use_case.run(
+        top_symbols_path=symbols_path,
+        now_provider=lambda: next(current_times),
+        sleep=lambda seconds: None,
+    )
+
+    assert orders == [('7203', config.OrderSide.SELL.value, 100)]
+
+
 def test_order_history_load_corrupt(tmp_path):
     history_file = tmp_path / 'order_history.json'
     history_file.write_text('not-json', encoding='utf-8')

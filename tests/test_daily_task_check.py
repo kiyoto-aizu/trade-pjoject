@@ -66,6 +66,21 @@ def test_build_task_check_ignores_previous_day_markers(tmp_path):
     assert needs_attention is True
 
 
+def test_build_task_check_reports_measured_duration(tmp_path):
+    log_path = tmp_path / "trade_project.log"
+    log_path.write_text(
+        "2026-09-28 09:30:00,000 INFO: 【フィルタリング】開始\n"
+        "2026-09-28 09:31:23,456 INFO: 【フィルタリング】終了\n",
+        encoding="utf-8",
+    )
+
+    message, _ = build_task_check_message(
+        date(2026, 9, 28), log_path=log_path, reports_directory=tmp_path / "reports",
+    )
+
+    assert "✅ フィルタリング (09:30) 実績所要時間: 1分23秒" in message
+
+
 def test_main_sends_attention_summary_to_daily_and_critical(monkeypatch, tmp_path):
     daily_messages = []
     critical_messages = []

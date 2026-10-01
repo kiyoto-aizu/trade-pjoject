@@ -1,5 +1,5 @@
 import logging
-from datetime import date
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from src.config import config
@@ -9,6 +9,43 @@ from src.infrastructure.notification.slack_notify import notify_critical, notify
 
 logger = logging.getLogger(__name__)
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+LOG_TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S,%f"
+
+
+def task_run_duration(log_text: str, task_name: str) -> timedelta | None:
+    start_marker = f"【{task_name}】開始"
+    end_markers = (f"【{task_name}】終了", f"【{task_name}】異常終了")
+    started_at: datetime | None = None
+    duration: timedelta | None = None
+
+    for line in log_text.splitlines():
+        try:
+            timestamp = datetime.strptime(line[:23], LOG_TIMESTAMP_FORMAT)
+        except ValueError:
+            timestamp = None
+
+        if start_marker in line:
+            started_at = timestamp
+        elif any(marker in line for marker in end_markers):
+            duration = (
+                timestamp - started_at
+                if timestamp is not None and started_at is not None and timestamp >= started_at
+                else None
+            )
+            started_at = None
+
+    return duration
+
+
+def format_duration(duration: timedelta) -> str:
+    total_seconds = int(duration.total_seconds())
+    minutes, seconds = divmod(total_seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours}時間{minutes}分{seconds}秒"
+    if minutes:
+        return f"{minutes}分{seconds}秒"
+    return f"{seconds}秒"
 
 
 def classify_task_run(
@@ -66,6 +103,9 @@ def build_task_check_message(
         line = f"{status} {task.name} ({task.display_time})"
         if detail:
             line += f" {detail}"
+        duration = task_run_duration(log_text, task.name)
+        if duration is not None:
+            line += f" 実績所要時間: {format_duration(duration)}"
         lines.append(line)
     return "\n".join(lines), needs_attention
 

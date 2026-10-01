@@ -76,6 +76,9 @@ def test_paper_order_client_persists_fee_inclusive_average_cost(tmp_path):
     restarted = PaperOrderClient(prices={'7203': 100.0}, state_path=state_path)
 
     assert restarted.average_costs['7203'] == pytest.approx(100.15005)
+    position = restarted.get_positions('unused')[0]
+    assert position['AveragePrice'] == pytest.approx(100.15005)
+    assert TradingUseCase._get_position_entry_price(position) == pytest.approx(100.15005)
     assert restarted.get_positions('unused')[0]['ProfitLoss'] == -15.0
 
 

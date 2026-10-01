@@ -1,5 +1,6 @@
 import json
-from datetime import date
+from datetime import date, datetime
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -16,6 +17,7 @@ from src.domain.market_regime import MarketRegime
 from src.config import config
 from src.domain.rules import calculate_rsi
 from src.application.backtest_report_usecase import save_backtest_result
+from src.application import backtest_execution_usecase
 from src.infrastructure.market_data.yahoo_backtest_history_client import fetch_yahoo_history
 from src.infrastructure.persistence.backtest_input_repository import load_history
 from src.entrypoints.run_backtest import (
@@ -146,6 +148,178 @@ def test_backtest_production_sizing_is_deprecated_noop(caplog):
 
     assert deprecated == default
     assert "非推奨" in caplog.text
+
+
+def test_filtering_backtest_records_events_only_in_backtest_database(monkeypatch, tmp_path):
+    backtest_database = tmp_path / "backtest" / "filter_decisions.sqlite3"
+    production_database = tmp_path / "state" / "filter_decisions.sqlite3"
+    monkeypatch.setattr(config, "BACKTEST_FILTER_DECISION_DIRECTORY", backtest_database.parent)
+    monkeypatch.setattr(config, "FILTER_DECISION_DATABASE_FILE", production_database)
+    monkeypatch.setattr(
+        backtest_execution_usecase,
+        "load_daily_filtering_symbols",
+        lambda directory: {"2026-09-01": ["7203"]},
+    )
+    monkeypatch.setattr(
+        backtest_execution_usecase,
+        "fetch_yahoo_dated_history",
+        lambda symbols, days: {"7203": {"2026-09-01": 100.0}},
+    )
+
+    def record_backtest_event(*args, filter_decision_repository, **kwargs):
+        filter_decision_repository.record_event(
+            "ATR_DANGER_SKIP", "7203", datetime(2026, 9, 1, 10, 0), 100.0, 100,
+            execution_mode="backtest",
+        )
+        return {"total_trades": 0}
+
+    monkeypatch.setattr(
+        backtest_execution_usecase, "simulate_timeseries_backtest", record_backtest_event
+    )
+    args = SimpleNamespace(
+        filtering_dir=tmp_path / "filtering",
+        start_date=None,
+        end_date=None,
+        days=30,
+        live=True,
+        compare_market_regime=False,
+        cash=100_000,
+        qty=100,
+        fee=0.0,
+        market_slippage_bps=0.0,
+        execution_delay_bars=0,
+        order_type="market",
+        allow_overnight=False,
+        indicator_source="daily",
+        compare_atr=False,
+    )
+
+    backtest_execution_usecase.execute_backtest(args, {}, None)
+
+    event_databases = list(backtest_database.parent.glob("*.sqlite3"))
+    assert len(event_databases) == 1
+    backtest_events = FilterDecisionRepository(event_databases[0]).load_summaries()
+    production_events = FilterDecisionRepository(production_database).load_summaries()
+    assert [event["execution_mode"] for event in backtest_events] == ["backtest"]
+    assert production_events == []
+
+
+def test_backtest_filter_decision_path_sanitizes_label_and_uses_timestamp(tmp_path):
+    first = backtest_execution_usecase.build_backtest_filter_decision_database_path(
+        tmp_path, "latest weekly.json", datetime(2026, 10, 1, 8, 0, 0, 1)
+    )
+    second = backtest_execution_usecase.build_backtest_filter_decision_database_path(
+        tmp_path, "latest weekly.json", datetime(2026, 10, 1, 8, 0, 0, 2)
+    )
+    fallback = backtest_execution_usecase.build_backtest_filter_decision_database_path(
+        tmp_path, "", datetime(2026, 10, 1, 8, 0, 0, 1)
+    )
+
+    assert first.name == "latest_weekly_json_20261001_080000_000001.sqlite3"
+    assert second != first
+    assert fallback.name.startswith("backtest_")
+
+
+def _prepare_executable_filter_backtest(monkeypatch, tmp_path):
+    daily_symbols = {"2026-09-06": ["7203"], "2026-09-07": ["7203"]}
+    history = {
+        "7203": {
+            "2026-09-01": 90.0,
+            "2026-09-02": 90.0,
+            "2026-09-03": 90.0,
+            "2026-09-04": 90.0,
+            "2026-09-05": 90.0,
+            "2026-09-06": 92.0,
+            "2026-09-07": 120.0,
+            "2026-09-08": 98.0,
+        },
+    }
+    monkeypatch.setattr(
+        backtest_execution_usecase, "load_daily_filtering_symbols", lambda directory: daily_symbols
+    )
+    monkeypatch.setattr(
+        backtest_execution_usecase, "fetch_yahoo_dated_history", lambda symbols, days: history
+    )
+    monkeypatch.setattr(
+        backtest_execution_usecase,
+        "_market_regime_by_date",
+        lambda args: {date_text: MarketRegime.DANGER for date_text in history["7203"]},
+    )
+    monkeypatch.setattr(config, "FILTER_DECISION_DATABASE_FILE", tmp_path / "production.sqlite3")
+
+
+def _execute_filtering_run(output, start_date=None, end_date=None):
+    args = SimpleNamespace(
+        filtering_dir=Path("filtering"),
+        start_date=start_date,
+        end_date=end_date,
+        days=730,
+        live=True,
+        compare_market_regime=True,
+        cash=10_000.0,
+        qty=100,
+        fee=0.0,
+        market_slippage_bps=0.0,
+        execution_delay_bars=0,
+        order_type="market",
+        allow_overnight=True,
+        indicator_source="daily",
+        compare_atr=False,
+        output=output,
+    )
+    return backtest_execution_usecase.execute_backtest(args, {}, None)
+
+
+def _assert_no_duplicate_backtest_events(database_path):
+    import sqlite3
+
+    with sqlite3.connect(database_path) as connection:
+        duplicates = connection.execute(
+            "SELECT event_type, symbol, substr(occurred_at, 1, 10), COUNT(*) "
+            "FROM filter_decision_events WHERE execution_mode='backtest' "
+            "GROUP BY event_type, symbol, substr(occurred_at, 1, 10) HAVING COUNT(*) > 1"
+        ).fetchall()
+    assert duplicates == []
+
+
+def test_cumulative_and_weekly_backtests_write_independent_event_databases(monkeypatch, tmp_path):
+    _prepare_executable_filter_backtest(monkeypatch, tmp_path)
+    monkeypatch.setattr(config, "BACKTEST_FILTER_DECISION_DIRECTORY", tmp_path / "filter_events")
+
+    _execute_filtering_run(tmp_path / "latest_timeseries.json")
+    _execute_filtering_run(
+        tmp_path / "latest_weekly.json", date(2026, 9, 6), date(2026, 9, 7)
+    )
+
+    databases = sorted((tmp_path / "filter_events").glob("*.sqlite3"))
+    assert len(databases) == 2
+    assert {path.name.split("_")[0] for path in databases} == {"latest"}
+    assert any(path.name.startswith("latest_timeseries_") for path in databases)
+    assert any(path.name.startswith("latest_weekly_") for path in databases)
+    for database_path in databases:
+        events = FilterDecisionRepository(database_path).load_summaries()
+        assert events
+        assert {event["execution_mode"] for event in events} == {"backtest"}
+        _assert_no_duplicate_backtest_events(database_path)
+    assert not config.FILTER_DECISION_DATABASE_FILE.exists()
+
+
+def test_repeated_backtest_does_not_accumulate_or_modify_previous_database(monkeypatch, tmp_path):
+    _prepare_executable_filter_backtest(monkeypatch, tmp_path)
+    monkeypatch.setattr(config, "BACKTEST_FILTER_DECISION_DIRECTORY", tmp_path / "filter_events")
+    output = tmp_path / "latest_timeseries.json"
+
+    _execute_filtering_run(output)
+    first_database = next((tmp_path / "filter_events").glob("*.sqlite3"))
+    first_contents = first_database.read_bytes()
+    first_count = len(FilterDecisionRepository(first_database).load_summaries())
+    _execute_filtering_run(output)
+
+    databases = list((tmp_path / "filter_events").glob("*.sqlite3"))
+    assert len(databases) == 2
+    assert first_database.read_bytes() == first_contents
+    assert all(len(FilterDecisionRepository(path).load_summaries()) == first_count for path in databases)
+    assert not config.FILTER_DECISION_DATABASE_FILE.exists()
 
 
 @pytest.mark.parametrize("option", ["target_positions", "max_order_amount"])

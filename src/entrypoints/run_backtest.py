@@ -148,7 +148,7 @@ def main() -> None:
         if args.indicator_source == "minute" and minute_bar_repository is None:
             raise ValueError("--indicator-source minuteを使う場合は--minute-bars-dirを指定してください")
         result, atr_comparison, market_regime_comparison = execute_backtest(
-            args, sizing_kwargs, minute_bar_repository, repo_root,
+            args, sizing_kwargs, minute_bar_repository,
         )
 
         display_result = _display_result(result, atr_comparison, market_regime_comparison)

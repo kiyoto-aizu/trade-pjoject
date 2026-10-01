@@ -25,6 +25,42 @@ def test_repository_records_and_aggregates_observations_across_instances(tmp_pat
     assert event["inputs"] == {"atr": 5.0, "atr_ratio": 2.4}
 
 
+def test_repository_rejects_execution_mode_outside_allowlist(tmp_path):
+    repository = FilterDecisionRepository(
+        tmp_path / "filter_decisions.sqlite3",
+        allowed_execution_modes=frozenset({"paper", "live"}),
+    )
+
+    try:
+        repository.record_event(
+            "ATR_DANGER_SKIP", "7203", datetime(2026, 9, 11, 14, 30), 100.0, 100,
+            execution_mode="backtest",
+        )
+    except ValueError as error:
+        assert "backtest" in str(error)
+    else:
+        raise AssertionError("disallowed execution_mode should raise ValueError")
+
+
+def test_repository_allowlist_accepts_modes_and_defaults_to_unrestricted(tmp_path):
+    restricted = FilterDecisionRepository(
+        tmp_path / "restricted.sqlite3",
+        allowed_execution_modes=frozenset({"paper", "live"}),
+    )
+    unrestricted = FilterDecisionRepository(tmp_path / "unrestricted.sqlite3")
+    occurred_at = datetime(2026, 9, 11, 14, 30)
+
+    assert restricted.record_event(
+        "ATR_DANGER_SKIP", "7203", occurred_at, 100.0, 100, execution_mode="paper"
+    )
+    assert restricted.record_event(
+        "ATR_DANGER_SKIP", "8306", occurred_at, 100.0, 100, execution_mode="live"
+    )
+    assert unrestricted.record_event(
+        "ATR_DANGER_SKIP", "6758", occurred_at, 100.0, 100, execution_mode="backtest"
+    )
+
+
 def test_repository_finalizes_after_five_business_days_and_stops_observing(tmp_path):
     repository = FilterDecisionRepository(tmp_path / "filter_decisions.sqlite3")
     event_id = repository.record_event(

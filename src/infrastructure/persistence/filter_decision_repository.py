@@ -20,8 +20,13 @@ EVENT_TYPES = frozenset({
 class FilterDecisionRepository:
     """判定イベントの観測値をイベント行へ集約して保存します。"""
 
-    def __init__(self, database_path: Path):
+    def __init__(
+        self,
+        database_path: Path,
+        allowed_execution_modes: frozenset[str] | None = None,
+    ):
         self.database_path = database_path
+        self.allowed_execution_modes = allowed_execution_modes
         self._initialize()
 
     def _connect(self) -> sqlite3.Connection:
@@ -107,6 +112,11 @@ class FilterDecisionRepository:
         execution_mode: str = "paper",
     ) -> int:
         """イベントを記録し、同日・同種別・同銘柄の未確定イベントは再利用します。"""
+        if (
+            self.allowed_execution_modes is not None
+            and execution_mode not in self.allowed_execution_modes
+        ):
+            raise ValueError(f"execution_modeは許可されていません: {execution_mode}")
         if event_type not in EVENT_TYPES:
             raise ValueError(f"未対応の判定イベント種別です: {event_type}")
         if reference_price <= 0:

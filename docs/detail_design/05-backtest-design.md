@@ -89,6 +89,8 @@
 
 ## 5. 本番ロジックとの整合性
 
+日別フィルタリングバックテストの判定イベントは実行ごとに `data/backtest/filter_events/<出力JSONのstem>_<YYYYMMDD_HHMMSS_microseconds>.sqlite3` へ保存し、累積実行と週次実行の状態を混在させない。移行済みの過去分は `data/backtest/state/filter_decision_events.sqlite3` のレガシーDBに保管する。本番（ペーパー・実取引）の `data/state/filter_decision_events.sqlite3` とは分離する。
+
 バックテストは「本番の判定ロジックをできるだけ再現する」ことが前提。
 
 - **シグナル判定（SMA5/RSI）は本番と共通**: `domain/rules.py`の純粋関数を両方から呼んでいるため、ここは一致している。

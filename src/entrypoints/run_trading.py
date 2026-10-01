@@ -44,7 +44,10 @@ def create_trading_use_case(token: str) -> TradingUseCase:
         kill_switch_baseline_path=root / config.KILL_SWITCH_BASELINE_FILE,
         order_sender=order_sender,
         filtering_result_repository=FilteringResultRepository(root / 'data' / 'filtering'),
-        filter_decision_repository=FilterDecisionRepository(config.FILTER_DECISION_DATABASE_FILE),
+        filter_decision_repository=FilterDecisionRepository(
+            config.FILTER_DECISION_DATABASE_FILE,
+            allowed_execution_modes=frozenset({"paper", "live"}),
+        ),
         market_regime_usecase=MarketRegimeUseCase(
             market_data_client=YahooIndexClient(),
             thresholds=config.MARKET_REGIME_THRESHOLDS,

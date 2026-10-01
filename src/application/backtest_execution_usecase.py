@@ -1,6 +1,7 @@
 """CLIから受け取った条件でバックテストを実行するユースケース。"""
 import logging
-from datetime import date, timedelta
+import re
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from src.application.backtest_report_usecase import comparison_summary, market_regime_comparison_summary
@@ -21,6 +22,13 @@ from src.infrastructure.persistence.backtest_input_repository import (
 from src.infrastructure.persistence.filter_decision_repository import FilterDecisionRepository
 
 logger = logging.getLogger(__name__)
+
+
+def build_backtest_filter_decision_database_path(
+    directory: Path, label: str, now: datetime
+) -> Path:
+    safe_label = re.sub(r"[^A-Za-z0-9_-]", "_", label) or "backtest"
+    return directory / f"{safe_label}_{now:%Y%m%d_%H%M%S_%f}.sqlite3"
 
 
 def _timeseries_kwargs(args, sizing_kwargs, minute_bar_repository, ohlc_history, market_regime_by_date):
@@ -82,7 +90,7 @@ def _run_timeseries_comparisons(
     return atr_comparison, market_regime_comparison
 
 
-def _run_filtering_backtest(args, sizing_kwargs, minute_bar_repository, repo_root):
+def _run_filtering_backtest(args, sizing_kwargs, minute_bar_repository):
     daily_symbols = load_daily_filtering_symbols(args.filtering_dir)
     if args.start_date is not None and args.end_date is not None:
         logger.warning("--start-date/--end-date を優先し、--days は無視します。")
@@ -103,6 +111,12 @@ def _run_filtering_backtest(args, sizing_kwargs, minute_bar_repository, repo_roo
     history = fetch_yahoo_dated_history(symbols, days=args.days + 5)
     ohlc_history = fetch_yahoo_dated_ohlc(symbols, days=args.days + 5) if args.live else None
     market_regime_by_date = _market_regime_by_date(args) if args.compare_market_regime else None
+    output_path = getattr(args, "output", None)
+    label = Path(output_path).stem if output_path else "backtest"
+    filter_decision_database_path = build_backtest_filter_decision_database_path(
+        config.BACKTEST_FILTER_DECISION_DIRECTORY, label, datetime.now()
+    )
+    logger.info("バックテスト判定イベントDB: %s", filter_decision_database_path)
     result = simulate_timeseries_backtest(
         daily_symbols,
         history,
@@ -114,7 +128,8 @@ def _run_filtering_backtest(args, sizing_kwargs, minute_bar_repository, repo_roo
             market_regime_by_date,
         ),
         filter_decision_repository=FilterDecisionRepository(
-            repo_root / "data" / "state" / "filter_decision_events.sqlite3"
+            filter_decision_database_path,
+            allowed_execution_modes=frozenset({"backtest"}),
         ),
     )
     atr_comparison, market_regime_comparison = _run_timeseries_comparisons(
@@ -195,11 +210,11 @@ def _run_fixed_backtest(args, symbols, history):
     return result, atr_comparison, None
 
 
-def execute_backtest(args, sizing_kwargs, minute_bar_repository, repo_root):
+def execute_backtest(args, sizing_kwargs, minute_bar_repository):
     if args.filtering_dir:
         if not args.live:
             raise ValueError("--filtering-dir を使う場合は --live も指定してください")
-        return _run_filtering_backtest(args, sizing_kwargs, minute_bar_repository, repo_root)
+        return _run_filtering_backtest(args, sizing_kwargs, minute_bar_repository)
 
     symbols = load_symbols(args.symbols)
     history = load_history(args.history) if args.history.exists() else {}

@@ -321,6 +321,47 @@ def test_order_history_load_corrupt(tmp_path):
         use_case._load_order_history()
 
 
+def test_order_history_rsi_input_roundtrip_and_legacy_compatibility(tmp_path):
+    history_file = tmp_path / 'order_history.json'
+    rsi_input = {
+        'decision_at': '2026-09-04T10:00:00',
+        'symbol': '7203',
+        'market_regime': 'NORMAL',
+        'rsi': 61.25,
+        'applied_threshold': 55.0,
+        'threshold_kind': 'entry',
+        'calculation_status': 'available',
+        'unavailable_reason': None,
+        'close_count': 30,
+        'required_close_count': 30,
+        'last_close': 101.0,
+        'current_price': 102.0,
+        'outcome': 'passed',
+    }
+    entry = OrderHistoryEntry(
+        symbol='7203',
+        side=config.OrderSide.BUY,
+        price=102.0,
+        qty=100,
+        timestamp='2026-09-04T10:00:00',
+        rsi_input=rsi_input,
+    )
+    history_file.write_text(json.dumps([entry.to_dict()]), encoding='utf-8')
+
+    reloaded = TradingUseCase(token='dummy', order_history_path=history_file)
+    reloaded._load_order_history()
+
+    assert reloaded.order_history[0].rsi_input == rsi_input
+
+    legacy_record = entry.to_dict()
+    legacy_record.pop('rsi_input')
+    history_file.write_text(json.dumps([legacy_record]), encoding='utf-8')
+    legacy_reloaded = TradingUseCase(token='dummy', order_history_path=history_file)
+    legacy_reloaded._load_order_history()
+
+    assert legacy_reloaded.order_history[0].rsi_input is None
+
+
 def test_order_history_register_records_audit_fields(tmp_path):
     history_file = tmp_path / 'order_history.json'
     use_case = TradingUseCase(token='dummy', order_history_path=history_file)
@@ -419,8 +460,8 @@ def test_order_guards_compare_history_against_injected_simulation_time():
     )
 
 
-def test_has_holdings_checks_sell_side_positions():
-    use_case = TradingUseCase(token='dummy', order_history_path=Path('unused_history.json'))
+def test_has_holdings_checks_sell_side_positions(tmp_path):
+    use_case = TradingUseCase(token='dummy', order_history_path=tmp_path / 'unused_history.json')
     positions = [
         {'Symbol': '1475', 'Side': config.OrderSide.SELL.value, 'HoldQty': '100'},
         {'Symbol': '7203', 'Side': '1', 'HoldQty': '0'},
@@ -431,8 +472,8 @@ def test_has_holdings_checks_sell_side_positions():
     assert not use_case._has_holdings('9999', positions)
 
 
-def test_count_open_positions_counts_only_open_sell_side_positions():
-    use_case = TradingUseCase(token='dummy', order_history_path=Path('unused_history.json'))
+def test_count_open_positions_counts_only_open_sell_side_positions(tmp_path):
+    use_case = TradingUseCase(token='dummy', order_history_path=tmp_path / 'unused_history.json')
     positions = [
         {'Symbol': '1475', 'Side': config.OrderSide.SELL.value, 'HoldQty': '100'},
         {'Symbol': '7203', 'Side': config.OrderSide.SELL.value, 'HoldQty': '0'},
@@ -1081,7 +1122,7 @@ def test_end_of_day_report_appends_daily_llm_analysis(tmp_path):
         (MarketRegime.CAUTION, 0),
     ],
 )
-def test_trading_use_case_applies_market_regime_to_entry_threshold(
+def test_rsi_input_is_recorded_when_buy_passes_or_caution_excludes(
     monkeypatch,
     tmp_path,
     regime,
@@ -1164,12 +1205,45 @@ def test_trading_use_case_applies_market_regime_to_entry_threshold(
         assert calls == [('dummy', '7203', config.OrderSide.BUY.value)]
         assert use_case.order_history[0].result_code == 0
         assert use_case.order_history[0].order_id == 'paper-order-1'
+        rsi_input = use_case.order_history[0].rsi_input
+        assert rsi_input == {
+            'decision_at': '2026-09-04T10:00:00',
+            'symbol': '7203',
+            'market_regime': 'NORMAL',
+            'rsi': 50.0,
+            'applied_threshold': config.RSI_ENTRY_THRESHOLD,
+            'threshold_kind': 'entry',
+            'calculation_status': 'available',
+            'unavailable_reason': None,
+            'close_count': 5,
+            'required_close_count': 5,
+            'last_close': 90.0,
+            'current_price': 92.0,
+            'outcome': 'passed',
+        }
     event_types = [
         item["event_type"]
         for item in filter_decision_repository.load_summaries(execution_mode="paper")
     ]
     if regime == MarketRegime.CAUTION:
         assert event_types == ["MARKET_REGIME_CAUTION_RSI_FILTER"]
+        event = filter_decision_repository.load_summaries(execution_mode="paper")[0]
+        rsi_input = event["inputs"]["rsi_input"]
+        assert rsi_input == {
+            'decision_at': '2026-09-04T10:00:00',
+            'symbol': '7203',
+            'market_regime': 'CAUTION',
+            'rsi': 50.0,
+            'applied_threshold': config.RSI_ENTRY_THRESHOLD_CAUTION,
+            'threshold_kind': 'entry',
+            'calculation_status': 'available',
+            'unavailable_reason': None,
+            'close_count': 5,
+            'required_close_count': 5,
+            'last_close': 90.0,
+            'current_price': 92.0,
+            'outcome': 'excluded_by_caution_threshold',
+        }
     else:
         assert event_types == []
     assert market_regime_provider.calls == 1

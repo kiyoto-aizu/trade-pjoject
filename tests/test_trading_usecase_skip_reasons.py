@@ -142,7 +142,7 @@ def _build_loop(
         ({'Result': 1, 'Message': 'rejected'}, 'ORDER_REJECTED_RESULT'),
     ],
 )
-def test_order_rejection_reason_is_logged_once(
+def test_order_rejection_reason_is_logged_for_every_attempt(
     monkeypatch, tmp_path, caplog, response, reason_code
 ):
     sender = _OrderSender(response)
@@ -154,7 +154,7 @@ def test_order_rejection_reason_is_logged_once(
         use_case.run(symbols_path, now_provider=now_provider, sleep=sleep)
 
     matching = [record for record in caplog.records if reason_code in record.message]
-    assert len(matching) == 1
+    assert len(matching) == len(sender.orders) == 3
     assert '7203' in matching[0].message
     assert 'BUY' in matching[0].message
     assert '300' in matching[0].message
@@ -165,7 +165,7 @@ def test_order_rejection_reason_is_logged_once(
     assert len(sender.orders) > 1
 
 
-def test_insufficient_rsi_history_is_logged_once_with_counts(monkeypatch, tmp_path, caplog):
+def test_rsi_input_insufficient_history_is_logged_once_with_counts(monkeypatch, tmp_path, caplog):
     use_case, _, _, symbols_path, now_provider, sleep = _build_loop(
         monkeypatch,
         tmp_path,
@@ -181,9 +181,21 @@ def test_insufficient_rsi_history_is_logged_once_with_counts(monkeypatch, tmp_pa
     assert len(matching) == 1
     assert '必要本数=5' in matching[0].message
     assert '実績本数=3' in matching[0].message
+    rsi_input = json.loads(matching[0].message.split('RSI_INPUT=', 1)[1])
+    assert rsi_input['decision_at'] == '2026-09-25T10:00:00'
+    assert rsi_input['symbol'] == '7203'
+    assert rsi_input['market_regime'] == 'NORMAL'
+    assert rsi_input['rsi'] is None
+    assert rsi_input['applied_threshold'] == config.RSI_ENTRY_THRESHOLD
+    assert rsi_input['close_count'] == 3
+    assert rsi_input['required_close_count'] == 5
+    assert rsi_input['last_close'] == 102.0
+    assert rsi_input['current_price'] is None
+    assert rsi_input['unavailable_reason'] == 'insufficient_close_history'
+    assert rsi_input['outcome'] == 'unavailable'
 
 
-def test_rsi_unavailable_with_enough_but_invalid_history_is_logged(monkeypatch, tmp_path, caplog):
+def test_rsi_input_invalid_history_reason_is_logged(monkeypatch, tmp_path, caplog):
     use_case, sender, _, symbols_path, now_provider, sleep = _build_loop(
         monkeypatch,
         tmp_path,
@@ -199,6 +211,12 @@ def test_rsi_unavailable_with_enough_but_invalid_history_is_logged(monkeypatch, 
     assert len(matching) == 1
     assert '必要本数=5' in matching[0].message
     assert '実績本数=5' in matching[0].message
+    rsi_input = json.loads(matching[0].message.split('RSI_INPUT=', 1)[1])
+    assert rsi_input['close_count'] == 5
+    assert rsi_input['last_close'] == 103.0
+    assert rsi_input['current_price'] == 100.0
+    assert rsi_input['unavailable_reason'] == 'non_positive_close'
+    assert rsi_input['outcome'] == 'unavailable'
     assert sender.orders == []
 
 

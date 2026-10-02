@@ -119,6 +119,17 @@ API_SOFT_LIMIT = float(os.getenv("API_SOFT_LIMIT", "1000000"))
 # kabuステーションAPIの実行回数制限を超えないための最小呼出間隔（秒）
 API_REQUEST_INTERVAL_SECONDS = float(os.getenv("API_REQUEST_INTERVAL_SECONDS", "0.12"))
 
+# 401応答を受けた際にトークンを再取得する最小間隔（秒）。この間隔内は取得済みの
+# トークンで再試行し、/tokenへの呼び出し自体は増やさない
+KABU_TOKEN_REFRESH_MIN_INTERVAL_SECONDS = float(os.getenv("KABU_TOKEN_REFRESH_MIN_INTERVAL_SECONDS", "60"))
+
+# トークン再取得後も401が続く（復旧失敗）場合に、次の再取得試行まであける間隔（秒）。
+# 他プロセスとのトークン発行の奪い合いを防ぐための間隔
+KABU_TOKEN_REFRESH_FAILURE_BACKOFF_SECONDS = float(os.getenv("KABU_TOKEN_REFRESH_FAILURE_BACKOFF_SECONDS", "300"))
+
+# 対象銘柄全件の板取得が何回連続で失敗したら通知するか（取引ループの1周を1回と数える）
+BOARD_FETCH_CONSECUTIVE_FAILURE_THRESHOLD = int(os.getenv("BOARD_FETCH_CONSECUTIVE_FAILURE_THRESHOLD", "3"))
+
 # 取引に利用可能な運用資本
 OPERATING_CAPITAL = float(os.getenv("OPERATING_CAPITAL", "100000"))
 

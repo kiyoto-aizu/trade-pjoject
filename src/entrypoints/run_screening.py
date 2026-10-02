@@ -16,6 +16,7 @@ from src.infrastructure.kabu.regulation_repository import RegulationRepository
 from src.infrastructure.kabu.primaryexchange_repository import PrimaryExchangeRepository
 from src.infrastructure.kabu.unregister import unregister_all
 from src.infrastructure.kabu.register import register_symbols
+from src.infrastructure.kabu.token_provider import get_token_provider
 from src.infrastructure.execution_lock import market_workflow_lock
 from src.infrastructure.notification.slack_notify import notify_daily, process_notification
 from src.infrastructure.persistence.screening_result_repository import ScreeningResultRepository
@@ -113,6 +114,9 @@ def main() -> None:
             usecase.batch_started = lambda batch, _: register_symbols(token, batch) is not None
             usecase.batch_finished = lambda _, __: unregister_all(token) is not None
             usecase.execute(target_date=effective_target_date)
+            if get_token_provider().recovery_failed:
+                # 1run1回: トークン再取得後も401が続いた(復旧失敗)場合のみ通知する
+                notify_result("kabuステーションAPIの認証が回復しません（トークン再取得後も401が継続しました）。")
 
 
 if __name__ == '__main__':

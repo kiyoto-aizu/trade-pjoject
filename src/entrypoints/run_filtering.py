@@ -15,6 +15,7 @@ from src.application.filtering_usecase import FilteringUseCase
 from src.infrastructure.kabu.get_board import get_current_board
 from src.infrastructure.kabu.get_token import get_api_token
 from src.infrastructure.kabu.unregister import unregister_all
+from src.infrastructure.kabu.token_provider import get_token_provider
 from src.infrastructure.execution_lock import market_workflow_lock
 from src.infrastructure.market_data.yahoo_finance_client import YahooFinanceClient
 from src.infrastructure.notification.slack_notify import notify_daily, process_notification
@@ -125,6 +126,9 @@ def main() -> None:
                 notifier,
             )
             usecase.execute(target_date=args.target_date)
+            if get_token_provider().recovery_failed:
+                # 1run1回: トークン再取得後も401が続いた(復旧失敗)場合のみ通知する
+                notify_result("kabuステーションAPIの認証が回復しません（トークン再取得後も401が継続しました）。")
 
 
 if __name__ == '__main__':

@@ -127,6 +127,10 @@ class TradingUseCase:
         self._holding_high_prices: dict[str, float] = {}
         # ADR-0002: 銘柄ごとに初回ループの判定結果を必ずINFOで出力するための既出フラグ
         self._logged_initial_judgment_symbols: set[str] = set()
+        # kabu API認証の復旧失敗・板取得連続失敗の通知は1runにつき1回に抑える
+        self._auth_recovery_notified = False
+        self._board_fetch_all_failed_streak = 0
+        self._board_fetch_failure_notified = False
 
     @property
     def _execution_mode(self) -> str:
@@ -180,9 +184,87 @@ class TradingUseCase:
         except Exception:
             logger.exception("判定イベントの確定に失敗しました")
 
-    def _market_regime_event_inputs(self, rsi, entry_threshold: float, assessment=None) -> dict:
-        market_assessment = self.market_regime_assessment
+    def _rsi_input_snapshot(
+        self,
+        symbol: str,
+        occurred_at: datetime,
+        closes: list[float] | None,
+        rsi: float | None,
+        applied_threshold: float,
+        current_price: float | None,
+        outcome: str | None = None,
+        threshold_kind: str = "entry",
+    ) -> dict:
+        close_count = len(closes) if closes is not None else 0
+        required_closes = max(5, config.RSI_MINIMUM_CLOSES, config.RSI_PERIOD + 1)
+        if rsi is not None:
+            unavailable_reason = None
+            calculation_status = "available"
+            passed = rsi <= applied_threshold if threshold_kind == "exit" else rsi >= applied_threshold
+            inferred_outcome = "passed" if passed else "below_threshold"
+        else:
+            calculation_status = "unavailable"
+            inferred_outcome = "unavailable"
+            if close_count < required_closes:
+                unavailable_reason = "insufficient_close_history"
+            elif closes and any(value <= 0 for value in closes):
+                unavailable_reason = "non_positive_close"
+            else:
+                unavailable_reason = "rsi_calculation_returned_none"
         return {
+            "decision_at": occurred_at.isoformat(),
+            "symbol": symbol,
+            "market_regime": self.market_regime.value,
+            "rsi": rsi,
+            "applied_threshold": applied_threshold,
+            "threshold_kind": threshold_kind,
+            "calculation_status": calculation_status,
+            "unavailable_reason": unavailable_reason,
+            "close_count": close_count,
+            "required_close_count": required_closes,
+            "last_close": closes[-1] if closes else None,
+            "current_price": current_price,
+            "outcome": outcome or inferred_outcome,
+        }
+
+    def _log_rsi_unavailable(
+        self,
+        symbol: str,
+        occurred_at: datetime,
+        closes: list[float] | None,
+        rsi: float | None,
+        applied_threshold: float,
+        current_price: float | None,
+    ) -> None:
+        required_closes = max(5, config.RSI_MINIMUM_CLOSES, config.RSI_PERIOD + 1)
+        actual_closes = len(closes) if closes is not None else 0
+        if actual_closes < required_closes:
+            reason_code = "INSUFFICIENT_RSI_HISTORY"
+            reason = "insufficient_close_history"
+        elif rsi is None:
+            reason_code = "RSI_DATA_UNAVAILABLE"
+            reason = (
+                "non_positive_close"
+                if closes and any(value <= 0 for value in closes)
+                else "invalid_or_unavailable_rsi_input"
+            )
+        else:
+            return
+        rsi_input = self._rsi_input_snapshot(
+            symbol, occurred_at, closes, rsi, applied_threshold, current_price, "unavailable"
+        )
+        rsi_input["unavailable_reason"] = reason
+        detail = (
+            f"必要本数={required_closes} | 実績本数={actual_closes} | "
+            f"RSI_INPUT={json.dumps(rsi_input, ensure_ascii=False, sort_keys=True)}"
+        )
+        self._log_trade_reason_once(logging.WARNING, reason_code, symbol, detail)
+
+    def _market_regime_event_inputs(
+        self, rsi, entry_threshold: float, assessment=None, rsi_input: dict | None = None
+    ) -> dict:
+        market_assessment = self.market_regime_assessment
+        inputs = {
             "atr": getattr(assessment, "atr", None),
             "true_range": getattr(assessment, "latest_true_range", None),
             "atr_ratio": getattr(assessment, "ratio", None),
@@ -196,6 +278,9 @@ class TradingUseCase:
             "rsi_normal_threshold": config.RSI_ENTRY_THRESHOLD,
             "rsi_applied_threshold": entry_threshold,
         }
+        if rsi_input is not None:
+            inputs["rsi_input"] = rsi_input
+        return inputs
 
     def _filter_decision_summaries(self, event_type: str) -> list[dict]:
         try:
@@ -229,6 +314,68 @@ class TradingUseCase:
 
     def _is_emergency_stop_requested(self) -> bool:
         return config.EMERGENCY_STOP_FILE.exists()
+
+    def _holdings_lines(self) -> list[str]:
+        """通知に添える保有銘柄一覧（決済待ちの建玉のみ）。"""
+        held = [p for p in self.last_positions if self._is_open_position(p)]
+        if not held:
+            return ["保有銘柄: なし"]
+        return [
+            f"保有銘柄: {p.get('Symbol', '')} {int(p.get('HoldQty', 0) or 0)}株"
+            for p in held
+        ]
+
+    def _refresh_holdings_for_notification(self) -> None:
+        """通知用に保有銘柄を極力最新化する。取得できない場合は既存のlast_positionsを使う。"""
+        try:
+            _, positions = self._load_account_state()
+            if positions:
+                self.last_positions = positions
+        except Exception:
+            logger.exception("通知用の保有銘柄取得に失敗しました")
+
+    def _check_auth_recovery_notification(self) -> None:
+        """トークン再取得後も401が続いた(復旧失敗)場合、1runにつき1回だけ通知する。"""
+        from src.infrastructure.kabu.token_provider import get_token_provider
+
+        if self._auth_recovery_notified or not get_token_provider().recovery_failed:
+            return
+        self._auth_recovery_notified = True
+        self._refresh_holdings_for_notification()
+        message = "\n".join([
+            "【業務】取引運用",
+            "【機能】API認証",
+            "【概要】",
+            "kabuステーションAPIの認証が回復しません（トークン再取得後も401が継続しています）。",
+            "【詳細】",
+            *self._holdings_lines(),
+        ])
+        self._notify_safely(message)
+
+    def _check_board_fetch_failure_notification(self, attempted: int, failed: int) -> None:
+        """対象銘柄全件の板取得が連続N回失敗した場合、1runにつき1回だけ通知する。"""
+        if attempted == 0:
+            return
+        if failed < attempted:
+            self._board_fetch_all_failed_streak = 0
+            return
+        self._board_fetch_all_failed_streak += 1
+        if (
+            self._board_fetch_failure_notified
+            or self._board_fetch_all_failed_streak < config.BOARD_FETCH_CONSECUTIVE_FAILURE_THRESHOLD
+        ):
+            return
+        self._board_fetch_failure_notified = True
+        self._refresh_holdings_for_notification()
+        message = "\n".join([
+            "【業務】取引運用",
+            "【機能】板情報取得",
+            "【概要】",
+            f"対象銘柄全件の板取得が{self._board_fetch_all_failed_streak}回連続で失敗しました。",
+            "【詳細】",
+            *self._holdings_lines(),
+        ])
+        self._notify_safely(message)
 
     # ================================================================================
     # 注文履歴の管理
@@ -1002,11 +1149,12 @@ class TradingUseCase:
                         "status": "売却注文失敗",
                         "reason": reason_code,
                     })
-                    self._log_trade_reason_once(
-                        logging.ERROR,
+                    logger.error(
+                        "%s: 銘柄=%s | EOD方向=SELL | 数量=%s | 応答=%r",
                         reason_code,
                         symbol,
-                        f"EOD方向=SELL | 数量={quantity} | 応答={order_result!r}",
+                        quantity,
+                        order_result,
                     )
                     result = {
                         "symbol": symbol,
@@ -1161,6 +1309,8 @@ class TradingUseCase:
             ):
                 self._liquidate_all_positions(require_fresh_price=True)
                 break
+            board_fetch_attempted = 0
+            board_fetch_failed = 0
             for symbol in symbols:
                 try:
                     # RSI計算用の確定日足終値を取得
@@ -1179,29 +1329,30 @@ class TradingUseCase:
                         config.RSI_PERIOD + 1,
                     )
                     actual_closes = len(closes) if closes is not None else 0
-                    if actual_closes < required_closes:
-                        self._log_trade_reason_once(
-                            logging.WARNING,
-                            "INSUFFICIENT_RSI_HISTORY",
-                            symbol,
-                            f"必要本数={required_closes} | 実績本数={actual_closes}",
-                        )
-                    elif rsi is None:
-                        self._log_trade_reason_once(
-                            logging.WARNING,
-                            "RSI_DATA_UNAVAILABLE",
-                            symbol,
-                            f"RSI算出不能 | 必要本数={required_closes} | 実績本数={actual_closes}",
-                        )
+                    entry_threshold = resolve_rsi_entry_threshold(
+                        self.market_regime,
+                        config.RSI_ENTRY_THRESHOLD,
+                        config.RSI_ENTRY_THRESHOLD_CAUTION,
+                    )
                     if limit is None:
+                        self._log_rsi_unavailable(
+                            symbol, now, closes, rsi, entry_threshold, None
+                        )
                         continue
                     # リアルタイム株価を取得
+                    if not snapshot:
+                        board_fetch_attempted += 1
                     board = snapshot['board'] if snapshot else (
                         self.board_client.get_current_board(self.token, symbol)
                         if self.board_client else get_current_board(self.token, symbol)
                     )
                     if not board or board.get('current_price') is None:
+                        if not snapshot:
+                            board_fetch_failed += 1
                         self._board_unavailable_symbols.add(symbol)
+                        self._log_rsi_unavailable(
+                            symbol, now, closes, rsi, entry_threshold, None
+                        )
                         self._log_trade_reason_once(
                             logging.WARNING,
                             "BOARD_UNAVAILABLE",
@@ -1217,8 +1368,12 @@ class TradingUseCase:
                             "板価格取得が復旧しました",
                         )
                         self._board_unavailable_symbols.discard(symbol)
+                    current_price = float(board['current_price'])
+                    self._log_rsi_unavailable(
+                        symbol, now, closes, rsi, entry_threshold, current_price
+                    )
                     self._update_filter_decision_observations_safely(
-                        now, {symbol: float(board['current_price'])}
+                        now, {symbol: current_price}
                     )
                     daily_bars = snapshot.get('daily_bars') if snapshot else self._get_daily_bars(symbol)
                     assessment = assess_volatility(
@@ -1227,11 +1382,6 @@ class TradingUseCase:
                         config.ATR_CAUTION_RATIO,
                         config.ATR_DANGER_RATIO,
                     ) if daily_bars else None
-                    entry_threshold = resolve_rsi_entry_threshold(
-                        self.market_regime,
-                        config.RSI_ENTRY_THRESHOLD,
-                        config.RSI_ENTRY_THRESHOLD_CAUTION,
-                    )
                     entry_price = None
                     held_high = None
                     trailing_stop_line = None
@@ -1373,7 +1523,14 @@ class TradingUseCase:
                                         self._record_filter_decision_safely(
                                             "MARKET_REGIME_CAUTION_RSI_FILTER", symbol, now,
                                             float(board['current_price']), estimated_quantity,
-                                            self._market_regime_event_inputs(rsi, entry_threshold),
+                                            self._market_regime_event_inputs(
+                                                rsi,
+                                                entry_threshold,
+                                                rsi_input=self._rsi_input_snapshot(
+                                                    symbol, now, closes, rsi, entry_threshold,
+                                                    current_price, "excluded_by_caution_threshold",
+                                                ),
+                                            ),
                                         )
                     available_daily_bars = len(daily_bars) if daily_bars is not None else 0
                     if (
@@ -1622,6 +1779,15 @@ class TradingUseCase:
                                 "rsi_entry_threshold": entry_threshold,
                                 "rsi_exit_threshold": config.RSI_EXIT_THRESHOLD,
                                 "current_price": board['current_price'],
+                                "rsi_input": self._rsi_input_snapshot(
+                                    symbol,
+                                    now,
+                                    closes,
+                                    rsi,
+                                    entry_threshold if signal.side == config.OrderSide.BUY else config.RSI_EXIT_THRESHOLD,
+                                    current_price,
+                                    threshold_kind="entry" if signal.side == config.OrderSide.BUY else "exit",
+                                ),
                                 "order_qty_before_atr": original_qty,
                                 "allocated_budget": budget_per_position if signal.side == config.OrderSide.BUY else None,
                             },
@@ -1653,23 +1819,28 @@ class TradingUseCase:
                             order_result.get('OrderId'),
                         )
                     elif order_result is None:
-                        self._log_trade_reason_once(
-                            logging.ERROR,
+                        logger.error(
+                            "%s: 銘柄=%s | 方向=%s | 数量=%s | 応答=None",
                             "ORDER_REJECTED_NONE",
                             symbol,
-                            f"方向={signal.side.name} | 数量={signal.qty} | 応答=None",
+                            signal.side.name,
+                            signal.qty,
                         )
                     else:
-                        self._log_trade_reason_once(
-                            logging.ERROR,
+                        logger.error(
+                            "%s: 銘柄=%s | 方向=%s | 数量=%s | 応答=%r",
                             "ORDER_REJECTED_RESULT",
                             symbol,
-                            f"方向={signal.side.name} | 数量={signal.qty} | 応答={order_result!r}",
+                            signal.side.name,
+                            signal.qty,
+                            order_result,
                         )
                 except Exception:
                     # 想定外の例外は当該銘柄のみスキップし、ループ全体を止めない
                     logger.exception("%s の評価中に予期しないエラーが発生しました", symbol)
                     continue
+            self._check_auth_recovery_notification()
+            self._check_board_fetch_failure_notification(board_fetch_attempted, board_fetch_failed)
             use_preflight_market_data = False
             sleep(config.LOOP_INTERVAL)
 

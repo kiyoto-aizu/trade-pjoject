@@ -48,6 +48,7 @@ def test_cached_fetch_saves_ohlc_and_reuses_sufficient_cache(tmp_path, monkeypat
         "high": 103.0,
         "low": 100.0,
         "close": 102.0,
+        "volume": None,
     }
 
     second = yahoo_daily_bar_cache.fetch_yahoo_dated_ohlc_cached(
@@ -145,3 +146,93 @@ def test_index_cache_without_open_is_refetched(tmp_path, monkeypatch):
 
     assert calls == [["^N225"]]
     assert history["^N225"]["2026-09-25"].open == 100.0
+
+def _write_raw(tmp_path, symbol, payload):
+    (tmp_path / f"{symbol}.json").write_text(json.dumps(payload), encoding="utf-8")
+
+
+def _fake_fetch_factory(calls, volume):
+    def fake_fetch(symbols, days):
+        calls.append(list(symbols))
+        return {
+            symbol: {"2026-09-25": DailyBar(open=1.0, high=3.0, low=1.0, close=2.0, volume=volume)}
+            for symbol in symbols
+        }
+    return fake_fetch
+
+
+def _fetch(tmp_path, symbols):
+    return yahoo_daily_bar_cache.fetch_yahoo_dated_ohlc_cached(
+        symbols, days=81, cache_dir=tmp_path,
+        earliest_needed_date=date(2026, 9, 25), latest_needed_date=date(2026, 9, 25),
+    )
+
+
+def test_daily_bar_volume_is_optional_for_backward_compatibility():
+    bar = DailyBar(high=2.0, low=1.0, close=1.5)
+    assert bar.volume is None
+    assert DailyBar(2.0, 1.0, 1.5, 1.2).open == 1.2
+
+
+def test_legacy_cache_without_volume_key_is_refetched_and_volume_saved(tmp_path, monkeypatch):
+    _write_raw(tmp_path, "3133", {"2026-09-25": {"open": 1.0, "high": 3.0, "low": 1.0, "close": 2.0}})
+    calls = []
+    monkeypatch.setattr(yahoo_daily_bar_cache, "fetch_yahoo_dated_ohlc", _fake_fetch_factory(calls, 1500.0))
+
+    history = _fetch(tmp_path, ["3133"])
+
+    assert calls == [["3133"]]
+    assert history["3133"]["2026-09-25"].volume == 1500.0
+    saved = json.loads((tmp_path / "3133.json").read_text(encoding="utf-8"))
+    assert saved["2026-09-25"]["volume"] == 1500.0
+    _fetch(tmp_path, ["3133"])
+    assert calls == [["3133"]]
+
+
+def test_volume_round_trips_through_cache(tmp_path):
+    yahoo_daily_bar_cache._save_cache(
+        tmp_path, "3133", {"2026-09-25": DailyBar(high=3.0, low=1.0, close=2.0, open=1.0, volume=1234.0)}
+    )
+    assert yahoo_daily_bar_cache._load_cache(tmp_path, "3133")["2026-09-25"].volume == 1234.0
+
+
+def test_index_with_null_or_zero_volume_key_is_not_refetched(tmp_path, monkeypatch):
+    _write_raw(tmp_path, "^N225", {"2026-09-25": {"open": 1.0, "high": 3.0, "low": 1.0, "close": 2.0, "volume": 0}})
+    _write_raw(tmp_path, "^VIX", {"2026-09-25": {"open": 1.0, "high": 3.0, "low": 1.0, "close": 2.0, "volume": None}})
+    calls = []
+    monkeypatch.setattr(yahoo_daily_bar_cache, "fetch_yahoo_dated_ohlc", _fake_fetch_factory(calls, 9.0))
+
+    history = _fetch(tmp_path, ["^N225", "^VIX"])
+
+    assert calls == []
+    assert history["^N225"]["2026-09-25"].volume == 0.0
+    assert history["^VIX"]["2026-09-25"].volume is None
+
+
+def test_legacy_index_cache_without_volume_key_is_refetched(tmp_path, monkeypatch):
+    _write_raw(tmp_path, "^N225", {"2026-09-25": {"open": 1.0, "high": 3.0, "low": 1.0, "close": 2.0}})
+    calls = []
+    monkeypatch.setattr(yahoo_daily_bar_cache, "fetch_yahoo_dated_ohlc", _fake_fetch_factory(calls, 0.0))
+
+    _fetch(tmp_path, ["^N225"])
+
+    assert calls == [["^N225"]]
+
+
+def test_dated_ohlc_fetcher_returns_volume(monkeypatch):
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"chart": {"result": [{
+                "timestamp": [1790294400, 1790380800],
+                "indicators": {"quote": [{
+                    "open": [1.0, 1.0], "high": [2.0, 2.0], "low": [1.0, 1.0], "close": [2.0, 2.0],
+                    "volume": [500, None],
+                }]},
+            }]}}
+
+    monkeypatch.setattr(yahoo_backtest_history_client.requests, "get", lambda *a, **k: Response())
+    bars = list(yahoo_backtest_history_client.fetch_yahoo_dated_ohlc(["3133"], days=81)["3133"].values())
+    assert [bar.volume for bar in bars] == [500.0, None]

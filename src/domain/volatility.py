@@ -12,6 +12,7 @@ class DailyBar:
     low: float
     close: float
     open: Optional[float] = None
+    volume: Optional[float] = None
 
 
 class VolatilityLevel(str, Enum):

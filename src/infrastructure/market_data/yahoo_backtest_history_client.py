@@ -145,10 +145,12 @@ def fetch_yahoo_dated_ohlc(symbols: list[str], days: int = 90) -> dict[str, dict
             lows = quote.get("low", [])
             closes = quote.get("close", [])
             opens = quote.get("open", [])
+            volumes = quote.get("volume", [])
             history = {
                 datetime.fromtimestamp(timestamp, tz=timezone.utc).date().isoformat(): DailyBar(
                     high=float(high), low=float(low), close=float(close),
                     open=float(opens[index]) if index < len(opens) and opens[index] is not None else None,
+                    volume=float(volumes[index]) if index < len(volumes) and volumes[index] is not None else None,
                 )
                 for index, (timestamp, high, low, close) in enumerate(zip(timestamps, highs, lows, closes))
                 if high is not None and low is not None and close is not None

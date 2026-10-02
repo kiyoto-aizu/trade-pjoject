@@ -1,5 +1,5 @@
 import json
-from datetime import datetime, time, timedelta
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -119,6 +119,197 @@ def test_trading_use_case_prefers_atr_exit_over_buy_signal_for_existing_holding(
     )
 
     assert orders == [('7203', config.OrderSide.SELL.value, 100)]
+
+
+@pytest.mark.parametrize('atr_level', [VolatilityLevel.NORMAL, VolatilityLevel.CAUTION])
+def test_trading_use_case_executes_atr_exit_with_paper_order_client(
+    monkeypatch, tmp_path, atr_level
+):
+    trade_date = date(2026, 9, 25)
+    times = [
+        datetime(2026, 9, 25, 10, 0),
+        datetime(2026, 9, 25, 10, 1),
+        datetime(2026, 9, 25, 10, 2),
+        datetime(2026, 9, 25, 10, 3),
+    ]
+    prices = iter([100.0, 110.0, 104.0])
+    tick_index = [0]
+
+    class MarketDataClient:
+        def get_yahoo_daily_closes(self, symbol):
+            return [100.0] * 5
+
+        def get_yahoo_daily_bars(self, symbol):
+            return [object()]
+
+    class BoardClient:
+        def get_current_board(self, token, symbol):
+            return {'current_price': next(prices)}
+
+    monkeypatch.setattr(config, 'TRADING_MODE', 'paper')
+    monkeypatch.setattr(config, 'IS_DEMO', True)
+    monkeypatch.setattr(config, 'API_SOFT_LIMIT', 100_000.0)
+    monkeypatch.setattr(config, 'MAX_ORDER_AMOUNT_PER_TRADE', 30_000.0)
+    monkeypatch.setattr(config, 'MARKET_CLOSE_HOUR', 10)
+    monkeypatch.setattr(config, 'MARKET_CLOSE_MINUTE', 3)
+    monkeypatch.setattr(config, 'ALLOW_OVERNIGHT_HOLDING', False)
+    monkeypatch.setattr(config, 'ATR_PROFIT_LOCK_TRIGGER_ATR_MULTIPLE', 0.5)
+    monkeypatch.setattr(config, 'ATR_PROFIT_LOCK_NORMAL_MULTIPLIER', 2.5)
+    monkeypatch.setattr(config, 'ATR_PROFIT_LOCK_CAUTION_MULTIPLIER', 2.0)
+    monkeypatch.setattr(
+        'src.application.trading_usecase.calculate_price_limit',
+        lambda closes: PriceLimit(80.0, 99.0),
+    )
+    monkeypatch.setattr('src.application.trading_usecase.calculate_rsi', lambda *args, **kwargs: 60.0)
+    monkeypatch.setattr(
+        'src.application.trading_usecase.assess_volatility',
+        lambda *args, **kwargs: SimpleNamespace(
+            atr=2.0, ratio=1.0, level=atr_level, latest_true_range=2.0
+        ),
+    )
+    monkeypatch.setattr(config, 'EMERGENCY_STOP_FILE', tmp_path / 'emergency_stop.flag')
+    monkeypatch.setattr(config, 'LOG_DIRECTORY', tmp_path / 'logs')
+
+    order_sender = PaperOrderClient(
+        prices={},
+        cash=100_000.0,
+        fee_rate=0.0,
+        market_slippage_bps=0.0,
+        state_path=None,
+        realized_pnl_date=trade_date.isoformat(),
+        today_provider=lambda: trade_date,
+    )
+    filter_repository = FilterDecisionRepository(tmp_path / 'filter_decisions.sqlite3')
+    use_case = TradingUseCase(
+        token='dummy',
+        order_history_path=tmp_path / 'order_history.json',
+        market_data_client=MarketDataClient(),
+        board_client=BoardClient(),
+        order_sender=order_sender,
+        notifier=lambda message: None,
+        daily_analyzer=SimpleNamespace(analyze=lambda summary: None),
+        daily_report_directory=tmp_path / 'reports',
+        filter_decision_repository=filter_repository,
+        kill_switch_baseline_path=tmp_path / 'kill_switch_baseline.json',
+    )
+    symbols_path = tmp_path / 'top_symbols.json'
+    symbols_path.write_text(json.dumps(['7203']), encoding='utf-8')
+
+    use_case.run(
+        top_symbols_path=symbols_path,
+        now_provider=lambda: times[tick_index[0]],
+        sleep=lambda seconds: tick_index.__setitem__(0, tick_index[0] + 1),
+    )
+
+    assert [order['Side'] for order in order_sender.orders] == [
+        config.OrderSide.BUY.value,
+        config.OrderSide.SELL.value,
+    ]
+    assert order_sender.orders[1]['SignalPrice'] == pytest.approx(104.0)
+    assert use_case.order_history[-1].decision_reason == 'ATR損切り基準到達'
+    assert use_case.order_history[-1].price == pytest.approx(104.0)
+    assert order_sender.get_positions('dummy') == []
+    atr_exit_events = [
+        event for event in filter_repository.load_summaries()
+        if event['event_type'] == 'ATR_STOP_EXIT'
+    ]
+    assert len(atr_exit_events) == 1
+    assert atr_exit_events[0]['symbol'] == '7203'
+
+
+@pytest.mark.parametrize('average_price_mode', ['missing', 'none'])
+def test_trading_use_case_warns_once_when_held_position_has_no_average_price(
+    monkeypatch, tmp_path, caplog, average_price_mode
+):
+    trade_date = date(2026, 9, 25)
+    times = [
+        datetime(2026, 9, 25, 10, 0),
+        datetime(2026, 9, 25, 10, 0, 30),
+        datetime(2026, 9, 25, 10, 1),
+    ]
+    tick_index = [0]
+
+    class MarketDataClient:
+        def get_yahoo_daily_closes(self, symbol):
+            return [100.0] * 5
+
+        def get_yahoo_daily_bars(self, symbol):
+            return [object()]
+
+    class BoardClient:
+        def get_current_board(self, token, symbol):
+            return {'current_price': 90.0}
+
+    class PositionsClient:
+        def get_positions(self, token):
+            position = {
+                'Symbol': '7203',
+                'Side': config.OrderSide.SELL.value,
+                'HoldQty': 100,
+            }
+            if average_price_mode == 'none':
+                position['AveragePrice'] = None
+            return [position]
+
+    monkeypatch.setattr(config, 'TRADING_MODE', 'paper')
+    monkeypatch.setattr(config, 'IS_DEMO', True)
+    monkeypatch.setattr(config, 'MARKET_CLOSE_HOUR', 10)
+    monkeypatch.setattr(config, 'MARKET_CLOSE_MINUTE', 1)
+    monkeypatch.setattr(config, 'EMERGENCY_STOP_FILE', tmp_path / 'emergency_stop.flag')
+    monkeypatch.setattr(config, 'LOG_DIRECTORY', tmp_path / 'logs')
+    monkeypatch.setattr(
+        'src.application.trading_usecase.calculate_price_limit',
+        lambda closes: PriceLimit(80.0, 100.0),
+    )
+    monkeypatch.setattr('src.application.trading_usecase.calculate_rsi', lambda *args, **kwargs: 60.0)
+    monkeypatch.setattr(
+        'src.application.trading_usecase.assess_volatility',
+        lambda *args, **kwargs: SimpleNamespace(
+            atr=2.0, ratio=1.0, level=VolatilityLevel.NORMAL, latest_true_range=2.0
+        ),
+    )
+    order_sender = PaperOrderClient(
+        prices={},
+        cash=100_000.0,
+        fee_rate=0.0,
+        market_slippage_bps=0.0,
+        state_path=None,
+        realized_pnl_date=trade_date.isoformat(),
+        today_provider=lambda: trade_date,
+    )
+    order_sender.place_market_order('dummy', '7203', config.OrderSide.BUY.value, 100)
+    use_case = TradingUseCase(
+        token='dummy',
+        order_history_path=tmp_path / 'order_history.json',
+        market_data_client=MarketDataClient(),
+        board_client=BoardClient(),
+        positions_client=PositionsClient(),
+        order_sender=order_sender,
+        notifier=lambda message: None,
+        daily_analyzer=SimpleNamespace(analyze=lambda summary: None),
+        daily_report_directory=tmp_path / 'reports',
+        filter_decision_repository=FilterDecisionRepository(
+            tmp_path / 'filter_decisions.sqlite3'
+        ),
+        kill_switch_baseline_path=tmp_path / 'kill_switch_baseline.json',
+    )
+    symbols_path = tmp_path / 'top_symbols.json'
+    symbols_path.write_text(json.dumps(['7203']), encoding='utf-8')
+
+    with caplog.at_level('WARNING', logger='src.application.trading_usecase'):
+        use_case.run(
+            top_symbols_path=symbols_path,
+            now_provider=lambda: times[tick_index[0]],
+            sleep=lambda seconds: tick_index.__setitem__(0, tick_index[0] + 1),
+        )
+
+    warnings = [
+        record for record in caplog.records
+        if 'ATR_ENTRY_PRICE_UNAVAILABLE' in record.message
+    ]
+    assert len(warnings) == 1
+    assert '7203' in warnings[0].message
+    assert '100' in warnings[0].message
 
 
 def test_order_history_load_corrupt(tmp_path):

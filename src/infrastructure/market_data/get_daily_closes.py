@@ -7,6 +7,18 @@ from src.domain.volatility import DailyBar
 
 logger = logging.getLogger(__name__)
 JST = timezone(timedelta(hours=9))
+_EMPTY_DAILY_WARNINGS: set[str] = set()
+
+
+def reset_empty_daily_warning_dedupe() -> None:
+    _EMPTY_DAILY_WARNINGS.clear()
+
+
+def _warn_empty_daily_data(symbol: str) -> None:
+    if symbol in _EMPTY_DAILY_WARNINGS:
+        return
+    _EMPTY_DAILY_WARNINGS.add(symbol)
+    logger.warning("DAILY_DATA_UNAVAILABLE: 銘柄=%s | Yahooの日足データが空です", symbol)
 
 
 def get_yahoo_daily_bars(symbol: str) -> list[DailyBar]:
@@ -21,11 +33,13 @@ def get_yahoo_daily_bars(symbol: str) -> list[DailyBar]:
         timeout=30,
     )
     if not response:
+        _warn_empty_daily_data(symbol)
         return []
 
     try:
         result = response.get("chart", {}).get("result", [])
         if not result:
+            _warn_empty_daily_data(symbol)
             return []
         chart_result = result[0]
         timestamps = chart_result.get("timestamp", [])
@@ -34,12 +48,15 @@ def get_yahoo_daily_bars(symbol: str) -> list[DailyBar]:
         raw_lows = quote.get("low", [])
         raw_closes = quote.get("close", [])
         today = datetime.now(JST).date()
-        return [
+        bars = [
             DailyBar(high=float(high), low=float(low), close=float(close))
             for timestamp, high, low, close in zip(timestamps, raw_highs, raw_lows, raw_closes)
             if high is not None and low is not None and close is not None
             and datetime.fromtimestamp(timestamp, JST).date() < today
         ]
+        if not bars:
+            _warn_empty_daily_data(symbol)
+        return bars
     except (KeyError, TypeError, ValueError, OverflowError) as exc:
         logger.exception("Yahooデータの解析に失敗しました (%s): %s", symbol, exc)
         return []
@@ -55,20 +72,25 @@ def get_yahoo_daily_closes(symbol: str) -> list[float]:
         timeout=30,
     )
     if not response:
+        _warn_empty_daily_data(symbol)
         return []
     try:
         result = response.get("chart", {}).get("result", [])
         if not result:
+            _warn_empty_daily_data(symbol)
             return []
         chart_result = result[0]
         timestamps = chart_result.get("timestamp", [])
         raw_closes = chart_result.get("indicators", {}).get("quote", [{}])[0].get("close", [])
         today = datetime.now(JST).date()
-        return [
+        closes = [
             float(close)
             for timestamp, close in zip(timestamps, raw_closes)
             if close is not None and datetime.fromtimestamp(timestamp, JST).date() < today
         ]
+        if not closes:
+            _warn_empty_daily_data(symbol)
+        return closes
     except (KeyError, TypeError, ValueError, OverflowError) as exc:
         logger.exception("Yahoo終値データの解析に失敗しました (%s): %s", symbol, exc)
         return []

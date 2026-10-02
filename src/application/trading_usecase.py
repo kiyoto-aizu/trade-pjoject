@@ -24,7 +24,11 @@ from src.infrastructure.kabu.get_positions import get_positions
 from src.infrastructure.kabu.get_wallet import get_wallet_cash
 from src.infrastructure.kabu.get_apisoftlimit import get_api_soft_limit
 from src.infrastructure.kabu.send_order import place_market_order
-from src.infrastructure.market_data.get_daily_closes import get_yahoo_daily_bars, get_yahoo_daily_closes
+from src.infrastructure.market_data.get_daily_closes import (
+    get_yahoo_daily_bars,
+    get_yahoo_daily_closes,
+    reset_empty_daily_warning_dedupe,
+)
 from src.infrastructure.notification.slack_notify import notify_critical, notify_daily
 from src.infrastructure.calendar.japanese_calendar import is_trading_session
 from src.infrastructure.persistence.storage import read_json, write_json
@@ -110,6 +114,8 @@ class TradingUseCase:
         self.daily_starting_capital = config.OPERATING_CAPITAL
         self.api_soft_limit: Optional[float] = None
         self._missing_holding_warning_symbols: set[str] = set()
+        self._logged_trade_reasons: set[tuple[str, str]] = set()
+        self._board_unavailable_symbols: set[str] = set()
         self._sell_condition_observations: dict[str, str] = {}
         self._liquidation_results: list[dict] = []
         # ADR-0002: ATRトレーリングストップ用の保有中最高値(銘柄ごと、メモリ保持・当日限り)
@@ -137,6 +143,19 @@ class TradingUseCase:
         except Exception:
             logger.exception("判定イベントの保存に失敗しました: 種別=%s 銘柄=%s", event_type, symbol)
             return None
+
+    def _log_trade_reason_once(
+        self,
+        level: int,
+        reason_code: str,
+        symbol: str,
+        detail: str,
+    ) -> None:
+        key = (symbol, reason_code)
+        if key in self._logged_trade_reasons:
+            return
+        self._logged_trade_reasons.add(key)
+        logger.log(level, "%s: 銘柄=%s | %s", reason_code, symbol, detail)
 
     def _update_filter_decision_observations_safely(
         self, observed_at: datetime, prices_by_symbol: dict[str, float]
@@ -541,6 +560,9 @@ class TradingUseCase:
 
     def collect_preflight_market_data(self, symbols: list[str]) -> dict[str, dict] | None:
         """初回の売買判断に必要な確定終値と板価格を取得します。"""
+        self._logged_trade_reasons.clear()
+        self._board_unavailable_symbols.clear()
+        reset_empty_daily_warning_dedupe()
         market_data = {}
         for symbol in symbols:
             daily_bars = self._get_daily_bars(symbol)
@@ -549,13 +571,39 @@ class TradingUseCase:
                 if self.market_data_client else get_yahoo_daily_closes(symbol)
             )
             if not closes or len(closes) < config.RSI_MINIMUM_CLOSES:
+                required_closes = max(
+                    5,
+                    config.RSI_MINIMUM_CLOSES,
+                    config.RSI_PERIOD + 1,
+                )
+                self._log_trade_reason_once(
+                    logging.WARNING,
+                    "INSUFFICIENT_RSI_HISTORY",
+                    symbol,
+                    f"必要本数={required_closes} | 実績本数={len(closes) if closes else 0}",
+                )
                 return None
             board = (
                 self.board_client.get_current_board(self.token, symbol)
                 if self.board_client else get_current_board(self.token, symbol)
             )
             if not board or board.get('current_price') is None:
+                self._board_unavailable_symbols.add(symbol)
+                self._log_trade_reason_once(
+                    logging.WARNING,
+                    "BOARD_UNAVAILABLE",
+                    symbol,
+                    "preflightの板情報またはcurrent_priceがありません",
+                )
                 return None
+            if symbol in self._board_unavailable_symbols:
+                self._log_trade_reason_once(
+                    logging.WARNING,
+                    "BOARD_RECOVERED",
+                    symbol,
+                    "preflightの板価格取得が復旧しました",
+                )
+                self._board_unavailable_symbols.discard(symbol)
             snapshot = {'closes': closes, 'board': board}
             if daily_bars is not None:
                 snapshot['daily_bars'] = daily_bars
@@ -830,6 +878,13 @@ class TradingUseCase:
                     if self.board_client else get_current_board(self.token, symbol)
                 )
                 price = float((board or {}).get('current_price') or 0)
+                if price <= 0:
+                    self._log_trade_reason_once(
+                        logging.WARNING,
+                        "EOD_PRICE_UNAVAILABLE",
+                        symbol,
+                        f"持ち越し防止売り価格={price} | 数量={quantity}",
+                    )
                 signal = TradeSignal(symbol, config.OrderSide.SELL, price, quantity)
                 if self.order_sender and hasattr(self.order_sender, 'set_price') and price > 0:
                     self.order_sender.set_price(symbol, price)
@@ -868,7 +923,15 @@ class TradingUseCase:
                             symbol, "通常SELL条件の観測なし（15:20以降の起動など）"
                         ),
                     })
-                    logger.error("持ち越し防止売りに失敗しました: 銘柄=%s | 数量=%s", symbol, quantity)
+                    reason_code = (
+                        "ORDER_REJECTED_NONE" if order_result is None else "ORDER_REJECTED_RESULT"
+                    )
+                    self._log_trade_reason_once(
+                        logging.ERROR,
+                        reason_code,
+                        symbol,
+                        f"EOD方向=SELL | 数量={quantity} | 応答={order_result!r}",
+                    )
             except Exception:
                 self._liquidation_results.append({
                     "symbol": symbol,
@@ -906,8 +969,11 @@ class TradingUseCase:
         """
         self._load_order_history()
         self._missing_holding_warning_symbols.clear()
+        self._logged_trade_reasons.clear()
+        self._board_unavailable_symbols.clear()
         self._holding_high_prices.clear()
         self._logged_initial_judgment_symbols.clear()
+        reset_empty_daily_warning_dedupe()
         now_provider = now_provider or datetime.now
         self._now_provider = now_provider
         self._current_now = None
@@ -991,6 +1057,26 @@ class TradingUseCase:
                         closes = get_yahoo_daily_closes(symbol)
                     limit = calculate_price_limit(closes)
                     rsi = calculate_rsi(closes, config.RSI_PERIOD, config.RSI_MINIMUM_CLOSES)
+                    required_closes = max(
+                        5,
+                        config.RSI_MINIMUM_CLOSES,
+                        config.RSI_PERIOD + 1,
+                    )
+                    actual_closes = len(closes) if closes is not None else 0
+                    if actual_closes < required_closes:
+                        self._log_trade_reason_once(
+                            logging.WARNING,
+                            "INSUFFICIENT_RSI_HISTORY",
+                            symbol,
+                            f"必要本数={required_closes} | 実績本数={actual_closes}",
+                        )
+                    elif rsi is None:
+                        self._log_trade_reason_once(
+                            logging.WARNING,
+                            "RSI_DATA_UNAVAILABLE",
+                            symbol,
+                            f"RSI算出不能 | 必要本数={required_closes} | 実績本数={actual_closes}",
+                        )
                     if limit is None:
                         continue
                     # リアルタイム株価を取得
@@ -999,7 +1085,22 @@ class TradingUseCase:
                         if self.board_client else get_current_board(self.token, symbol)
                     )
                     if not board or board.get('current_price') is None:
+                        self._board_unavailable_symbols.add(symbol)
+                        self._log_trade_reason_once(
+                            logging.WARNING,
+                            "BOARD_UNAVAILABLE",
+                            symbol,
+                            "板情報またはcurrent_priceがありません",
+                        )
                         continue
+                    if symbol in self._board_unavailable_symbols:
+                        self._log_trade_reason_once(
+                            logging.WARNING,
+                            "BOARD_RECOVERED",
+                            symbol,
+                            "板価格取得が復旧しました",
+                        )
+                        self._board_unavailable_symbols.discard(symbol)
                     self._update_filter_decision_observations_safely(
                         now, {symbol: float(board['current_price'])}
                     )
@@ -1062,6 +1163,15 @@ class TradingUseCase:
                                 None,
                             )
                         entry_price = self._get_position_entry_price(held_position) if held_position else None
+                        if held_position is not None and entry_price is None:
+                            quantity = int(held_position.get('HoldQty', 0) or 0)
+                            if quantity > 0:
+                                self._log_trade_reason_once(
+                                    logging.WARNING,
+                                    "ATR_ENTRY_PRICE_UNAVAILABLE",
+                                    symbol,
+                                    f"保有数量={quantity} | 平均取得価格がありません",
+                                )
                         if entry_price is not None:
                             # ADR-0002: ATR損切りの基準点を、エントリー価格ではなく
                             # 「保有開始後の最高値」に置き換える(シャンデリア・イグジット)。
@@ -1149,6 +1259,19 @@ class TradingUseCase:
                                             float(board['current_price']), estimated_quantity,
                                             self._market_regime_event_inputs(rsi, entry_threshold),
                                         )
+                    available_daily_bars = len(daily_bars) if daily_bars is not None else 0
+                    if (
+                        (signal is None or signal.side == config.OrderSide.BUY)
+                        and held_position is not None
+                        and assessment is None
+                        and available_daily_bars < config.ATR_PERIOD
+                    ):
+                        self._log_trade_reason_once(
+                            logging.WARNING,
+                            "ATR_DATA_UNAVAILABLE",
+                            symbol,
+                            f"必要本数={config.ATR_PERIOD} | 実績本数={available_daily_bars}",
+                        )
                     # ADR-0002: シグナルなし(keep)はDEBUG、判定変化(buy/sell)はINFO。
                     # ただし各監視銘柄の初回ループ判定は、何を監視しているか把握できるよう
                     # レベルに関わらず必ずINFOで出力する。
@@ -1209,6 +1332,19 @@ class TradingUseCase:
                             budget_per_position,
                             config.ORDER_UNIT,
                         )
+                        if signal.qty == 0:
+                            reason_code = (
+                                "budget_below_one_lot"
+                                if signal.price > 0
+                                and budget_per_position < signal.price * config.ORDER_UNIT
+                                else "buy_quantity_invalid_inputs"
+                            )
+                            self._log_trade_reason_once(
+                                logging.WARNING,
+                                reason_code,
+                                symbol,
+                                f"予算={budget_per_position} | 価格={signal.price} | 1単位={config.ORDER_UNIT}",
+                            )
                         if daily_bars:
                             if assessment:
                                 original_qty = signal.qty
@@ -1219,6 +1355,22 @@ class TradingUseCase:
                                     config.ATR_CAUTION_LOT_RATIO,
                                     config.ATR_DANGER_ACTION,
                                 )
+                                if original_qty > 0 and signal.qty == 0:
+                                    if (
+                                        assessment.level == VolatilityLevel.DANGER
+                                        and config.ATR_DANGER_ACTION == "skip"
+                                    ):
+                                        reason_code = "atr_danger_skip"
+                                    elif assessment.level == VolatilityLevel.CAUTION:
+                                        reason_code = "caution_rounding_to_zero"
+                                    else:
+                                        reason_code = "atr_quantity_adjustment_zero"
+                                    self._log_trade_reason_once(
+                                        logging.WARNING,
+                                        reason_code,
+                                        symbol,
+                                        f"数量={original_qty}->0 | ATRレベル={assessment.level.value}",
+                                    )
                                 logger.info(
                                     "ATR数量調整: 銘柄=%s | ATR=%.3f | TR=%.3f | 倍率=%.2f | レベル=%s | 数量=%s->%s",
                                     symbol,
@@ -1383,6 +1535,20 @@ class TradingUseCase:
                             signal.price,
                             signal.qty,
                             order_result.get('OrderId'),
+                        )
+                    elif order_result is None:
+                        self._log_trade_reason_once(
+                            logging.ERROR,
+                            "ORDER_REJECTED_NONE",
+                            symbol,
+                            f"方向={signal.side.name} | 数量={signal.qty} | 応答=None",
+                        )
+                    else:
+                        self._log_trade_reason_once(
+                            logging.ERROR,
+                            "ORDER_REJECTED_RESULT",
+                            symbol,
+                            f"方向={signal.side.name} | 数量={signal.qty} | 応答={order_result!r}",
                         )
                 except Exception:
                     # 想定外の例外は当該銘柄のみスキップし、ループ全体を止めない

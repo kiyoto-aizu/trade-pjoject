@@ -16,11 +16,23 @@ from src.domain.rules import is_market_closed
 from src.infrastructure.kabu.get_token import get_api_token
 from src.infrastructure.persistence.filtering_result_repository import FilteringResultRepository
 from src.infrastructure.persistence.filter_decision_repository import FilterDecisionRepository
+from src.infrastructure.persistence.decision_journal_repository import DecisionJournalRepository
 from src.infrastructure.execution_lock import market_workflow_lock
 from src.infrastructure.notification.slack_notify import notify_daily, process_notification
 from src.infrastructure.paper.paper_order_client import PaperOrderClient
 from src.infrastructure.market_data.yahoo_index_client import YahooIndexClient
 from src.infrastructure.calendar.japanese_calendar import is_trading_session
+
+def _create_decision_journal_repository():
+    """判断記録DBを作成する。失敗しても取引は開始する(記録なし)。"""
+    try:
+        return DecisionJournalRepository(
+            config.FILTER_DECISION_DATABASE_FILE, execution_mode=config.TRADING_MODE
+        )
+    except Exception:
+        logging.getLogger(__name__).exception('判断記録DBの初期化に失敗しました。記録なしで続行します。')
+        return None
+
 
 def create_trading_use_case(token: str) -> TradingUseCase:
     """実行モードに応じた取引ユースケースを組み立てます。"""
@@ -48,6 +60,7 @@ def create_trading_use_case(token: str) -> TradingUseCase:
             config.FILTER_DECISION_DATABASE_FILE,
             allowed_execution_modes=frozenset({"paper", "live"}),
         ),
+        decision_journal_repository=_create_decision_journal_repository(),
         market_regime_usecase=MarketRegimeUseCase(
             market_data_client=YahooIndexClient(),
             thresholds=config.MARKET_REGIME_THRESHOLDS,

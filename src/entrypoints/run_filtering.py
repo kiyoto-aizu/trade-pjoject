@@ -12,6 +12,7 @@ from pathlib import Path
 
 from src.config import config
 from src.application.filtering_usecase import FilteringUseCase
+from src.infrastructure.persistence.decision_journal_repository import DecisionJournalRepository
 from src.infrastructure.kabu.get_board import get_current_board
 from src.infrastructure.kabu.get_token import get_api_token
 from src.infrastructure.kabu.unregister import unregister_all
@@ -118,12 +119,22 @@ def main() -> None:
                     raise SystemExit('銘柄登録の全解除に失敗しました。')
                 board_client = BoardClient(token)
                 notifier = notify_result
+            journal_repository = None
+            if args.target_date is None:
+                # 過去日指定の再実行で本番の記録を汚さないよう、当日実行時のみ記録する
+                try:
+                    journal_repository = DecisionJournalRepository(
+                        config.FILTER_DECISION_DATABASE_FILE, execution_mode=config.TRADING_MODE
+                    )
+                except Exception:
+                    logging.getLogger(__name__).exception('判断記録DBの初期化に失敗しました。記録なしで続行します。')
             usecase = FilteringUseCase(
                 ScreeningResultRepository(root / 'screening'),
                 board_client,
                 YahooFinanceClient(),
                 FilteringResultRepository(root / 'filtering'),
                 notifier,
+                decision_journal_repository=journal_repository,
             )
             usecase.execute(target_date=args.target_date)
             if get_token_provider().recovery_failed:

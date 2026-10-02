@@ -39,6 +39,7 @@ from src.infrastructure.notification.slack_notify import notify_critical, notify
 from src.infrastructure.calendar.japanese_calendar import is_trading_session
 from src.infrastructure.persistence.storage import read_json, write_json
 from src.infrastructure.persistence.filter_decision_repository import FilterDecisionRepository
+from src.infrastructure.persistence.decision_journal_repository import STAGE_TRADING
 from src.infrastructure.analysis.daily_analyzer import create_daily_analyzer
 
 logger = logging.getLogger(__name__)
@@ -73,6 +74,7 @@ class TradingUseCase:
         market_regime_usecase=None,
         filter_decision_repository: FilterDecisionRepository | None = None,
         kill_switch_baseline_path: Optional[Path] = None,
+        decision_journal_repository=None,
     ):
         """
         TradingUseCaseを初期化します。
@@ -112,6 +114,9 @@ class TradingUseCase:
         self.kill_switch_baseline_path = kill_switch_baseline_path or (
             order_history_path.parent / Path(config.KILL_SWITCH_BASELINE_FILE).name
         )
+        # 判断記録は注入された場合のみ有効(記録専用で売買判定には使わない)
+        self.decision_journal_repository = decision_journal_repository
+        self._account_snapshot: dict = {}
         self.market_regime_usecase = market_regime_usecase
         self.market_regime = MarketRegime.NORMAL
         self.market_regime_assessment = None
@@ -167,6 +172,63 @@ class TradingUseCase:
             return
         self._logged_trade_reasons.add(key)
         logger.log(level, "%s: 銘柄=%s | %s", reason_code, symbol, detail)
+
+    def _journal_decision(self, symbol: str, reason_code: str, occurred_at: datetime, **inputs) -> None:
+        """銘柄×日付×理由の判断記録を残す。失敗しても売買は止めない。"""
+        if self.decision_journal_repository is None:
+            return
+        try:
+            values = {"market_regime": self.market_regime.value, **self._account_snapshot, **inputs}
+            self.decision_journal_repository.record(STAGE_TRADING, symbol, reason_code, occurred_at, values)
+        except Exception:
+            logger.exception("判断記録の保存に失敗しました: 理由=%s 銘柄=%s", reason_code, symbol)
+
+    def _flush_decision_journal_safely(self) -> None:
+        if self.decision_journal_repository is None:
+            return
+        try:
+            self.decision_journal_repository.flush()
+        except Exception:
+            logger.exception("判断記録の保存に失敗しました")
+
+    def _remember_account_state(self, wallet_amount, positions) -> None:
+        """判断記録に添える口座状態を、取得済みの値から控える(追加のAPI呼び出しはしない)。"""
+        try:
+            open_count = self._count_open_positions(positions)
+            self._account_snapshot = {
+                "wallet_amount": wallet_amount,
+                "open_position_count": open_count,
+                "target_positions": config.TARGET_POSITIONS,
+                "remaining_slots": max(config.TARGET_POSITIONS - open_count, 0),
+                "account_observed_at": (self._current_now or datetime.now()).isoformat(timespec="seconds"),
+            }
+        except Exception:
+            self._account_snapshot = {}
+
+    @staticmethod
+    def _volatility_inputs(assessment) -> dict:
+        return {
+            "atr": getattr(assessment, "atr", None),
+            "atr_ratio": getattr(assessment, "ratio", None),
+            "atr_level": getattr(getattr(assessment, "level", None), "value", None),
+        }
+
+    def _record_account_snapshot_safely(self, kind: str, at: datetime, positions: list[dict]) -> None:
+        if self.decision_journal_repository is None:
+            return
+        try:
+            holdings = [
+                {"symbol": position.get("Symbol"), "quantity": int(position.get("HoldQty", 0) or 0)}
+                for position in positions
+                if self._is_open_position(position)
+            ]
+            self.decision_journal_repository.record_account_snapshot(
+                kind, at,
+                self._account_snapshot.get("wallet_amount"),
+                len(holdings), config.TARGET_POSITIONS, holdings,
+            )
+        except Exception:
+            logger.exception("日次口座状態の保存に失敗しました: 種別=%s", kind)
 
     def _update_filter_decision_observations_safely(
         self, observed_at: datetime, prices_by_symbol: dict[str, float]
@@ -277,6 +339,12 @@ class TradingUseCase:
             symbol, occurred_at, closes, rsi, applied_threshold, current_price, "unavailable"
         )
         rsi_input["unavailable_reason"] = reason
+        self._journal_decision(
+            symbol, reason_code, occurred_at,
+            rsi=rsi, rsi_applied_threshold=applied_threshold,
+            rsi_required_closes=required_closes, rsi_actual_closes=actual_closes,
+            current_price=current_price, unavailable_reason=reason,
+        )
         detail = (
             f"必要本数={required_closes} | 実績本数={actual_closes} | "
             f"RSI_INPUT={json.dumps(rsi_input, ensure_ascii=False, sort_keys=True)}"
@@ -689,6 +757,7 @@ class TradingUseCase:
         wallet_amount = None
         if wallet is not None:
             wallet_amount = wallet.get('StockAccountWallet')
+        self._remember_account_state(wallet_amount, positions)
         return wallet_amount, positions
 
     @staticmethod
@@ -1354,6 +1423,7 @@ class TradingUseCase:
 
         self._initialize_paper_prices(preflight_market_data)
         initial_wallet_amount, initial_positions = self._load_account_state()
+        self._record_account_snapshot_safely("start", initial_now, initial_positions)
         self._initialize_daily_starting_capital(
             today, initial_wallet_amount, initial_positions
         )
@@ -1434,6 +1504,11 @@ class TradingUseCase:
                         self._log_rsi_unavailable(
                             symbol, now, closes, rsi, entry_threshold, None
                         )
+                        self._journal_decision(
+                            symbol, "BOARD_UNAVAILABLE", now,
+                            rsi=rsi, rsi_applied_threshold=entry_threshold,
+                            rsi_required_closes=required_closes, rsi_actual_closes=actual_closes,
+                        )
                         self._log_trade_reason_once(
                             logging.WARNING,
                             "BOARD_UNAVAILABLE",
@@ -1513,6 +1588,11 @@ class TradingUseCase:
                         if held_position is not None and entry_price is None:
                             quantity = int(held_position.get('HoldQty', 0) or 0)
                             if quantity > 0:
+                                self._journal_decision(
+                                    symbol, "ATR_ENTRY_PRICE_UNAVAILABLE", now,
+                                    current_price=current_price, holding_quantity=quantity,
+                                    **self._volatility_inputs(assessment),
+                                )
                                 self._log_trade_reason_once(
                                     logging.WARNING,
                                     "ATR_ENTRY_PRICE_UNAVAILABLE",
@@ -1621,6 +1701,11 @@ class TradingUseCase:
                         and assessment is None
                         and available_daily_bars < config.ATR_PERIOD
                     ):
+                        self._journal_decision(
+                            symbol, "ATR_DATA_UNAVAILABLE", now,
+                            current_price=current_price,
+                            atr_required_bars=config.ATR_PERIOD, atr_actual_bars=available_daily_bars,
+                        )
                         self._log_trade_reason_once(
                             logging.WARNING,
                             "ATR_DATA_UNAVAILABLE",
@@ -1665,6 +1750,10 @@ class TradingUseCase:
                         has_holdings = self._has_holdings(symbol, positions)
                         open_position_count = self._count_open_positions(positions)
                         if not has_holdings and open_position_count >= config.TARGET_POSITIONS:
+                            self._journal_decision(
+                                symbol, "POSITION_LIMIT_REACHED", now, current_price=current_price,
+                                **self._volatility_inputs(assessment),
+                            )
                             logger.info(
                                 "保有上限のため新規買いを見送ります: 銘柄=%s | 保有数=%s/%s",
                                 symbol,
@@ -1673,6 +1762,9 @@ class TradingUseCase:
                             )
                             continue
                         if wallet_amount is None:
+                            self._journal_decision(
+                                symbol, "WALLET_UNKNOWN", now, current_price=current_price,
+                            )
                             logger.warning("現物買付可能額が不明なため、買い注文を見送ります。")
                             continue
                         original_qty = 0
@@ -1693,6 +1785,12 @@ class TradingUseCase:
                                 if signal.price > 0
                                 and budget_per_position < signal.price * config.ORDER_UNIT
                                 else "buy_quantity_invalid_inputs"
+                            )
+                            self._journal_decision(
+                                symbol, reason_code, now, current_price=current_price,
+                                allocated_budget=budget_per_position, quantity_before=0,
+                                quantity_after=0, quantity_zero_reason=reason_code,
+                                unit_price=signal.price, order_unit=config.ORDER_UNIT,
                             )
                             self._log_trade_reason_once(
                                 logging.WARNING,
@@ -1720,6 +1818,13 @@ class TradingUseCase:
                                         reason_code = "caution_rounding_to_zero"
                                     else:
                                         reason_code = "atr_quantity_adjustment_zero"
+                                    self._journal_decision(
+                                        symbol, reason_code, now, current_price=current_price,
+                                        allocated_budget=budget_per_position,
+                                        quantity_before=original_qty, quantity_after=0,
+                                        quantity_zero_reason=reason_code,
+                                        **self._volatility_inputs(assessment),
+                                    )
                                     self._log_trade_reason_once(
                                         logging.WARNING,
                                         reason_code,
@@ -1750,6 +1855,12 @@ class TradingUseCase:
                                         original_qty,
                                     )
                         if self.market_regime == MarketRegime.DANGER:
+                            self._journal_decision(
+                                symbol, "MARKET_REGIME_DANGER_SKIP", now, current_price=current_price,
+                                rsi=rsi, rsi_applied_threshold=entry_threshold,
+                                allocated_budget=budget_per_position, quantity_after=signal.qty,
+                                **self._volatility_inputs(assessment),
+                            )
                             if signal.qty > 0:
                                 self._record_filter_decision_safely(
                                     "MARKET_REGIME_DANGER_SKIP", symbol, now,
@@ -1782,6 +1893,12 @@ class TradingUseCase:
                         signal.qty = held_quantity if held_quantity > 0 else config.ORDER_UNIT
                         original_qty = signal.qty
                     if signal.qty <= 0:
+                        self._journal_decision(
+                            symbol, "ORDER_QUANTITY_ZERO", now, current_price=current_price,
+                            quantity_before=original_qty, quantity_after=signal.qty,
+                            allocated_budget=budget_per_position if signal.side == config.OrderSide.BUY else None,
+                            side=signal.side.name, **self._volatility_inputs(assessment),
+                        )
                         logger.info("注文数量が0のため見送ります: 銘柄=%s", symbol)
                         continue
                     if signal.side == config.OrderSide.BUY:
@@ -1809,6 +1926,11 @@ class TradingUseCase:
                             api_soft_limit=self.api_soft_limit,
                         )
                     ):
+                        self._journal_decision(
+                            symbol, "ORDER_AMOUNT_LIMIT_EXCEEDED", now, current_price=current_price,
+                            quantity_after=signal.qty, allocated_budget=budget_per_position,
+                            order_amount=signal.price * signal.qty,
+                        )
                         logger.warning(
                             "買い注文を見送ります: 銘柄=%s | 注文金額=%.1f円 | 上限=%.1f円",
                             symbol,
@@ -1832,6 +1954,10 @@ class TradingUseCase:
                         warn_on_missing_holdings=should_warn_missing_holdings,
                         now=now,
                     ):
+                        self._journal_decision(
+                            symbol, "ORDER_SAFETY_BLOCKED", now, current_price=current_price,
+                            quantity_after=signal.qty, side=signal.side.name,
+                        )
                         if signal.side == config.OrderSide.SELL and not has_holdings:
                             self._missing_holding_warning_symbols.add(symbol)
                         continue
@@ -1901,6 +2027,10 @@ class TradingUseCase:
                             order_result.get('OrderId'),
                         )
                     elif order_result is None:
+                        self._journal_decision(
+                            symbol, "ORDER_REJECTED_NONE", now, current_price=current_price,
+                            quantity_after=signal.qty, side=signal.side.name,
+                        )
                         logger.error(
                             "%s: 銘柄=%s | 方向=%s | 数量=%s | 応答=None",
                             "ORDER_REJECTED_NONE",
@@ -1909,6 +2039,11 @@ class TradingUseCase:
                             signal.qty,
                         )
                     else:
+                        self._journal_decision(
+                            symbol, "ORDER_REJECTED_RESULT", now, current_price=current_price,
+                            quantity_after=signal.qty, side=signal.side.name,
+                            order_response=repr(order_result),
+                        )
                         logger.error(
                             "%s: 銘柄=%s | 方向=%s | 数量=%s | 応答=%r",
                             "ORDER_REJECTED_RESULT",
@@ -1923,6 +2058,7 @@ class TradingUseCase:
                     continue
             self._check_auth_recovery_notification()
             self._check_board_fetch_failure_notification(board_fetch_attempted, board_fetch_failed)
+            self._flush_decision_journal_safely()
             use_preflight_market_data = False
             sleep(config.LOOP_INTERVAL)
 
@@ -1933,4 +2069,6 @@ class TradingUseCase:
             self.last_positions = self.order_sender.get_positions(self.token) or []
         else:
             self.last_positions = get_positions(self.token) or []
+        self._flush_decision_journal_safely()
+        self._record_account_snapshot_safely("end", self._current_now or initial_now, self.last_positions)
         self._send_end_of_day_report()

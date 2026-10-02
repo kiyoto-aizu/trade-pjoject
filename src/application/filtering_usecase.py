@@ -12,6 +12,7 @@ from src.domain.models import FilteringResult, ScoredCandidate
 from src.domain.rules import calculate_volume_surge_ratio, select_top_n_by_surge_ratio
 from src.config import config
 from src.infrastructure.calendar.japanese_calendar import is_trading_day
+from src.infrastructure.persistence.decision_journal_repository import STAGE_FILTERING
 from src.infrastructure.notification.slack_notify import format_result_notification
 
 logger = logging.getLogger(__name__)
@@ -25,7 +26,10 @@ class FilteringUseCase:
     出来高急騰銘柄をトップNに絞り込みます。
     """
     
-    def __init__(self, screening_repository, board_client, volume_client, result_repository, notifier=None):
+    def __init__(
+        self, screening_repository, board_client, volume_client, result_repository, notifier=None,
+        decision_journal_repository=None,
+    ):
         """
         FilteringUseCaseを初期化します。
         
@@ -41,6 +45,7 @@ class FilteringUseCase:
         self.volume_client = volume_client
         self.result_repository = result_repository
         self.notifier = notifier
+        self.decision_journal_repository = decision_journal_repository
 
     def execute(self, target_date: date | None = None) -> FilteringResult:
         """
@@ -65,6 +70,7 @@ class FilteringUseCase:
         scored = []
         candidates = []
         skipped_count = 0
+        skips: list[tuple[str, str]] = []
         if screening:
             for symbol in screening.symbols:
                 if target_date and hasattr(self.volume_client, "get_turnover_for_date"):
@@ -72,12 +78,14 @@ class FilteringUseCase:
                     average = self.volume_client.get_average_turnover_before(symbol, today, 20)
                     if today_value is None or average is None:
                         skipped_count += 1
+                        skips.append((symbol, "FILTER_NO_HISTORICAL_DATA"))
                         logger.warning("フィルタリング評価対象外: 銘柄=%s 理由=過去データなし | 日付=%s", symbol, today)
                         continue
                     try:
                         surge_ratio = calculate_volume_surge_ratio(float(today_value), average)
                     except ValueError:
                         skipped_count += 1
+                        skips.append((symbol, "FILTER_AVERAGE_NON_POSITIVE"))
                         logger.warning("フィルタリング評価対象外: 銘柄=%s 理由=平均出来高が0以下", symbol)
                         continue
                     scored.append(ScoredCandidate(symbol, float(today_value), average, surge_ratio))
@@ -86,10 +94,12 @@ class FilteringUseCase:
                 board = self.board_client.get_current_board(symbol)
                 if not board:
                     skipped_count += 1
+                    skips.append((symbol, "FILTER_BOARD_MISSING"))
                     logger.warning("フィルタリング評価対象外: 銘柄=%s 理由=板情報なし", symbol)
                     continue
                 if board.get("current_price") is None:
                     skipped_count += 1
+                    skips.append((symbol, "FILTER_PRICE_MISSING"))
                     logger.warning("フィルタリング評価対象外: 銘柄=%s 理由=現在値なし", symbol)
                     continue
                 today_value = board.get("trading_value")
@@ -97,6 +107,7 @@ class FilteringUseCase:
                     today_value = float(board["current_price"]) * float(board["trading_volume"])
                 if today_value is None:
                     skipped_count += 1
+                    skips.append((symbol, "FILTER_TURNOVER_MISSING"))
                     logger.warning("フィルタリング評価対象外: 銘柄=%s 理由=当日売買代金なし", symbol)
                     continue
                 if hasattr(self.volume_client, "get_average_turnover"):
@@ -106,12 +117,14 @@ class FilteringUseCase:
                     average = average_volume * float(board["current_price"]) if average_volume is not None else None
                 if average is None:
                     skipped_count += 1
+                    skips.append((symbol, "FILTER_AVERAGE_TURNOVER_MISSING"))
                     logger.warning("フィルタリング評価対象外: 銘柄=%s 理由=平均売買代金なし", symbol)
                     continue
                 try:
                     surge_ratio = calculate_volume_surge_ratio(float(today_value), average)
                 except ValueError:
                     skipped_count += 1
+                    skips.append((symbol, "FILTER_AVERAGE_NON_POSITIVE"))
                     logger.warning("フィルタリング評価対象外: 銘柄=%s 理由=平均出来高が0以下", symbol)
                     continue
                 scored.append(ScoredCandidate(symbol, float(today_value), average, surge_ratio))
@@ -120,9 +133,34 @@ class FilteringUseCase:
         symbols = select_top_n_by_surge_ratio(candidates, 10)
         result = FilteringResult(today.isoformat(), symbols, datetime.now().isoformat())
         self.result_repository.save(result)
+        self._journal_filter_stage(screening, len(scored), skips, symbols, today)
         if self.notifier:
             self._notify_completion(screening, symbols, scored, skipped_count)
         return result
+
+    def _journal_filter_stage(self, screening, evaluated_count, skips, symbols, today) -> None:
+        """日ごとの件数と、評価対象外の銘柄×日付×理由を記録する。失敗しても選定は継続する。"""
+        if self.decision_journal_repository is None:
+            return
+        try:
+            now = datetime.now()
+            reason_counts: dict[str, int] = {}
+            for symbol, code in skips:
+                reason_counts[code] = reason_counts.get(code, 0) + 1
+                self.decision_journal_repository.record(
+                    STAGE_FILTERING, symbol, code, now, {"target_date": today.isoformat()}
+                )
+            self.decision_journal_repository.flush()
+            self.decision_journal_repository.record_filter_stage_summary(
+                now,
+                len(screening.symbols) if screening else 0,
+                evaluated_count,
+                len(skips),
+                len(symbols),
+                reason_counts,
+            )
+        except Exception:
+            logger.exception("フィルタリング段の判断記録の保存に失敗しました。")
 
     def _notify_completion(self, screening, symbols, scored, skipped_count: int = 0) -> None:
         if not screening:

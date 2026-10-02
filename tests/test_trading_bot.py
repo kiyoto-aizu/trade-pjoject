@@ -1054,8 +1054,8 @@ def test_end_of_day_report_includes_atr_danger_skip_outcome(tmp_path):
         daily_report_directory=tmp_path / 'reports',
     )
     assessment = SimpleNamespace(atr=5.0, latest_true_range=12.0, ratio=2.4)
-    use_case._record_atr_danger_skip('3624', datetime(2026, 9, 15, 14, 55), 95.0, assessment, 300)
-    use_case._update_atr_danger_skip_observation('3624', datetime(2026, 9, 15, 15, 19), 97.0)
+    use_case._record_atr_danger_skip('3624', datetime.now().replace(hour=14, minute=55, second=0, microsecond=0), 95.0, assessment, 300)
+    use_case._update_atr_danger_skip_observation('3624', datetime.now().replace(hour=15, minute=19, second=0, microsecond=0), 97.0)
 
     use_case._send_end_of_day_report()
 
@@ -1076,9 +1076,9 @@ def test_end_of_day_report_includes_atr_stop_exit_outcome(tmp_path):
     )
     assessment = SimpleNamespace(atr=5.0, ratio=2.4, level=VolatilityLevel.DANGER)
     use_case._record_atr_stop_exit(
-        '3624', datetime(2026, 9, 15, 14, 55), 100.0, 96.5, 300, assessment, 0.7
+        '3624', datetime.now().replace(hour=14, minute=55, second=0, microsecond=0), 100.0, 96.5, 300, assessment, 0.7
     )
-    use_case._update_atr_stop_exit_observation('3624', datetime(2026, 9, 15, 15, 19), 94.5)
+    use_case._update_atr_stop_exit_observation('3624', datetime.now().replace(hour=15, minute=19, second=0, microsecond=0), 94.5)
 
     use_case._send_end_of_day_report()
 

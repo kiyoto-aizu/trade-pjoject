@@ -110,9 +110,9 @@ def test_repository_uses_event_specific_outcomes_and_filters_finalized_summaries
         ("ATR_STOP_EXIT", "下落回避の可能性"),
         ("ADX_TREND_RELIEF", "緩和取引が有利だった可能性"),
     }
-    assert repository.summarize_finalized_events(
-        date(2026, 9, 8), date(2026, 9, 8), "backtest"
-    ) == {
+    summary = repository.summarize_finalized_events(date(2026, 9, 8), date(2026, 9, 8), "backtest")
+    # 既存キー(複数営業日基準)の値は変えず、当日基準は別キーで追加する
+    assert {key: summary[key] for key in ("count", "by_event_type")} == {
         "count": 2,
         "by_event_type": {
             "ATR_STOP_EXIT": {"count": 1, "outcomes": {"下落回避の可能性": 1}},

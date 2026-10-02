@@ -34,6 +34,7 @@ def _build_period_review_prompt(period_label: str, period_summary: dict) -> str:
         "それ以外ではbacktest.runsの損益・取引数を合算せず、ペーパートレードとの乖離や成績比較を結論づけないでください。"
         "comparison.availableがtrueの場合だけ「期間比較」を使い、comparison.basisと両期間のreport_countを併記してください。"
         "filter_decision_events.countが1件以上の場合だけ「判定イベント」を使い、概算損益を扱う場合は実取引損益ではないと明記してください。"
+        "判定イベントのcount/by_event_typeは複数営業日基準、same_dayは当日基準です。両者を混同せず、数値を述べるときは基準を明示してください。"
         "daily.total_profit_lossは日次レポートの記録値であり、内訳がない限り実現損益・未実現損益を断定しないでください。"
         "過学習はアウトオブサンプル結果やパラメータ比較などの根拠がない限り断定しないでください。"
         "仮説を書く場合は「仮説」と明示し、入力に直接根拠がある場合だけにしてください。"
@@ -68,6 +69,8 @@ class OpenAIDailyAnalyzer:
             "assessment_statusがunavailableでも、failure_reasonまたはエラー概要にない障害原因を断定しないでください。"
             "認証エラーと市場データ未取得など、複数事象の因果関係も入力に根拠がなければ断定しないでください。"
             "見送り・損切り後の観測損益を扱う場合は、観測終了時刻までの概算であり実取引損益ではないと明記してください。"
+            "各イベントのevaluations.same_day(当日基準)とevaluations.multi_day(複数営業日基準)は別の基準です。混同せず、基準を明示し、"
+            "same_day.data_qualityがOK以外の場合は当日基準の信頼性が低いことを併記してください。"
             "ロジック変更、認証情報の修正、投資判断、売買指示は行わず、検証期間中の参考意見だと明記してください。\n\n"
             f"日次集計:\n{json.dumps(daily_summary, ensure_ascii=False, indent=2)}"
         )

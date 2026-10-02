@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from datetime import date, datetime
+from datetime import time as clock_time
 from typing import Dict, List
 
 from src.config import config
@@ -789,10 +790,13 @@ def simulate_timeseries_backtest(
         "trend_relief_days": len(trend_relief_dates),
     }
 
+    market_close_time = clock_time(config.MARKET_CLOSE_HOUR, config.MARKET_CLOSE_MINUTE)
+
     def event_time(date_text: str, time_text: str | None = None) -> datetime:
         if time_text:
             return datetime.fromisoformat(time_text)
-        return datetime.combine(date.fromisoformat(date_text), datetime.min.time())
+        # 日足再生は引け(15:30)のティックとして扱う(ticks_by_timeのキーと同じ)
+        return datetime.combine(date.fromisoformat(date_text), market_close_time)
 
     def record_filter_decision(
         event_type: str, symbol: str, date_text: str, price: float, quantity: int,
@@ -803,6 +807,7 @@ def simulate_timeseries_backtest(
         filter_decision_repository.record_event(
             event_type, symbol, event_time(date_text, time_text), price, quantity,
             inputs, execution_mode="backtest",
+            same_day_data_quality="DAILY_REPLAY_NO_INTRADAY" if time_text is None else None,
         )
 
     def close_position(
@@ -1127,7 +1132,18 @@ def simulate_timeseries_backtest(
                             market_regime_stats["danger_skipped"] += 1
                             record_filter_decision(
                                 "MARKET_REGIME_DANGER_SKIP", symbol, date_text, price, qty,
-                                {"market_regime": daily_market_regime.value}, time_text,
+                                {
+                                    "market_regime": daily_market_regime.value,
+                                    **(
+                                        {
+                                            "atr": assessment.atr,
+                                            "true_range": assessment.latest_true_range,
+                                            "atr_ratio": assessment.ratio,
+                                            "atr_level": assessment.level.value,
+                                        }
+                                        if assessment is not None else {}
+                                    ),
+                                }, time_text,
                             )
                             continue
                     if qty <= 0 or cash < price * qty:
@@ -1188,7 +1204,12 @@ def simulate_timeseries_backtest(
                 config.FILTER_DECISION_OBSERVATION_DAYS,
                 "backtest",
             )
-
+            filter_decision_repository.finalize_same_day_events(
+                datetime.combine(date.fromisoformat(date_text), market_close_time),
+                "backtest",
+                include_today=True,
+                session_end=market_close_time,
+            )
     last_date = max(daily_symbols) if daily_symbols else ""
     equity = cash
     for symbol, qty in holdings.items():

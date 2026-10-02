@@ -12,6 +12,8 @@ import math
 import time
 from collections import Counter
 from datetime import datetime, timedelta, timezone
+from datetime import date
+from datetime import time as clock_time
 from pathlib import Path
 from typing import List, Optional
 
@@ -184,6 +186,27 @@ class TradingUseCase:
         except Exception:
             logger.exception("判定イベントの確定に失敗しました")
 
+    def _finalize_same_day_filter_decisions_safely(self, as_of: datetime, include_today: bool) -> None:
+        """当日基準を確定する。include_today=Falseなら再起動で取り残された前日以前の分だけ。"""
+        if config.ALLOW_OVERNIGHT_HOLDING:
+            session_end = clock_time(config.MARKET_CLOSE_HOUR, config.MARKET_CLOSE_MINUTE)
+        else:
+            session_end = clock_time(config.MARKET_LIQUIDATION_HOUR, config.MARKET_LIQUIDATION_MINUTE)
+        try:
+            self.filter_decision_repository.finalize_same_day_events(
+                as_of, self._execution_mode, include_today, session_end, config.LOOP_INTERVAL
+            )
+        except Exception:
+            logger.exception("判定イベントの当日確定に失敗しました")
+
+    def _mark_board_unavailable_safely(self, symbol: str, observed_at: datetime) -> None:
+        try:
+            self.filter_decision_repository.mark_same_day_board_unavailable(
+                symbol, observed_at, self._execution_mode
+            )
+        except Exception:
+            logger.exception("判定イベントの板取得不能記録に失敗しました: 銘柄=%s", symbol)
+
     def _rsi_input_snapshot(
         self,
         symbol: str,
@@ -282,13 +305,14 @@ class TradingUseCase:
             inputs["rsi_input"] = rsi_input
         return inputs
 
-    def _filter_decision_summaries(self, event_type: str) -> list[dict]:
+    def _filter_decision_summaries(self, event_type: str, occurred_on: date | None = None) -> list[dict]:
         try:
             return [
                 item for item in self.filter_decision_repository.load_summaries(
                     execution_mode=self._execution_mode
                 )
                 if item["event_type"] == event_type
+                and (occurred_on is None or item["occurred_at"][:10] == occurred_on.isoformat())
             ]
         except Exception:
             logger.exception("判定イベントのサマリー取得に失敗しました: 種別=%s", event_type)
@@ -808,8 +832,8 @@ class TradingUseCase:
     def _update_atr_danger_skip_observation(self, symbol: str, observed_at: datetime, price: float) -> None:
         self._update_filter_decision_observations_safely(observed_at, {symbol: price})
 
-    def _atr_danger_skip_summary(self) -> list[dict]:
-        summaries = self._filter_decision_summaries("ATR_DANGER_SKIP")
+    def _atr_danger_skip_summary(self, occurred_on: date | None = None) -> list[dict]:
+        summaries = self._filter_decision_summaries("ATR_DANGER_SKIP", occurred_on)
         for item in summaries:
             item["skipped_at"] = item["occurred_at"]
             item["entry_price"] = item["reference_price"]
@@ -839,8 +863,8 @@ class TradingUseCase:
     def _update_atr_stop_exit_observation(self, symbol: str, observed_at: datetime, price: float) -> None:
         self._update_filter_decision_observations_safely(observed_at, {symbol: price})
 
-    def _atr_stop_exit_summary(self) -> list[dict]:
-        summaries = self._filter_decision_summaries("ATR_STOP_EXIT")
+    def _atr_stop_exit_summary(self, occurred_on: date | None = None) -> list[dict]:
+        summaries = self._filter_decision_summaries("ATR_STOP_EXIT", occurred_on)
         for item in summaries:
             item["sold_at"] = item["occurred_at"]
             item["exit_price"] = item["reference_price"]
@@ -854,6 +878,21 @@ class TradingUseCase:
             item["avoided_pnl_before_cost"] = item["hypothetical_pnl_before_cost"]
         return summaries
 
+    @staticmethod
+    def _event_report_line(item: dict) -> str:
+        """当日基準を主に表示する。当日列が無い旧行だけ複数営業日基準。"""
+        same_day = (item.get("evaluations") or {}).get("same_day")
+        if same_day:
+            outcome = same_day["outcome"]
+            pnl = same_day["hypothetical_pnl_before_cost"]
+            label = (
+                f"当日基準{'' if same_day['finalized'] else '(暫定)'}, "
+                f"品質={same_day['data_quality'] or '未確定'}"
+            )
+        else:
+            outcome, pnl, label = item["outcome"], item["hypothetical_pnl_before_cost"], "複数営業日基準"
+        return f"{item['symbol']}: {outcome} ({pnl:+.0f}円概算) [{label}]"
+
     def _send_end_of_day_report(self) -> None:
         """市場終了時に本日の取引レポートを送信します。"""
         self._load_order_history()
@@ -862,11 +901,13 @@ class TradingUseCase:
         log_error_summary = self._daily_log_error_summary(today)
         daily_orders = [entry for entry in self.order_history if entry.timestamp.startswith(today)]
         self._finalize_filter_decisions_safely(report_now)
-        atr_danger_skips = self._atr_danger_skip_summary()
-        atr_stop_exits = self._atr_stop_exit_summary()
-        market_regime_danger_skips = self._filter_decision_summaries("MARKET_REGIME_DANGER_SKIP")
-        market_regime_caution_rsi_filters = self._filter_decision_summaries("MARKET_REGIME_CAUTION_RSI_FILTER")
-        adx_trend_reliefs = self._filter_decision_summaries("ADX_TREND_RELIEF")
+        atr_danger_skips = self._atr_danger_skip_summary(report_now.date())
+        atr_stop_exits = self._atr_stop_exit_summary(report_now.date())
+        market_regime_danger_skips = self._filter_decision_summaries("MARKET_REGIME_DANGER_SKIP", report_now.date())
+        market_regime_caution_rsi_filters = self._filter_decision_summaries(
+            "MARKET_REGIME_CAUTION_RSI_FILTER", report_now.date()
+        )
+        adx_trend_reliefs = self._filter_decision_summaries("ADX_TREND_RELIEF", report_now.date())
         lines = [
             "【業務】取引運用",
             "【機能】取引終了",
@@ -908,17 +949,11 @@ class TradingUseCase:
         if atr_danger_skips:
             lines.append("ATR DANGER見送り:")
             for item in atr_danger_skips:
-                lines.append(
-                    f"{item['symbol']}: {item['outcome']} "
-                    f"({item['hypothetical_pnl_before_cost']:+.0f}円概算)"
-                )
+                lines.append(self._event_report_line(item))
         if atr_stop_exits:
             lines.append("ATR損切り売却:")
             for item in atr_stop_exits:
-                lines.append(
-                    f"{item['symbol']}: {item['outcome']} "
-                    f"({item['avoided_pnl_before_cost']:+.0f}円概算)"
-                )
+                lines.append(self._event_report_line(item))
         if self._liquidation_results:
             lines.append("--- 強制売却確認 ---")
             lines.extend(
@@ -1339,10 +1374,12 @@ class TradingUseCase:
             first_loop = False
             if not filter_decisions_initialized:
                 self._finalize_filter_decisions_safely(now)
+                self._finalize_same_day_filter_decisions_safely(now, include_today=False)
                 filter_decisions_initialized = True
             if is_market_closed(now.time(), config.MARKET_CLOSE_HOUR, config.MARKET_CLOSE_MINUTE):
                 if not config.ALLOW_OVERNIGHT_HOLDING:
                     self._liquidate_all_positions(require_fresh_price=True, late=True)
+                self._finalize_same_day_filter_decisions_safely(now, include_today=True)
                 break
             if not config.ALLOW_OVERNIGHT_HOLDING and is_market_closed(
                 now.time(),
@@ -1350,6 +1387,7 @@ class TradingUseCase:
                 config.MARKET_LIQUIDATION_MINUTE,
             ):
                 self._liquidate_all_positions(require_fresh_price=True)
+                self._finalize_same_day_filter_decisions_safely(now, include_today=True)
                 break
             board_fetch_attempted = 0
             board_fetch_failed = 0
@@ -1392,6 +1430,7 @@ class TradingUseCase:
                         if not snapshot:
                             board_fetch_failed += 1
                         self._board_unavailable_symbols.add(symbol)
+                        self._mark_board_unavailable_safely(symbol, now)
                         self._log_rsi_unavailable(
                             symbol, now, closes, rsi, entry_threshold, None
                         )
@@ -1568,6 +1607,7 @@ class TradingUseCase:
                                             self._market_regime_event_inputs(
                                                 rsi,
                                                 entry_threshold,
+                                                assessment,
                                                 rsi_input=self._rsi_input_snapshot(
                                                     symbol, now, closes, rsi, entry_threshold,
                                                     current_price, "excluded_by_caution_threshold",

@@ -152,7 +152,7 @@ def _compact_analysis(path: Path, report: dict[str, Any]) -> dict[str, Any]:
     if isinstance(filter_events, dict):
         compact["filter_decision_events"] = {
             key: filter_events[key]
-            for key in ("count", "by_event_type")
+            for key in ("count", "by_event_type", "basis", "same_day")
             if key in filter_events
         }
     return compact

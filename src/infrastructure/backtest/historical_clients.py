@@ -186,8 +186,10 @@ class NoOpFilterDecisionRepository:
         quantity: int,
         inputs: Mapping[str, object] | None = None,
         execution_mode: str = "paper",
+        same_day_data_quality: str | None = None,
     ) -> None:
         del event_type, symbol, occurred_at, reference_price, quantity, inputs, execution_mode
+        del same_day_data_quality
         return None
 
     def update_open_event_observations(
@@ -206,6 +208,23 @@ class NoOpFilterDecisionRepository:
         execution_mode: str | None = None,
     ) -> list[dict]:
         del as_of, observation_days, execution_mode
+        return []
+
+    def mark_same_day_board_unavailable(
+        self, symbol: str, observed_at: datetime, execution_mode: str | None = None
+    ) -> int:
+        del symbol, observed_at, execution_mode
+        return 0
+
+    def finalize_same_day_events(
+        self,
+        as_of: datetime | date,
+        execution_mode: str | None = None,
+        include_today: bool = False,
+        session_end: time | None = None,
+        loop_interval_seconds: int = 60,
+    ) -> list[dict]:
+        del as_of, execution_mode, include_today, session_end, loop_interval_seconds
         return []
 
     def load_summaries(

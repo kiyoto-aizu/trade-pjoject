@@ -2,10 +2,34 @@
 from __future__ import annotations
 
 import json
+import math
 import sqlite3
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Mapping
+
+# 当日基準列。既存DBには ALTER TABLE ADD COLUMN で追加する(既存行はNULLのまま)
+SAME_DAY_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("same_day_close_price", "REAL"),
+    ("same_day_high", "REAL"),
+    ("same_day_low", "REAL"),
+    ("same_day_last_observed_at", "TEXT"),
+    ("same_day_observation_count", "INTEGER"),
+    ("same_day_price_change_percent", "REAL"),
+    ("same_day_hypothetical_pnl_before_cost", "REAL"),
+    ("same_day_outcome", "TEXT"),
+    ("same_day_finalized_at", "TEXT"),
+    ("same_day_data_quality", "TEXT"),
+)
+
+# data_quality判定の仮置き閾値
+STALE_LAST_OBSERVATION_MINUTES = 30
+FEW_OBSERVATIONS_MIN_EXPECTED = 5
+FEW_OBSERVATIONS_RATIO = 0.2
+DEFAULT_SESSION_END = time(15, 30)
+DEFAULT_LOOP_INTERVAL_SECONDS = 60
+# 日足のみの再生で作られたイベント。当日基準の集計から除外する
+DAILY_REPLAY_FLAG = "DAILY_REPLAY_NO_INTRADAY"
 
 
 EVENT_TYPES = frozenset({
@@ -83,6 +107,17 @@ class FilterDecisionRepository:
                 CREATE INDEX IF NOT EXISTS idx_filter_decision_finalized
                     ON filter_decision_events(status, finalized_at, execution_mode);
             """)
+            existing_columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(filter_decision_events)")
+            }
+            for name, column_type in SAME_DAY_COLUMNS:
+                if name in existing_columns:
+                    continue
+                try:
+                    connection.execute(f"ALTER TABLE filter_decision_events ADD COLUMN {name} {column_type}")
+                except sqlite3.OperationalError as error:
+                    if "duplicate column" not in str(error).lower():
+                        raise
 
     @staticmethod
     def _iso_datetime(value: datetime) -> str:
@@ -110,6 +145,7 @@ class FilterDecisionRepository:
         quantity: int,
         inputs: Mapping[str, object] | None = None,
         execution_mode: str = "paper",
+        same_day_data_quality: str | None = None,
     ) -> int:
         """イベントを記録し、同日・同種別・同銘柄の未確定イベントは再利用します。"""
         if (
@@ -145,8 +181,10 @@ class FilterDecisionRepository:
                     realized_volatility_percent, vix, nikkei_change_percent, adx, rsi,
                     rsi_normal_threshold, rsi_applied_threshold, input_json,
                     lowest_price, highest_price, last_price, last_observed_at,
-                    observation_count, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+                    observation_count, created_at,
+                    same_day_close_price, same_day_high, same_day_low,
+                    same_day_last_observed_at, same_day_observation_count, same_day_data_quality
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, 1, ?)
                 """,
                 (
                     event_type, symbol, execution_mode, occurred_text, reference_price, quantity,
@@ -157,6 +195,8 @@ class FilterDecisionRepository:
                     values.get("rsi_normal_threshold"), values.get("rsi_applied_threshold"),
                     json.dumps(values, ensure_ascii=False, sort_keys=True),
                     reference_price, reference_price, reference_price, occurred_text, occurred_text,
+                    reference_price, reference_price, reference_price, occurred_text,
+                    same_day_data_quality,
                 ),
             )
             return int(cursor.lastrowid)
@@ -186,7 +226,140 @@ class FilterDecisionRepository:
                 """,
                 (price, price, price, observed_text, event_id),
             )
-            return cursor.rowcount == 1
+            if cursor.rowcount != 1:
+                return False
+            # 当日列は、観測日が発生日と同じで当日未確定の行(列がNULLの旧行は除く)だけ更新する
+            connection.execute(
+                """
+                UPDATE filter_decision_events
+                SET same_day_high = MAX(same_day_high, ?), same_day_low = MIN(same_day_low, ?),
+                    same_day_close_price = ?, same_day_last_observed_at = ?,
+                    same_day_observation_count = COALESCE(same_day_observation_count, 0) + 1
+                WHERE id = ? AND same_day_close_price IS NOT NULL AND same_day_finalized_at IS NULL
+                  AND substr(occurred_at, 1, 10) = ?
+                """,
+                (price, price, price, observed_text, event_id, observed_text[:10]),
+            )
+            return True
+
+    def mark_same_day_board_unavailable(
+        self, symbol: str, observed_at: datetime, execution_mode: str | None = None
+    ) -> int:
+        """当日に板取得不能だった銘柄の、当日未確定イベントへBOARD_UNAVAILABLEを記録します。"""
+        query = (
+            "SELECT id, same_day_data_quality FROM filter_decision_events "
+            "WHERE symbol = ? AND same_day_close_price IS NOT NULL AND same_day_finalized_at IS NULL "
+            "AND substr(occurred_at, 1, 10) = ?"
+        )
+        parameters: list[object] = [symbol, observed_at.date().isoformat()]
+        if execution_mode is not None:
+            query += " AND execution_mode = ?"
+            parameters.append(execution_mode)
+        updated = 0
+        with self._connect() as connection:
+            for row in connection.execute(query, parameters).fetchall():
+                flags = self._split_flags(row["same_day_data_quality"])
+                if "BOARD_UNAVAILABLE" in flags:
+                    continue
+                flags.append("BOARD_UNAVAILABLE")
+                connection.execute(
+                    "UPDATE filter_decision_events SET same_day_data_quality = ? WHERE id = ?",
+                    (",".join(flags), row["id"]),
+                )
+                updated += 1
+        return updated
+
+    @staticmethod
+    def _split_flags(value: object) -> list[str]:
+        return [item for item in str(value or "").split(",") if item and item != "OK"]
+
+    @staticmethod
+    def _parse_naive(value: str) -> datetime:
+        parsed = datetime.fromisoformat(value)
+        return parsed.replace(tzinfo=None) if parsed.tzinfo is not None else parsed
+
+    def finalize_same_day_events(
+        self,
+        as_of: datetime | date,
+        execution_mode: str | None = None,
+        include_today: bool = False,
+        session_end: time = DEFAULT_SESSION_END,
+        loop_interval_seconds: int = DEFAULT_LOOP_INTERVAL_SECONDS,
+    ) -> list[dict]:
+        """当日列が未確定のイベントを確定します。
+
+        発生日がas_of日より前のもの(再起動後の取り残し)は常に対象で、
+        include_today=Trueのときだけ発生日=as_of日のものも対象にします。
+        """
+        as_of_date = as_of.date() if isinstance(as_of, datetime) else as_of
+        finalized_at = (
+            self._iso_datetime(as_of) if isinstance(as_of, datetime)
+            else datetime.combine(as_of, time.min).isoformat(timespec="seconds")
+        )
+        query = (
+            "SELECT * FROM filter_decision_events "
+            "WHERE same_day_finalized_at IS NULL AND same_day_close_price IS NOT NULL"
+        )
+        parameters: list[object] = []
+        if execution_mode is not None:
+            query += " AND execution_mode = ?"
+            parameters.append(execution_mode)
+        query += " ORDER BY occurred_at, id"
+        finalized: list[dict] = []
+        with self._connect() as connection:
+            rows = [self._row_to_dict(row) for row in connection.execute(query, parameters)]
+            for event in rows:
+                occurred = self._parse_naive(event["occurred_at"])
+                if occurred.date() > as_of_date or (occurred.date() == as_of_date and not include_today):
+                    continue
+                evaluation = self._evaluate(
+                    str(event["event_type"]), float(event["reference_price"]),
+                    float(event["same_day_close_price"]), int(event["quantity"]),
+                )
+                data_quality = self._same_day_data_quality(
+                    event, occurred, session_end, loop_interval_seconds
+                )
+                cursor = connection.execute(
+                    """
+                    UPDATE filter_decision_events
+                    SET same_day_finalized_at = ?, same_day_price_change_percent = ?,
+                        same_day_hypothetical_pnl_before_cost = ?, same_day_outcome = ?,
+                        same_day_data_quality = ?
+                    WHERE id = ? AND same_day_finalized_at IS NULL
+                    """,
+                    (
+                        finalized_at, evaluation["price_change_percent"],
+                        evaluation["hypothetical_pnl_before_cost"], evaluation["outcome"],
+                        data_quality, event["id"],
+                    ),
+                )
+                if cursor.rowcount == 1:
+                    finalized.append({
+                        **event,
+                        "same_day_finalized_at": finalized_at,
+                        "same_day_price_change_percent": evaluation["price_change_percent"],
+                        "same_day_hypothetical_pnl_before_cost": evaluation["hypothetical_pnl_before_cost"],
+                        "same_day_outcome": evaluation["outcome"],
+                        "same_day_data_quality": data_quality,
+                    })
+        return finalized
+
+    def _same_day_data_quality(
+        self, event: Mapping[str, object], occurred: datetime,
+        session_end: time, loop_interval_seconds: int,
+    ) -> str:
+        flags = self._split_flags(event.get("same_day_data_quality"))
+        end = datetime.combine(occurred.date(), session_end)
+        last_observed = self._parse_naive(str(event["same_day_last_observed_at"]))
+        gap_minutes = (end - last_observed).total_seconds() / 60
+        if gap_minutes > STALE_LAST_OBSERVATION_MINUTES:
+            flags.append(f"STALE_LAST_OBSERVATION({gap_minutes:.0f}min)")
+        interval = max(1, loop_interval_seconds)
+        expected = int(max(0.0, (end - occurred).total_seconds()) // interval) + 1
+        count = int(event.get("same_day_observation_count") or 0)
+        if expected >= FEW_OBSERVATIONS_MIN_EXPECTED and count < math.ceil(expected * FEW_OBSERVATIONS_RATIO):
+            flags.append(f"FEW_OBSERVATIONS({count}/{expected})")
+        return ",".join(flags) if flags else "OK"
 
     def update_open_event_observations(
         self,
@@ -275,7 +448,55 @@ class FilterDecisionRepository:
             summary["count"] += 1
             outcome = item["outcome"]
             summary["outcomes"][outcome] = summary["outcomes"].get(outcome, 0) + 1
-        return {"count": len(summaries), "by_event_type": by_type}
+        return {
+            "count": len(summaries),
+            "by_event_type": by_type,
+            "basis": "複数営業日基準(FILTER_DECISION_OBSERVATION_DAYS営業日経過で確定。期間は確定日)。count/by_event_typeはこの基準",
+            "same_day": self._summarize_same_day(start, end, execution_mode),
+        }
+
+    def load_same_day_summaries(
+        self, start: date, end: date, execution_mode: str | None = None
+    ) -> list[dict]:
+        """期間内に当日基準が確定したイベントを返します。"""
+        query = (
+            "SELECT * FROM filter_decision_events WHERE same_day_finalized_at IS NOT NULL "
+            "AND substr(same_day_finalized_at, 1, 10) >= ? AND substr(same_day_finalized_at, 1, 10) <= ?"
+        )
+        parameters: list[object] = [start.isoformat(), end.isoformat()]
+        if execution_mode is not None:
+            query += " AND execution_mode = ?"
+            parameters.append(execution_mode)
+        query += " ORDER BY occurred_at, id"
+        with self._connect() as connection:
+            return [self._summary_from_row(row) for row in connection.execute(query, parameters)]
+
+    def _summarize_same_day(self, start: date, end: date, execution_mode: str | None) -> dict:
+        by_type: dict[str, dict] = {}
+        data_quality: dict[str, int] = {}
+        excluded_daily_replay = 0
+        items = self.load_same_day_summaries(start, end, execution_mode)
+        for item in items:
+            if DAILY_REPLAY_FLAG in self._split_flags(item["same_day_data_quality"]):
+                excluded_daily_replay += 1
+                continue
+            summary = by_type.setdefault(
+                item["event_type"], {"count": 0, "outcomes": {}, "pnl_before_cost_total": 0.0}
+            )
+            summary["count"] += 1
+            outcome = item["same_day_outcome"]
+            summary["outcomes"][outcome] = summary["outcomes"].get(outcome, 0) + 1
+            summary["pnl_before_cost_total"] += float(item["same_day_hypothetical_pnl_before_cost"])
+            for flag in str(item["same_day_data_quality"] or "OK").split(","):
+                name = flag.split("(")[0]
+                data_quality[name] = data_quality.get(name, 0) + 1
+        return {
+            "basis": "当日基準(発生日の取引終了時に確定。期間は当日確定日)",
+            "count": len(items) - excluded_daily_replay,
+            "excluded_daily_replay_count": excluded_daily_replay,
+            "by_event_type": by_type,
+            "data_quality": data_quality,
+        }
 
     @staticmethod
     def _row_to_dict(row: sqlite3.Row) -> dict:
@@ -286,14 +507,58 @@ class FilterDecisionRepository:
     @classmethod
     def _summary_from_row(cls, row: sqlite3.Row) -> dict:
         event = cls._row_to_dict(row)
-        return {**event, **cls._summarize(event)}
+        multi_day = cls._summarize(event)
+        return {
+            **event,
+            **multi_day,
+            "evaluations": {
+                "multi_day": {
+                    "basis": "複数営業日基準",
+                    "finalized": event["status"] == "finalized",
+                    "last_price": event["last_price"],
+                    **multi_day,
+                },
+                "same_day": cls._same_day_evaluation(event),
+            },
+        }
+
+    @classmethod
+    def _same_day_evaluation(cls, event: Mapping[str, object]) -> dict | None:
+        if event.get("same_day_close_price") is None:
+            return None
+        finalized = event.get("same_day_finalized_at") is not None
+        if finalized:
+            result = {
+                "price_change_percent": event["same_day_price_change_percent"],
+                "hypothetical_pnl_before_cost": event["same_day_hypothetical_pnl_before_cost"],
+                "outcome": event["same_day_outcome"],
+            }
+        else:
+            result = cls._evaluate(
+                str(event["event_type"]), float(event["reference_price"]),
+                float(event["same_day_close_price"]), int(event["quantity"]),
+            )
+        return {
+            "basis": "当日基準",
+            "finalized": finalized,
+            "close_price": event["same_day_close_price"],
+            "high_price": event["same_day_high"],
+            "low_price": event["same_day_low"],
+            "last_observed_at": event["same_day_last_observed_at"],
+            "observation_count": event["same_day_observation_count"],
+            "data_quality": event["same_day_data_quality"],
+            **result,
+        }
+
+    @classmethod
+    def _summarize(cls, event: Mapping[str, object]) -> dict:
+        return cls._evaluate(
+            str(event["event_type"]), float(event["reference_price"]),
+            float(event["last_price"]), int(event["quantity"]),
+        )
 
     @staticmethod
-    def _summarize(event: Mapping[str, object]) -> dict:
-        reference_price = float(event["reference_price"])
-        last_price = float(event["last_price"])
-        quantity = int(event["quantity"])
-        event_type = str(event["event_type"])
+    def _evaluate(event_type: str, reference_price: float, last_price: float, quantity: int) -> dict:
         if event_type == "ATR_STOP_EXIT":
             hypothetical_pnl = (reference_price - last_price) * quantity
             outcome = (

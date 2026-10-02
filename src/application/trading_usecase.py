@@ -1046,6 +1046,33 @@ class TradingUseCase:
             return None, "LIQUIDATION_PRICE_INVALID", board
         return price, None, board
 
+    def _fetch_positions_for_liquidation(self) -> List[dict] | None:
+        """
+        清算処理専用の保有株一覧取得。
+
+        取得失敗(None)と保有ゼロ([])を区別するため、`_load_account_state`の
+        `or []`フォールバックは使わない。失敗時は既定回数までバックオフを挟んで
+        再試行する（401で失敗した場合も、再試行のたびにrequest_handler層の
+        トークン自動再取得が働く）。
+        """
+        attempts = max(1, config.LIQUIDATION_POSITIONS_FETCH_RETRIES)
+        for attempt in range(attempts):
+            if self.positions_client:
+                positions = self.positions_client.get_positions(self.token)
+            elif self.order_sender and hasattr(self.order_sender, 'get_positions'):
+                positions = self.order_sender.get_positions(self.token)
+            else:
+                positions = get_positions(self.token)
+            if positions is not None:
+                return positions
+            if attempt < attempts - 1:
+                logger.warning(
+                    "保有株一覧の取得に失敗しました。再試行します(%d/%d)。",
+                    attempt + 1, attempts,
+                )
+                time.sleep(config.LIQUIDATION_POSITIONS_FETCH_RETRY_BACKOFF_SECONDS)
+        return None
+
     def _liquidate_all_positions(
         self,
         *,
@@ -1055,7 +1082,22 @@ class TradingUseCase:
         """持ち越しを防ぐため、現物の全保有を成行で売却します。"""
         self._liquidation_results = []
         unresolved: list[dict[str, object]] = []
-        _, positions = self._load_account_state()
+        positions = self._fetch_positions_for_liquidation()
+        if positions is None:
+            logger.error(
+                "EOD_LIQUIDATION_POSITIONS_UNAVAILABLE: 保有株一覧を取得できず、強制決済を実行できませんでした。"
+            )
+            self._notify_safely(
+                "\n".join([
+                    "【業務】取引運用",
+                    "【機能】強制決済",
+                    "【概要】",
+                    "保有株一覧の取得に失敗したため、強制決済を実行できませんでした。",
+                    "【詳細】",
+                    "kabuステーションの起動・認証状態を確認し、必要なら手動で保有状況を確認してください。",
+                ])
+            )
+            return
         self.last_positions = positions
         holdings: dict[str, int] = {}
         for position in positions:

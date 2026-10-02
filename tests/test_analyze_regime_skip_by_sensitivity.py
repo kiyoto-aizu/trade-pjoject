@@ -69,6 +69,18 @@ def test_average_turnover_uses_only_prior_days():
     assert average_turnover(closes, volumes, days[2], window=4) is None
 
 
+def test_average_turnover_allows_minimum_observations_within_window():
+    days = _dates(6)
+    closes = {d: 10.0 for d in days}
+    volumes = {d: 100.0 for d in days}
+    volumes.pop(days[3])
+    volumes[days[5]] = 1e9
+
+    assert average_turnover(closes, volumes, days[5], window=5, min_observations=4) == pytest.approx(1000.0)
+    assert average_turnover(closes, volumes, days[5], window=5, min_observations=5) is None
+    assert average_turnover(closes, volumes, days[5], window=5, min_observations=6) is None
+
+
 def test_dedupe_prefers_finalized_and_one_per_symbol_day():
     events = [
         {"id": 1, "symbol": "1", "occurred_at": "2026-09-01T09:00:00", "status": "finalized"},

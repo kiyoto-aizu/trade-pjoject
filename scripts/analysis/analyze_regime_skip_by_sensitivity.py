@@ -81,12 +81,17 @@ def average_turnover(
     volumes: Mapping[str, float] | None,
     before_date: str,
     window: int = TURNOVER_WINDOW,
+    min_observations: int | None = None,
 ) -> float | None:
-    """before_date未満の直近window日の平均売買代金（終値×出来高）。出来高なし・不足はNone。"""
+    """before_date未満の直近window営業日の平均売買代金。観測不足はNone。"""
     if not volumes:
         return None
-    days = sorted(day for day in closes if day < before_date and day in volumes)[-window:]
-    if len(days) < window:
+    minimum = window if min_observations is None else min_observations
+    if minimum < 1 or minimum > window:
+        return None
+    window_days = sorted(day for day in closes if day < before_date)[-window:]
+    days = [day for day in window_days if day in volumes]
+    if len(days) < minimum:
         return None
     return statistics.fmean(closes[day] * volumes[day] for day in days)
 

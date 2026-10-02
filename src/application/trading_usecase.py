@@ -8,9 +8,10 @@
 import logging
 import json
 import inspect
+import math
 import time
 from collections import Counter
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List, Optional
 
@@ -19,7 +20,10 @@ from src.domain.models import OrderHistoryEntry, PriceLimit, TradeSignal
 from src.domain.rules import calculate_buy_quantity, calculate_price_limit, calculate_rsi, check_kill_switch, is_buy_order_amount_allowed, is_market_closed, is_safe_to_order
 from src.domain.volatility import DailyBar, VolatilityLevel, adjust_quantity_for_volatility, assess_volatility, resolve_atr_exit_multiplier, stop_loss_multiplier
 from src.domain.market_regime import MarketRegime, resolve_rsi_entry_threshold
-from src.infrastructure.kabu.get_board import get_current_board
+from src.infrastructure.kabu.get_board import (
+    get_current_board,
+    get_current_board_with_freshness,
+)
 from src.infrastructure.kabu.get_positions import get_positions
 from src.infrastructure.kabu.get_wallet import get_wallet_cash
 from src.infrastructure.kabu.get_apisoftlimit import get_api_soft_limit
@@ -36,6 +40,7 @@ from src.infrastructure.persistence.filter_decision_repository import FilterDeci
 from src.infrastructure.analysis.daily_analyzer import create_daily_analyzer
 
 logger = logging.getLogger(__name__)
+JST = timezone(timedelta(hours=9))
 
 
 class TradingUseCase:
@@ -856,9 +861,53 @@ class TradingUseCase:
         else:
             notify_daily(report_text)
 
-    def _liquidate_all_positions(self) -> None:
+    def _fresh_liquidation_quote(
+        self, symbol: str
+    ) -> tuple[float | None, str | None, dict | None]:
+        if self.board_client is not None:
+            getter = getattr(self.board_client, "get_current_board_with_freshness", None)
+            board = getter(self.token, symbol) if callable(getter) else None
+        else:
+            board = get_current_board_with_freshness(self.token, symbol)
+        if not board:
+            return None, "LIQUIDATION_BOARD_UNAVAILABLE", board
+
+        raw_time = board.get("current_price_time")
+        try:
+            quote_time = datetime.fromisoformat(raw_time) if isinstance(raw_time, str) else raw_time
+        except (TypeError, ValueError):
+            return None, "LIQUIDATION_PRICE_TIME_INVALID", board
+        if not isinstance(quote_time, datetime) or quote_time.tzinfo is None:
+            return None, "LIQUIDATION_PRICE_TIME_INVALID", board
+
+        evaluation_time = self._current_now or datetime.now(JST)
+        if evaluation_time.tzinfo is None:
+            evaluation_time = evaluation_time.replace(tzinfo=JST)
+        if quote_time.astimezone(JST).date() != evaluation_time.astimezone(JST).date():
+            return None, "LIQUIDATION_PRICE_NOT_TODAY", board
+
+        status = board.get("current_price_status")
+        if isinstance(status, bool) or status not in (1, 8, "1", "8"):
+            return None, "LIQUIDATION_PRICE_STATUS_INVALID", board
+
+        raw_price = board.get("current_price")
+        try:
+            price = float(raw_price)
+        except (TypeError, ValueError, OverflowError):
+            return None, "LIQUIDATION_PRICE_INVALID", board
+        if not math.isfinite(price) or price <= 0:
+            return None, "LIQUIDATION_PRICE_INVALID", board
+        return price, None, board
+
+    def _liquidate_all_positions(
+        self,
+        *,
+        require_fresh_price: bool = False,
+        late: bool = False,
+    ) -> None:
         """持ち越しを防ぐため、現物の全保有を成行で売却します。"""
         self._liquidation_results = []
+        unresolved: list[dict[str, object]] = []
         _, positions = self._load_account_state()
         self.last_positions = positions
         holdings: dict[str, int] = {}
@@ -873,18 +922,40 @@ class TradingUseCase:
 
         for symbol, quantity in holdings.items():
             try:
-                board = (
-                    self.board_client.get_current_board(self.token, symbol)
-                    if self.board_client else get_current_board(self.token, symbol)
-                )
-                price = float((board or {}).get('current_price') or 0)
-                if price <= 0:
-                    self._log_trade_reason_once(
-                        logging.WARNING,
-                        "EOD_PRICE_UNAVAILABLE",
-                        symbol,
-                        f"持ち越し防止売り価格={price} | 数量={quantity}",
+                if require_fresh_price:
+                    price, quote_failure, board = self._fresh_liquidation_quote(symbol)
+                    if quote_failure is not None or price is None:
+                        reason = quote_failure or "LIQUIDATION_PRICE_INVALID"
+                        result = {
+                            "symbol": symbol,
+                            "quantity": quantity,
+                            "status": "未決済",
+                            "reason": reason,
+                        }
+                        self._liquidation_results.append(result)
+                        unresolved.append(result)
+                        logger.error(
+                            "EOD_LIQUIDATION_UNRESOLVED: 銘柄=%s | 数量=%s | 理由=%s | 板=%r",
+                            symbol,
+                            quantity,
+                            reason,
+                            board,
+                        )
+                        continue
+                else:
+                    board = (
+                        self.board_client.get_current_board(self.token, symbol)
+                        if self.board_client else get_current_board(self.token, symbol)
                     )
+                    price = float((board or {}).get('current_price') or 0)
+                    if price <= 0:
+                        self._log_trade_reason_once(
+                            logging.WARNING,
+                            "EOD_PRICE_UNAVAILABLE",
+                            symbol,
+                            f"持ち越し防止売り価格={price} | 数量={quantity}",
+                        )
+                decision_reason = "EOD_LATE_LIQUIDATION" if late else "持ち越し防止"
                 signal = TradeSignal(symbol, config.OrderSide.SELL, price, quantity)
                 if self.order_sender and hasattr(self.order_sender, 'set_price') and price > 0:
                     self.order_sender.set_price(symbol, price)
@@ -900,7 +971,7 @@ class TradingUseCase:
                         signal,
                         PriceLimit(price, price),
                         order_result,
-                        diagnostics={"decision_reason": "持ち越し防止"},
+                        diagnostics={"decision_reason": decision_reason},
                     )
                     self._liquidation_results.append({
                         "symbol": symbol,
@@ -910,38 +981,81 @@ class TradingUseCase:
                             symbol, "通常SELL条件の観測なし（15:20以降の起動など）"
                         ),
                     })
-                    if self.order_sender and self.order_sender.__class__.__name__ == "PaperOrderClient":
+                    if late:
+                        logger.info(
+                            "EOD_LATE_LIQUIDATION: 銘柄=%s | 数量=%s | 約定価格=%s",
+                            symbol,
+                            quantity,
+                            price,
+                        )
+                    elif self.order_sender and self.order_sender.__class__.__name__ == "PaperOrderClient":
                         logger.info("持ち越し防止売りが成立しました: 銘柄=%s | 数量=%s", symbol, quantity)
                     else:
                         logger.info("持ち越し防止売りを発注しました: 銘柄=%s | 数量=%s", symbol, quantity)
                 else:
+                    reason_code = (
+                        "ORDER_REJECTED_NONE" if order_result is None else "ORDER_REJECTED_RESULT"
+                    )
                     self._liquidation_results.append({
                         "symbol": symbol,
                         "quantity": quantity,
                         "status": "売却注文失敗",
-                        "reason": self._sell_condition_observations.get(
-                            symbol, "通常SELL条件の観測なし（15:20以降の起動など）"
-                        ),
+                        "reason": reason_code,
                     })
-                    reason_code = (
-                        "ORDER_REJECTED_NONE" if order_result is None else "ORDER_REJECTED_RESULT"
-                    )
                     self._log_trade_reason_once(
                         logging.ERROR,
                         reason_code,
                         symbol,
                         f"EOD方向=SELL | 数量={quantity} | 応答={order_result!r}",
                     )
+                    result = {
+                        "symbol": symbol,
+                        "quantity": quantity,
+                        "status": "売却注文失敗",
+                        "reason": reason_code,
+                    }
+                    unresolved.append(result)
+                    logger.error(
+                        "EOD_LIQUIDATION_UNRESOLVED: 銘柄=%s | 数量=%s | 理由=%s",
+                        symbol,
+                        quantity,
+                        reason_code,
+                    )
             except Exception:
-                self._liquidation_results.append({
+                result = {
                     "symbol": symbol,
                     "quantity": quantity,
                     "status": "売却処理エラー",
-                    "reason": self._sell_condition_observations.get(
-                        symbol, "通常SELL条件の観測なし（15:20以降の起動など）"
-                    ),
-                })
+                    "reason": "EOD_LIQUIDATION_EXCEPTION",
+                }
+                self._liquidation_results.append(result)
+                unresolved.append(result)
                 logger.exception("持ち越し防止売り中にエラーが発生しました: 銘柄=%s", symbol)
+
+        if require_fresh_price and unresolved:
+            summary = "【緊急】EOD決済未完了\n" + "\n".join(
+                f"{item['symbol']}: 数量={item['quantity']} 理由={item['reason']}"
+                for item in unresolved
+            )
+            self._notify_safely(summary)
+
+    def warn_on_overnight_positions(self) -> None:
+        """持ち越し禁止設定で起動時に残っている保有だけを警告します。"""
+        if config.ALLOW_OVERNIGHT_HOLDING:
+            return
+        _, positions = self._load_account_state()
+        for position in positions:
+            if position.get('Side') != config.OrderSide.SELL.value:
+                continue
+            quantity = int(position.get('HoldQty', 0) or 0)
+            if quantity <= 0:
+                continue
+            self._log_trade_reason_once(
+                logging.WARNING,
+                "OVERNIGHT_POSITION_AT_START",
+                str(position.get('Symbol', '')),
+                f"保有数量={quantity}",
+            )
 
     # ================================================================================
     # メイン取引ループ
@@ -1037,13 +1151,15 @@ class TradingUseCase:
                 self._finalize_filter_decisions_safely(now)
                 filter_decisions_initialized = True
             if is_market_closed(now.time(), config.MARKET_CLOSE_HOUR, config.MARKET_CLOSE_MINUTE):
+                if not config.ALLOW_OVERNIGHT_HOLDING:
+                    self._liquidate_all_positions(require_fresh_price=True, late=True)
                 break
             if not config.ALLOW_OVERNIGHT_HOLDING and is_market_closed(
                 now.time(),
                 config.MARKET_LIQUIDATION_HOUR,
                 config.MARKET_LIQUIDATION_MINUTE,
             ):
-                self._liquidate_all_positions()
+                self._liquidate_all_positions(require_fresh_price=True)
                 break
             for symbol in symbols:
                 try:

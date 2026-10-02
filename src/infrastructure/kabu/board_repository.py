@@ -8,8 +8,8 @@ class BoardRepository:
     def __init__(self, token: str):
         self.token = token
 
-    def get_current_board(self, symbol: str) -> dict | None:
-        """指定銘柄の現在値・出来高などの板情報を取得します。"""
+    def get_current_board_with_freshness(self, symbol: str) -> dict | None:
+        """現在値に加え、現値時刻とステータスを含む板情報を返します。"""
         response = request_handler.send_get(
             f"{config.BASE_URL}/board/{symbol}@1",
             headers={"X-API-KEY": self.token},
@@ -19,9 +19,24 @@ class BoardRepository:
         return {
             "symbol_name": response.get("SymbolName", f"銘柄:{symbol}"),
             "current_price": response.get("CurrentPrice"),
+            "current_price_time": response.get("CurrentPriceTime"),
+            "current_price_status": response.get("CurrentPriceStatus"),
             "trading_volume": response.get("TradingVolume"),
             "trading_value": response.get("TradingValue"),
             "response_keys": sorted(response.keys()),
+        }
+
+    def get_current_board(self, symbol: str) -> dict | None:
+        """既存呼び出し向けに現在値・出来高などの板情報を返します。"""
+        board = self.get_current_board_with_freshness(symbol)
+        if board is None:
+            return None
+        return {
+            "symbol_name": board["symbol_name"],
+            "current_price": board["current_price"],
+            "trading_volume": board["trading_volume"],
+            "trading_value": board["trading_value"],
+            "response_keys": board["response_keys"],
         }
 
     def get_current_price(self, symbol: str) -> float | None:

@@ -94,6 +94,22 @@ class HistoricalBoardClient:
             return None
         return {"current_price": prices[index]}
 
+    def get_current_board_with_freshness(self, token: str, symbol: str) -> dict | None:
+        """最新の観測済み分足時刻を鮮度根拠として返します。"""
+        del token
+        series = self._series.get(symbol)
+        if series is None:
+            return None
+        times, prices = series
+        index = bisect_right(times, self._clock.now()) - 1
+        if index < 0:
+            return None
+        return {
+            "current_price": prices[index],
+            "current_price_time": times[index].replace(tzinfo=JST).isoformat(),
+            "current_price_status": 1,
+        }
+
 
 class HistoricalMarketDataClient:
     """シミュレーション日より前の確定日足を供給する。"""

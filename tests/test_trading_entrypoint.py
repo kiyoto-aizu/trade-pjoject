@@ -68,6 +68,9 @@ def test_main_can_enter_the_pre_close_liquidation_path(monkeypatch):
             assert token == 'dummy'
             self.was_run = False
 
+        def warn_on_overnight_positions(self):
+            pass
+
         def run(self, **kwargs):
             self.was_run = True
 
@@ -105,6 +108,9 @@ def test_main_notifies_the_actual_monitored_symbol_count(monkeypatch):
     class Bot:
         def __init__(self, token):
             assert token == 'dummy'
+
+        def warn_on_overnight_positions(self):
+            pass
 
         def prepare_market_regime(self):
             pass

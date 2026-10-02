@@ -124,6 +124,7 @@ def main(now_provider=None) -> None:
                 raise SystemExit('トークン取得に失敗しました。')
 
             use_case = create_trading_use_case(token)
+            use_case.warn_on_overnight_positions()
             if hasattr(use_case, 'prepare_market_regime'):
                 use_case.prepare_market_regime()
                 message = (

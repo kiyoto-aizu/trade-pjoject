@@ -73,6 +73,22 @@ def test_historical_board_returns_latest_price_at_or_before_clock():
     assert board.get_current_board("unused", "1234") == {"current_price": 102.0}
 
 
+def test_historical_board_freshness_uses_latest_observed_bar_time():
+    bar_time = datetime(2026, 9, 25, 15, 19)
+    clock = HistoricalClock(TRADING_DAY, [bar_time, datetime(2026, 9, 25, 15, 31)])
+    board = HistoricalBoardClient(
+        {"1234": [_minute_bar("2026-09-25T15:19:00", 102.0)]},
+        clock,
+    )
+
+    assert board.get_current_board("unused", "1234") == {"current_price": 102.0}
+    assert board.get_current_board_with_freshness("unused", "1234") == {
+        "current_price": 102.0,
+        "current_price_time": "2026-09-25T15:19:00+09:00",
+        "current_price_status": 1,
+    }
+
+
 def test_historical_board_returns_none_before_first_bar():
     clock = HistoricalClock(TRADING_DAY, [datetime(2026, 9, 25, 9, 0)])
     board = HistoricalBoardClient(

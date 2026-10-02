@@ -1371,6 +1371,13 @@ def test_trading_use_case_liquidates_all_holdings_before_market_close(monkeypatc
         def get_current_board(self, token, symbol):
             return {'current_price': 101.0}
 
+        def get_current_board_with_freshness(self, token, symbol):
+            return {
+                'current_price': 101.0,
+                'current_price_time': '2026-09-04T15:14:00+09:00',
+                'current_price_status': 1,
+            }
+
     monkeypatch.setattr(config, 'MARKET_LIQUIDATION_HOUR', 15)
     monkeypatch.setattr(config, 'MARKET_LIQUIDATION_MINUTE', 20)
     use_case = TradingUseCase(

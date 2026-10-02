@@ -95,13 +95,26 @@ def test_kabu_api_wrappers_build_expected_requests(monkeypatch):
 
 
 def test_kabu_repositories_parse_success_and_failure_responses(monkeypatch):
+    response = {
+        'CurrentPrice': '123.4',
+        'CurrentPriceTime': '2026-10-02T15:00:00+09:00',
+        'CurrentPriceStatus': 8,
+        'TradingVolume': 10,
+        'TradingValue': 20,
+    }
     monkeypatch.setattr(
         'src.infrastructure.kabu.board_repository.request_handler.send_get',
-        lambda *args, **kwargs: {'CurrentPrice': '123.4', 'TradingVolume': 10, 'TradingValue': 20},
+        lambda *args, **kwargs: response,
     )
     board = BoardRepository('token')
     assert board.get_current_price('7203') == 123.4
     assert board.get_current_board('7203')['symbol_name'] == '銘柄:7203'
+    assert board.get_current_board('7203').keys() == {
+        'symbol_name', 'current_price', 'trading_volume', 'trading_value', 'response_keys'
+    }
+    quote = board.get_current_board_with_freshness('7203')
+    assert quote['current_price_time'] == response['CurrentPriceTime']
+    assert quote['current_price_status'] == 8
 
     monkeypatch.setattr(
         'src.infrastructure.kabu.primaryexchange_repository.request_handler.send_get',

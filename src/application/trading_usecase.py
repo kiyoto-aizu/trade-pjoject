@@ -104,10 +104,7 @@ class TradingUseCase:
         self._now_provider = datetime.now
         self._current_now: datetime | None = None
         self.daily_analyzer = daily_analyzer if daily_analyzer is not None else create_daily_analyzer()
-        self.daily_report_directory = (
-            daily_report_directory
-            or Path(__file__).resolve().parents[2] / "data" / "reports" / "daily"
-        )
+        self.daily_report_directory = daily_report_directory or config.DAILY_REPORT_DIRECTORY
         self.filter_decision_repository = filter_decision_repository or FilterDecisionRepository(
             order_history_path.parent / "filter_decision_events.sqlite3"
         )

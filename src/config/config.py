@@ -274,6 +274,7 @@ MINUTE_BAR_PARQUET_DIR = Path(
 ORDER_HISTORY_FILE = "data/trading/order_history.json"
 PAPER_ACCOUNT_STATE_FILE = "data/trading/paper_account_state.json"
 KILL_SWITCH_BASELINE_FILE = "data/trading/kill_switch_baseline.json"
+DAILY_REPORT_DIRECTORY = _repo_root / "data" / "reports" / "daily"
 FILTER_DECISION_DATABASE_FILE = _repo_root / "data" / "state" / "filter_decision_events.sqlite3"
 BACKTEST_FILTER_DECISION_DIRECTORY = _repo_root / "data" / "backtest" / "filter_events"
 # 移行スクリプトの移行先（過去分の保管用）専用。バックテスト本体は使用しない。

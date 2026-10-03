@@ -110,6 +110,7 @@ def test_trading_use_case_prefers_atr_exit_over_buy_signal_for_existing_holding(
         market_data_client=MarketDataClient(), board_client=BoardClient(),
         wallet_client=WalletClient(), positions_client=PositionsClient(),
         order_sender=OrderSender(), notifier=lambda message: None,
+        daily_report_directory=tmp_path / 'reports',
     )
 
     use_case.run(
@@ -527,6 +528,7 @@ def test_trading_use_case_uses_daily_starting_total_equity_for_kill_switch(monke
         market_data_client=MarketDataClient(), board_client=BoardClient(),
         wallet_client=WalletClient(), positions_client=PositionsClient(),
         order_sender=OrderSender(), notifier=lambda message: None,
+        daily_report_directory=tmp_path / 'reports',
     )
 
     use_case.run(top_symbols_path=symbols_path, now_provider=lambda: next(current_times), sleep=lambda seconds: None)
@@ -635,6 +637,7 @@ def test_trading_use_case_falls_back_to_operating_capital_when_starting_equity_i
         token='dummy', order_history_path=tmp_path / 'order_history.json',
         wallet_client=WalletClient(), positions_client=PositionsClient(),
         notifier=lambda message: None,
+        daily_report_directory=tmp_path / 'reports',
     )
 
     use_case.run(
@@ -688,6 +691,7 @@ def test_trading_use_case_sizes_new_buy_from_current_wallet(monkeypatch, tmp_pat
         market_data_client=MarketDataClient(), board_client=BoardClient(),
         wallet_client=WalletClient(), positions_client=PositionsClient(),
         order_sender=OrderSender(), notifier=lambda message: None,
+        daily_report_directory=tmp_path / 'reports',
     )
 
     use_case.run(top_symbols_path=symbols_path, now_provider=now_provider, sleep=lambda seconds: None)
@@ -734,6 +738,7 @@ def test_trading_use_case_sizes_new_buy_by_remaining_position_slots(monkeypatch,
         market_data_client=MarketDataClient(), board_client=BoardClient(),
         wallet_client=WalletClient(), positions_client=PositionsClient(),
         order_sender=OrderSender(), notifier=lambda message: None,
+        daily_report_directory=tmp_path / 'reports',
     )
 
     use_case.run(top_symbols_path=symbols_path, now_provider=lambda: next(current_times), sleep=lambda seconds: None)
@@ -781,6 +786,7 @@ def test_trading_use_case_uses_one_remaining_slot_for_existing_holding_at_positi
         market_data_client=MarketDataClient(), board_client=BoardClient(),
         wallet_client=WalletClient(), positions_client=PositionsClient(),
         order_sender=OrderSender(), notifier=lambda message: None,
+        daily_report_directory=tmp_path / 'reports',
     )
 
     use_case.run(top_symbols_path=symbols_path, now_provider=lambda: next(current_times), sleep=lambda seconds: None)
@@ -827,6 +833,7 @@ def test_trading_use_case_keeps_buy_budget_caps_with_remaining_position_slots(mo
         market_data_client=MarketDataClient(), board_client=BoardClient(),
         wallet_client=WalletClient(), positions_client=PositionsClient(),
         order_sender=OrderSender(), notifier=lambda message: None,
+        daily_report_directory=tmp_path / 'reports',
     )
 
     use_case.run(top_symbols_path=symbols_path, now_provider=lambda: next(current_times), sleep=lambda seconds: None)
@@ -880,6 +887,7 @@ def test_trading_use_case_monitors_all_candidates_when_position_limit_is_reached
         market_data_client=MarketDataClient(), board_client=BoardClient(),
         wallet_client=WalletClient(), positions_client=PositionsClient(),
         order_sender=OrderSender(), notifier=lambda message: None,
+        daily_report_directory=tmp_path / 'reports',
     )
 
     use_case.run(top_symbols_path=symbols_path, now_provider=now_provider, sleep=lambda seconds: None)
@@ -888,7 +896,8 @@ def test_trading_use_case_monitors_all_candidates_when_position_limit_is_reached
     assert '保有上限のため新規買いを見送ります' in caplog.text
 
 
-def test_trading_use_case_factory_uses_paper_executor_by_default(monkeypatch):
+def test_trading_use_case_factory_uses_paper_executor_by_default(monkeypatch, tmp_path):
+    monkeypatch.setattr(config, 'FILTER_DECISION_DATABASE_FILE', tmp_path / 'filter_decisions.sqlite3')
     monkeypatch.setattr(config, 'TRADING_MODE', 'paper')
     monkeypatch.setattr(config, 'IS_DEMO', True)
     monkeypatch.setattr(config, 'ENABLE_LIVE_ORDERING', False)
@@ -1192,6 +1201,7 @@ def test_rsi_input_is_recorded_when_buy_passes_or_caution_excludes(
         notifier=lambda message: None,
         market_regime_usecase=market_regime_provider,
         filter_decision_repository=filter_decision_repository,
+        daily_report_directory=tmp_path / 'reports',
     )
     use_case.run(
         top_symbols_path=symbols_path,
@@ -1289,6 +1299,7 @@ def test_trading_use_case_records_adx_relief_after_successful_buy(monkeypatch, t
         market_data_client=MarketDataClient(), board_client=BoardClient(), wallet_client=WalletClient(),
         positions_client=PositionsClient(), order_sender=OrderSender(), notifier=lambda message: None,
         market_regime_usecase=MarketRegimeProvider(), filter_decision_repository=filter_decision_repository,
+        daily_report_directory=tmp_path / "reports",
     )
 
     use_case.run(top_symbols_path=symbols_path, now_provider=lambda: next(current_times), sleep=lambda seconds: None)
@@ -1349,6 +1360,7 @@ def test_trading_use_case_continues_when_filter_decision_storage_fails(monkeypat
         market_data_client=MarketDataClient(), board_client=BoardClient(), wallet_client=WalletClient(),
         positions_client=PositionsClient(), order_sender=OrderSender(), notifier=lambda message: None,
         filter_decision_repository=FailingRepository(),
+        daily_report_directory=tmp_path / "reports",
     )
 
     use_case.run(top_symbols_path=symbols_path, now_provider=lambda: next(current_times), sleep=lambda seconds: None)
@@ -1424,6 +1436,7 @@ def test_trading_use_case_does_not_record_rejected_order(monkeypatch, tmp_path):
         token='dummy',
         order_history_path=history_path,
         notifier=lambda message: None,
+        daily_report_directory=tmp_path / 'reports',
     )
     use_case.run(
         top_symbols_path=symbols_path,
@@ -1630,6 +1643,7 @@ def test_trading_use_case_warns_once_for_repeated_sell_signal_without_holdings(m
         wallet_client=WalletClient(),
         positions_client=PositionsClient(),
         notifier=lambda message: None,
+        daily_report_directory=tmp_path / 'reports',
     )
 
     with caplog.at_level('WARNING', logger='src.domain.rules'):

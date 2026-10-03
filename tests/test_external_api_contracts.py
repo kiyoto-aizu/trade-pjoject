@@ -172,11 +172,18 @@ def test_yahoo_clients_parse_valid_and_invalid_responses(monkeypatch):
     assert client.get_average_turnover_before('7203', date.fromordinal(second_date.toordinal() + 1), days=2) == 1600.0
     assert client.get_average_volume('7203', days=2) == 15.0
     assert client.get_average_turnover('7203', days=2) == 1600.0
+    details = client.get_average_turnover_details('7203', days=2, target_date=second_date)
+    assert details == {
+        'average_turnover': 1600.0,
+        'average_days': 2,
+        'average_includes_target_date': True,
+    }
 
     monkeypatch.setattr('src.infrastructure.market_data.yahoo_finance_client.request_handler.send_get', lambda *args, **kwargs: None)
     assert client.get_daily_market_data('7203', date.today()) is None
     assert client.get_turnover_for_date('7203', date.today()) is None
     assert client.get_average_volume('7203') is None
+    assert client.get_average_turnover_details('7203')['average_includes_target_date'] is None
 
 
 def test_yahoo_index_client_uses_plain_symbol_and_parses_ohlc(monkeypatch):

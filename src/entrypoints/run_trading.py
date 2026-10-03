@@ -55,7 +55,7 @@ def create_trading_use_case(token: str) -> TradingUseCase:
         order_history_path=root / config.ORDER_HISTORY_FILE,
         kill_switch_baseline_path=root / config.KILL_SWITCH_BASELINE_FILE,
         order_sender=order_sender,
-        filtering_result_repository=FilteringResultRepository(root / 'data' / 'filtering'),
+        filtering_result_repository=FilteringResultRepository(config.FILTERING_RESULT_DIRECTORY),
         filter_decision_repository=FilterDecisionRepository(
             config.FILTER_DECISION_DATABASE_FILE,
             allowed_execution_modes=frozenset({"paper", "live"}),
@@ -126,7 +126,7 @@ def main(now_provider=None) -> None:
                 logging.getLogger(__name__).info('市場時間外または休場日のため、取引を開始しません。')
                 return
 
-            filtering_repository = FilteringResultRepository(Path(__file__).resolve().parents[2] / 'data' / 'filtering')
+            filtering_repository = FilteringResultRepository(config.FILTERING_RESULT_DIRECTORY)
             filtering_result = filtering_repository.load_for_date(now.date())
             if not filtering_result or not filtering_result.symbols:
                 logging.getLogger(__name__).info('当日のフィルタ結果がないため、取引を開始しません。')

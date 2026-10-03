@@ -8,6 +8,7 @@
 
 import os
 import sys
+from datetime import time
 from pathlib import Path
 
 from src.domain.enums import OrderSide  # noqa: F401  # config.OrderSide として再エクスポート（重複定義を避ける）
@@ -264,6 +265,36 @@ if PAPER_MARKET_SLIPPAGE_BPS < 0:
 # 分足Parquetの保存先。
 MINUTE_BAR_PARQUET_DIR = Path(
     os.getenv("MINUTE_BAR_PARQUET_DIR", str(_repo_root / "data" / "minute_bars_parquet"))
+)
+SCREENING_RESULT_DIRECTORY = Path(
+    os.getenv("SCREENING_RESULT_DIRECTORY", str(_repo_root / "data" / "screening"))
+)
+FILTERING_RESULT_DIRECTORY = Path(
+    os.getenv("FILTERING_RESULT_DIRECTORY", str(_repo_root / "data" / "filtering"))
+)
+FILTERING_DIAGNOSTICS_DIRECTORY = Path(
+    os.getenv("FILTERING_DIAGNOSTICS_DIRECTORY", str(_repo_root / "data" / "filtering_diagnostics"))
+)
+SCREENING_API_CHECK_DIRECTORY = Path(
+    os.getenv("SCREENING_API_CHECK_DIRECTORY", str(_repo_root / "data" / "regulation" / "screening_api_checks"))
+)
+SCREENING_PRICE_BAND_RESULT_ROOT = Path(
+    os.getenv("SCREENING_PRICE_BAND_RESULT_ROOT", str(_repo_root / "data" / "screening_price_bands"))
+)
+FILTERING_PRICE_BAND_RESULT_ROOT = Path(
+    os.getenv("FILTERING_PRICE_BAND_RESULT_ROOT", str(_repo_root / "data" / "filtering_price_bands"))
+)
+SCREENING_ALTERNATE_PRICE_CAPS = tuple(
+    float(value.strip())
+    for value in os.getenv("SCREENING_ALTERNATE_PRICE_CAPS", "450,900").split(",")
+    if value.strip()
+)
+if any(value <= 0 for value in SCREENING_ALTERNATE_PRICE_CAPS):
+    raise ValueError("SCREENING_ALTERNATE_PRICE_CAPSは正数を指定してください。")
+if len(set(SCREENING_ALTERNATE_PRICE_CAPS)) != len(SCREENING_ALTERNATE_PRICE_CAPS):
+    raise ValueError("SCREENING_ALTERNATE_PRICE_CAPSに重複があります。")
+FILTERING_PRICE_BAND_DEADLINE_TIME = time.fromisoformat(
+    os.getenv("FILTERING_PRICE_BAND_DEADLINE_TIME", "09:33")
 )
 
 # ================================================================================

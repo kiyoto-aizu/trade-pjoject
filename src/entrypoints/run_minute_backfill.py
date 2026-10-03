@@ -15,6 +15,7 @@ import logging
 from datetime import date, datetime, timedelta
 from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
+from time import perf_counter
 
 from src.infrastructure.persistence.backtest_input_repository import load_daily_filtering_symbols
 from src.application.minute_bar_backfill_usecase import MinuteBarBackfillUseCase
@@ -26,11 +27,19 @@ from src.infrastructure.persistence.parquet_minute_bar_repository import Parquet
 logger = logging.getLogger(__name__)
 
 
-def collect_recent_symbols(filtering_dir: Path, days: int, today: date) -> list[str]:
-    """直近days日分のフィルタリング結果に登場した銘柄を重複なく集めます。"""
-    if not filtering_dir.exists():
-        return []
-    daily_symbols = load_daily_filtering_symbols(filtering_dir)
+def collect_recent_symbols(
+    filtering_dir: Path,
+    days: int,
+    today: date,
+    additional_filtering_dirs: tuple[Path, ...] = (),
+) -> list[str]:
+    """通常・追加価格帯の直近days日分のフィルタ結果から銘柄を重複なく集めます。"""
+    daily_symbols: dict[str, set[str]] = {}
+    for directory in (filtering_dir, *additional_filtering_dirs):
+        if not directory.exists():
+            continue
+        for date_text, symbols in load_daily_filtering_symbols(directory).items():
+            daily_symbols.setdefault(date_text, set()).update(symbols)
     cutoff = today - timedelta(days=days)
     recent_symbols = {
         symbol
@@ -74,28 +83,54 @@ def main(now_provider=None, filtering_dir: Path | None = None, output_dir: Path 
     parser.add_argument("--output-dir", type=Path, default=None, help="分足保存先ディレクトリ")
     args = parser.parse_args()
 
-    project_root = Path(__file__).resolve().parents[2]
-    target_filtering_dir = filtering_dir or args.filtering_dir or (project_root / "data" / "filtering")
+    custom_filtering_dir = filtering_dir is not None or args.filtering_dir is not None
+    target_filtering_dir = filtering_dir or args.filtering_dir or config.FILTERING_RESULT_DIRECTORY
     target_output_dir = output_dir or args.output_dir or config.MINUTE_BAR_PARQUET_DIR
+    additional_filtering_dirs = () if custom_filtering_dir else tuple(
+        config.FILTERING_PRICE_BAND_RESULT_ROOT / f"{price_cap:g}"
+        for price_cap in config.SCREENING_ALTERNATE_PRICE_CAPS
+    )
 
-    symbols = collect_recent_symbols(target_filtering_dir, args.days, now.date())
+    primary_symbols = set(collect_recent_symbols(target_filtering_dir, args.days, now.date()))
+    symbols = collect_recent_symbols(
+        target_filtering_dir,
+        args.days,
+        now.date(),
+        additional_filtering_dirs=additional_filtering_dirs,
+    )
+    additional_symbols = set(symbols) - primary_symbols
     if not symbols:
         logger.info("直近%d日分のフィルタリング結果がないため、バックフィルを行いません。", args.days)
         return
+    logger.info(
+        "分足バックフィル対象: 通常=%d件 | 追加価格帯固有=%d件 | 合計=%d件",
+        len(primary_symbols), len(additional_symbols), len(symbols),
+    )
 
     with process_notification("分足バックフィル", notify_lifecycle=False, trigger="フィルタリング結果"):
         usecase = MinuteBarBackfillUseCase(
             fetch_intraday_bars=get_yahoo_intraday_bars,
             repository=ParquetMinuteBarRepository(target_output_dir),
         )
+        started = perf_counter()
         imported_counts = usecase.run(symbols, days=args.days)
+        elapsed_seconds = perf_counter() - started
 
         total = sum(imported_counts.values())
+        logger.info(
+            "分足バックフィル実績: 対象=%d件 | 追加価格帯固有=%d件 | 取得本数=%d本 | 所要時間=%.3f秒",
+            len(symbols), len(additional_symbols), total, elapsed_seconds,
+        )
         message = format_result_notification(
             "市場データ管理",
             "分足バックフィル",
             "分足データの取込が完了しました。",
-            [f"対象銘柄数: {len(symbols)}件", f"取込本数: {total}本"],
+            [
+                f"対象銘柄数: {len(symbols)}件",
+                f"追加価格帯固有銘柄: {len(additional_symbols)}件",
+                f"取込本数: {total}本",
+                f"所要時間: {elapsed_seconds:.3f}秒",
+            ],
         )
         notify_analysis(message)
 

@@ -1,6 +1,9 @@
 from datetime import date, datetime, timedelta
+from time import monotonic
 
-from src.application.filtering_usecase import FilteringUseCase
+import pytest
+
+from src.application.filtering_usecase import FilteringDeadlineExceeded, FilteringUseCase
 from src.application.screening_usecase import ScreeningUseCase
 from src.domain.enums import RankingType
 from src.domain.models import FilteringResult, RankingEntry, Regulation, ScreeningResult
@@ -9,6 +12,8 @@ from src.infrastructure.persistence.listed_security_repository import ListedSecu
 from src.infrastructure.persistence.historical_regulation_repository import HistoricalRegulationRepository
 from src.domain.rules import calculate_buy_quantity, calculate_volume_surge_ratio, check_kill_switch, exclude_by_regulation, filter_candidates_by_price, is_buy_order_amount_allowed, limit_candidates, merge_ranking_candidates
 from src.infrastructure.persistence.filtering_result_repository import FilteringResultRepository
+from src.infrastructure.persistence.filtering_diagnostics_repository import FilteringDiagnosticsRepository
+from src.infrastructure.persistence.screening_api_check_repository import ScreeningApiCheckRepository
 from src.infrastructure.persistence.screening_result_repository import ScreeningResultRepository
 from src.infrastructure.kabu.ranking_repository import RankingRepository
 from src.config import config
@@ -220,6 +225,29 @@ def test_screening_usecase_persists_date_result(tmp_path):
         ("7203", 2, True),
         ("8306", 4, True),
     ]
+    assert [entry.price for entry in saved_result.audit_entries] == [100.0, 100.0]
+
+
+def test_screening_result_loads_audit_entries_without_price():
+    result = ScreeningResult.from_dict({
+        "date": "2026-09-01",
+        "symbols": ["7203"],
+        "generated_at": "2026-09-01T15:35:00",
+        "audit_entries": [{
+            "symbol": "7203",
+            "turnover_rank": 1,
+            "turnover_value": 100.0,
+            "price_gain_rank": 1,
+            "price_gain_value": 1.0,
+            "total_rank": 2,
+            "primary_exchange": 1,
+            "is_restricted": False,
+            "restriction_reason": "",
+            "selected": True,
+        }],
+    })
+
+    assert result.audit_entries[0].price is None
 
 
 def test_screening_usecase_filters_prices_before_regulation_lookups(monkeypatch, tmp_path):
@@ -253,6 +281,179 @@ def test_screening_usecase_filters_prices_before_regulation_lookups(monkeypatch,
     reasons = {entry.symbol: entry.restriction_reason for entry in result.audit_entries}
     assert reasons["expensive"] == "価格上限超過（300.0円）"
     assert reasons["missing"] == "価格不明"
+
+
+def test_screening_can_keep_api_unconfirmed_candidate_for_price_band(tmp_path):
+    class UnconfirmedExchangeStub:
+        def get_primary_exchange(self, symbol):
+            return None
+
+        def status_for(self, symbol):
+            return "unconfirmed_market"
+
+    result = ScreeningUseCase(
+        RankingStub(),
+        RegulationStub(),
+        UnconfirmedExchangeStub(),
+        ScreeningResultRepository(tmp_path),
+    ).execute(price_cap=450.0, keep_unconfirmed=True)
+
+    assert result.symbols == ["7203", "8306"]
+    assert all(entry.check_status == "unconfirmed_market" for entry in result.audit_entries)
+    assert all(entry.is_restricted is False for entry in result.audit_entries)
+
+
+def test_screening_price_band_caps_select_correct_prices_and_record_each_price(tmp_path):
+    class ThreePriceRankingStub:
+        def get_ranking(self, ranking_type, exchange_division="ALL"):
+            return [
+                RankingEntry("under450", 1, 300.0, ranking_type, 400.0),
+                RankingEntry("under900", 2, 200.0, ranking_type, 800.0),
+                RankingEntry("over900", 3, 100.0, ranking_type, 1_000.0),
+            ]
+
+    def run_at_cap(cap, directory):
+        return ScreeningUseCase(
+            ThreePriceRankingStub(),
+            RegulationStub(),
+            ExchangeStub(),
+            ScreeningResultRepository(directory),
+        ).execute(price_cap=cap)
+
+    result_450 = run_at_cap(450.0, tmp_path / "450")
+    result_900 = run_at_cap(900.0, tmp_path / "900")
+
+    assert result_450.symbols == ["under450"]
+    assert result_900.symbols == ["under450", "under900"]
+    assert {entry.symbol: entry.price for entry in result_450.audit_entries} == {
+        "under450": 400.0,
+        "under900": 800.0,
+        "over900": 1_000.0,
+    }
+
+
+def test_screening_market_checks_are_registered_in_configured_batches(monkeypatch, tmp_path):
+    class ManyCandidateRankingStub:
+        def get_ranking(self, ranking_type, exchange_division="ALL"):
+            return [
+                RankingEntry(str(index), index, 100.0, ranking_type, 100.0)
+                for index in range(1, 6)
+            ]
+
+    monkeypatch.setattr(config, "SCREENING_BATCH_SIZE", 2)
+    monkeypatch.setattr("src.application.screening_usecase.sleep", lambda _seconds: None)
+    started_batches = []
+    finished_batches = []
+    usecase = ScreeningUseCase(
+        ManyCandidateRankingStub(),
+        RegulationStub(),
+        ExchangeStub(),
+        ScreeningResultRepository(tmp_path),
+    )
+    usecase.batch_started = lambda batch, number: started_batches.append((number, batch)) or True
+    usecase.batch_finished = lambda batch, number: finished_batches.append((number, batch)) or True
+
+    usecase.execute(price_cap=900.0)
+
+    assert [len(batch) for _, batch in started_batches] == [2, 2, 1]
+    assert finished_batches == started_batches
+
+
+def test_screening_api_checks_are_saved_and_reused_for_same_day(tmp_path):
+    target_date = date(2026, 10, 2)
+    calls = {"exchange": 0, "regulation": 0}
+
+    class ExchangeRepositoryStub:
+        def get_primary_exchange(self, symbol):
+            calls["exchange"] += 1
+            return 1
+
+    class RegulationRepositoryStub:
+        def get_regulation(self, symbol, market_code):
+            calls["regulation"] += 1
+            return Regulation(symbol, False, "", market_code)
+
+    cache = ScreeningApiCheckRepository(
+        tmp_path, target_date, ExchangeRepositoryStub(), RegulationRepositoryStub()
+    )
+    assert cache.get_primary_exchange("7203") == 1
+    assert cache.get_regulation("7203", 1, target_date).is_restricted is False
+    assert cache.status_for("7203") == "checked"
+
+    class MustNotCallRepository:
+        def get_primary_exchange(self, _symbol):
+            raise AssertionError("same-day market lookup repeated")
+
+        def get_regulation(self, _symbol, _market_code):
+            raise AssertionError("same-day regulation lookup repeated")
+
+    reused_cache = ScreeningApiCheckRepository(
+        tmp_path, target_date, MustNotCallRepository(), MustNotCallRepository()
+    )
+    assert reused_cache.get_primary_exchange("7203") == 1
+    assert reused_cache.get_regulation("7203", 1, target_date).is_restricted is False
+    assert calls == {"exchange": 1, "regulation": 1}
+    import json
+    saved = json.loads((tmp_path / "2026-10-02.json").read_text(encoding="utf-8"))
+    assert saved["checks"]["7203"]["primary_exchange"]["status"] == "checked"
+    assert saved["checks"]["7203"]["regulation"]["status"] == "checked"
+
+
+def test_screening_regulation_api_failure_is_retained_as_unconfirmed(tmp_path):
+    target_date = date(2026, 10, 2)
+    calls = {"regulation": 0}
+
+    class ExchangeRepositoryStub:
+        def get_primary_exchange(self, _symbol):
+            return 1
+
+    class FailedRegulationRepositoryStub:
+        def get_regulation(self, symbol, market_code):
+            calls["regulation"] += 1
+            return Regulation(symbol, True, "規制情報取得失敗", market_code)
+
+    cache = ScreeningApiCheckRepository(
+        tmp_path, target_date, ExchangeRepositoryStub(), FailedRegulationRepositoryStub()
+    )
+    result = ScreeningUseCase(
+        RankingStub(), cache, cache, ScreeningResultRepository(tmp_path / "screening")
+    ).execute(price_cap=450.0, keep_unconfirmed=True)
+
+    assert result.symbols == ["7203", "8306"]
+    assert all(entry.check_status == "unconfirmed_regulation" for entry in result.audit_entries)
+    assert all(entry.is_restricted is False for entry in result.audit_entries)
+    assert calls["regulation"] == 2
+
+    class MustNotCallRegulationRepository:
+        def get_primary_exchange(self, _symbol):
+            raise AssertionError("same-day market lookup repeated")
+
+        def get_regulation(self, _symbol, _market_code):
+            raise AssertionError("same-day failed regulation lookup repeated")
+
+    reused_cache = ScreeningApiCheckRepository(
+        tmp_path, target_date, MustNotCallRegulationRepository(), MustNotCallRegulationRepository()
+    )
+    assert reused_cache.get_primary_exchange("7203") == 1
+    assert reused_cache.get_regulation("7203", 1).reason == "規制情報取得失敗"
+    assert reused_cache.status_for("7203") == "unconfirmed_regulation"
+
+
+def test_primary_screening_keeps_legacy_fail_closed_regulation_behavior(tmp_path):
+    class FailedRegulationStub:
+        def get_regulation(self, symbol, market_code):
+            return Regulation(symbol, True, "規制情報取得失敗", market_code)
+
+    result = ScreeningUseCase(
+        RankingStub(),
+        FailedRegulationStub(),
+        ExchangeStub(),
+        ScreeningResultRepository(tmp_path),
+    ).execute(price_cap=450.0)
+
+    assert result.symbols == []
+    assert all(entry.is_restricted for entry in result.audit_entries)
+    assert all(entry.restriction_reason == "規制情報取得失敗" for entry in result.audit_entries)
 
 
 def test_filtering_usecase_reads_previous_screening_result(tmp_path):
@@ -365,6 +566,153 @@ def test_filtering_usecase_selects_by_relative_turnover_ratio(tmp_path):
     assert "入力銘柄数: 2件" in notifications[0]
     assert "評価完了数: 2件" in notifications[0]
     assert "評価対象外数: 0件" in notifications[0]
+
+
+def test_filtering_diagnostics_record_sources_reasons_and_rank_without_changing_filter(tmp_path):
+    today = datetime.now().date()
+    previous_business_day = today - timedelta(days=1)
+    while not is_trading_day(previous_business_day):
+        previous_business_day -= timedelta(days=1)
+    screening_repository = ScreeningResultRepository(tmp_path / "screening")
+    screening_repository.save(ScreeningResult(
+        previous_business_day.isoformat(),
+        ["value", "fallback", "zero", "board_error", "board_none", "value_missing", "price_missing"],
+        datetime.now().isoformat(),
+    ))
+
+    class DiagnosticBoardStub:
+        def get_current_board(self, symbol):
+            if symbol == "board_error":
+                raise TimeoutError
+            if symbol == "board_none":
+                return None
+            if symbol == "value":
+                return {"current_price": 200, "trading_value": 2_000, "trading_volume": 10}
+            if symbol == "fallback":
+                return {"current_price": 50, "trading_value": None, "trading_volume": 10}
+            if symbol == "zero":
+                return {"current_price": 100, "trading_value": 0, "trading_volume": 0}
+            if symbol == "price_missing":
+                return {"current_price": None, "trading_value": None, "trading_volume": 10}
+            return {"current_price": 100, "trading_value": None, "trading_volume": None}
+
+    result_repository = FilteringResultRepository(tmp_path / "filtering")
+    diagnostics_repository = FilteringDiagnosticsRepository(tmp_path / "diagnostics")
+    result = FilteringUseCase(
+        screening_repository,
+        DiagnosticBoardStub(),
+        VolumeStub(),
+        result_repository,
+        diagnostics_repository=diagnostics_repository,
+    ).execute()
+
+    assert result.symbols == ["fallback", "value", "zero"]
+    assert result_repository.load_latest().symbols == result.symbols
+    files = list((tmp_path / "diagnostics").glob("*.json"))
+    assert len(files) == 1
+    import json
+    diagnostics = json.loads(files[0].read_text(encoding="utf-8"))
+    records = {item["symbol"]: item for item in diagnostics["candidates"]}
+    assert records["value"]["numerator_source"] == "TradingValue"
+    assert records["fallback"]["numerator_source"] == "current_price_x_cumulative_volume"
+    assert records["fallback"]["board_current_price"] == 50
+    assert records["value"]["average_includes_target_date"] is None
+    assert records["value"]["rank"] == 2
+    assert records["value"]["selected"] is True
+    assert records["zero"]["reason_code"] == "FILTER_NO_TRADES"
+    assert records["board_error"]["reason_code"] == "FILTER_BOARD_FETCH_FAILED"
+    assert records["board_error"]["error_type"] == "TimeoutError"
+    assert records["board_none"]["reason_code"] == "FILTER_BOARD_FETCH_FAILED"
+    assert records["value_missing"]["reason_code"] == "FILTER_TURNOVER_MISSING"
+    assert records["price_missing"]["reason_code"] == "FILTER_CURRENT_PRICE_MISSING"
+    assert diagnostics["summary"]["reason_counts"] == {
+        "FILTER_BOARD_FETCH_FAILED": 2,
+        "FILTER_TURNOVER_MISSING": 1,
+        "FILTER_CURRENT_PRICE_MISSING": 1,
+        "FILTER_NO_TRADES": 1,
+    }
+
+
+def test_filtering_diagnostics_save_failure_does_not_stop_filter_result(tmp_path):
+    today = datetime.now().date()
+    previous_business_day = today - timedelta(days=1)
+    while not is_trading_day(previous_business_day):
+        previous_business_day -= timedelta(days=1)
+    screening_repository = ScreeningResultRepository(tmp_path / "screening")
+    screening_repository.save(ScreeningResult(
+        previous_business_day.isoformat(), ["7203"], datetime.now().isoformat()
+    ))
+
+    class FailingDiagnosticsRepository:
+        def save(self, _diagnostics):
+            raise OSError("diagnostics unavailable")
+
+    result_repository = FilteringResultRepository(tmp_path / "filtering")
+    result = FilteringUseCase(
+        screening_repository,
+        BoardStub(),
+        VolumeStub(),
+        result_repository,
+        diagnostics_repository=FailingDiagnosticsRepository(),
+    ).execute()
+
+    assert result.symbols == ["7203"]
+    assert result_repository.load_latest().symbols == ["7203"]
+
+
+def test_filtering_deadline_saves_partial_diagnostics_without_filter_result(tmp_path):
+    target_date = date(2026, 10, 2)
+    screening_repository = ScreeningResultRepository(tmp_path / "screening")
+    screening_repository.save(ScreeningResult(
+        "2026-10-01", ["7203", "8306"], datetime.now().isoformat()
+    ))
+
+    class ResultRepositoryStub:
+        saved = []
+
+        def save(self, result):
+            self.saved.append(result)
+
+    class DiagnosticsRepositoryStub:
+        saved = []
+
+        def save(self, diagnostics):
+            self.saved.append(diagnostics)
+
+    class MustNotFetchBoard:
+        def get_current_board(self, _symbol):
+            raise AssertionError("deadline should be checked before the next board call")
+
+    result_repository = ResultRepositoryStub()
+    diagnostics_repository = DiagnosticsRepositoryStub()
+    usecase = FilteringUseCase(
+        screening_repository,
+        MustNotFetchBoard(),
+        VolumeStub(),
+        result_repository,
+        diagnostics_repository=diagnostics_repository,
+    )
+
+    with pytest.raises(FilteringDeadlineExceeded):
+        usecase.execute(
+            target_date=target_date,
+            price_cap=450.0,
+            deadline_monotonic=monotonic() - 1,
+            price_band="450",
+        )
+
+    assert result_repository.saved == []
+    assert len(diagnostics_repository.saved) == 1
+    diagnostics = diagnostics_repository.saved[0]
+    assert diagnostics["price_band"] == "450"
+    assert diagnostics["result_saved"] is False
+    assert diagnostics["summary"]["timed_out"] is True
+    assert diagnostics["summary"]["stop_reason"] == "FILTER_TIME_LIMIT"
+    assert [candidate["status"] for candidate in diagnostics["candidates"]] == [
+        "not_evaluated",
+        "not_evaluated",
+    ]
+    assert all(candidate["reason_code"] == "FILTER_TIME_LIMIT" for candidate in diagnostics["candidates"])
 
 
 def test_filtering_without_previous_result_saves_empty_result(tmp_path):

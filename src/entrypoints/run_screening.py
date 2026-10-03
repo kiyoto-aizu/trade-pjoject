@@ -22,6 +22,7 @@ from src.infrastructure.notification.slack_notify import notify_daily, process_n
 from src.infrastructure.persistence.screening_result_repository import ScreeningResultRepository
 from src.infrastructure.persistence.listed_security_repository import ListedSecurityRepository
 from src.infrastructure.persistence.historical_regulation_repository import HistoricalRegulationRepository
+from src.infrastructure.persistence.screening_api_check_repository import ScreeningApiCheckRepository
 from src.infrastructure.market_data.historical_ranking_repository import HistoricalRankingRepository
 from src.infrastructure.market_data.yahoo_finance_client import YahooFinanceClient
 from src.application.screening_usecase import ScreeningUseCase
@@ -86,7 +87,6 @@ def main() -> None:
                 raise SystemExit('トークン取得に失敗しました。')
             if unregister_all(token) is None:
                 raise SystemExit('銘柄登録の全解除に失敗しました。')
-            data_dir = Path(__file__).resolve().parents[2] / 'data' / 'screening'
             root = Path(__file__).resolve().parents[2]
             # ADR-0001: kabu STATIONの/rankingは市場区分ごと上位50件しか返さず、
             # 価格を意識した絞り込みができない。上場銘柄マスタ+日足データから
@@ -102,18 +102,64 @@ def main() -> None:
                 regulation_repository = HistoricalRegulationRepository(
                     root / 'data' / 'regulation' / 'historical_regulations.csv'
                 )
+                exchange_repository = PrimaryExchangeRepository(token)
             else:
                 regulation_repository = RegulationRepository(token)
+                exchange_repository = PrimaryExchangeRepository(token)
+                regulation_repository = ScreeningApiCheckRepository(
+                    config.SCREENING_API_CHECK_DIRECTORY,
+                    effective_target_date,
+                    exchange_repository,
+                    regulation_repository,
+                )
+                exchange_repository = regulation_repository
             usecase = ScreeningUseCase(
                 ranking_repository,
                 regulation_repository,
-                PrimaryExchangeRepository(token),
-                ScreeningResultRepository(data_dir),
+                exchange_repository,
+                ScreeningResultRepository(config.SCREENING_RESULT_DIRECTORY),
                 notify_result,
             )
             usecase.batch_started = lambda batch, _: register_symbols(token, batch) is not None
             usecase.batch_finished = lambda _, __: unregister_all(token) is not None
             usecase.execute(target_date=effective_target_date)
+            if args.target_date is None:
+                for price_cap in sorted(config.SCREENING_ALTERNATE_PRICE_CAPS):
+                    cap_name = f"{price_cap:g}"
+                    alternate_usecase = ScreeningUseCase(
+                        ranking_repository,
+                        regulation_repository,
+                        exchange_repository,
+                        ScreeningResultRepository(
+                            config.SCREENING_PRICE_BAND_RESULT_ROOT / cap_name
+                        ),
+                    )
+                    alternate_usecase.batch_started = (
+                        lambda batch, _: register_symbols(token, batch) is not None
+                    )
+                    alternate_usecase.batch_finished = lambda _, __: unregister_all(token) is not None
+                    try:
+                        result = alternate_usecase.execute(
+                            target_date=effective_target_date,
+                            price_cap=price_cap,
+                            keep_unconfirmed=True,
+                        )
+                        logging.getLogger(__name__).info(
+                            "価格帯別スクリーニング完了: 上限=%s円 | 採用=%d件 | 保存先=%s",
+                            cap_name,
+                            len(result.symbols),
+                            config.SCREENING_PRICE_BAND_RESULT_ROOT / cap_name,
+                        )
+                    except Exception:
+                        logging.getLogger(__name__).exception(
+                            "価格帯別スクリーニングに失敗しました: 上限=%s円", cap_name
+                        )
+                    finally:
+                        if unregister_all(token) is None:
+                            logging.getLogger(__name__).error(
+                                "価格帯別スクリーニング後の銘柄登録解除に失敗しました: 上限=%s円",
+                                cap_name,
+                            )
             if get_token_provider().recovery_failed:
                 # 1run1回: トークン再取得後も401が続いた(復旧失敗)場合のみ通知する
                 notify_result("kabuステーションAPIの認証が回復しません（トークン再取得後も401が継続しました）。")

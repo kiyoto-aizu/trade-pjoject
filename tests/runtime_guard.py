@@ -14,6 +14,8 @@ class Snapshot:
     report_stats: dict[str, tuple[int, int]]
     report_hashes: dict[str, str] = field(default_factory=dict)
     database_mtime_ns: int | None = None
+    watched_stats: dict[str, tuple[int, int]] = field(default_factory=dict)
+    watched_hashes: dict[str, str] = field(default_factory=dict)
 
 
 def _sha256(path: Path) -> str:
@@ -27,14 +29,23 @@ def _sha256(path: Path) -> str:
 class RuntimeStateGuard:
     """data/reports配下の全ファイルと判定イベントDBの更新日時を記録して比べる。"""
 
-    def __init__(self, reports_directory: Path, database_file: Path, with_hash: bool = False):
+    def __init__(
+        self,
+        reports_directory: Path,
+        database_file: Path,
+        with_hash: bool = False,
+        watched_directories: tuple[Path, ...] = (),
+    ):
         self.reports_directory = Path(reports_directory)
         self.database_file = Path(database_file)
         self.with_hash = with_hash
+        self.watched_directories = tuple(Path(path) for path in watched_directories)
 
     def snapshot(self) -> Snapshot:
         stats: dict[str, tuple[int, int]] = {}
         hashes: dict[str, str] = {}
+        watched_stats: dict[str, tuple[int, int]] = {}
+        watched_hashes: dict[str, str] = {}
         if self.reports_directory.exists():
             for path in sorted(self.reports_directory.rglob("*")):
                 if not path.is_file():
@@ -45,7 +56,18 @@ class RuntimeStateGuard:
                 if self.with_hash:
                     hashes[key] = _sha256(path)
         database_mtime = self.database_file.stat().st_mtime_ns if self.database_file.exists() else None
-        return Snapshot(stats, hashes, database_mtime)
+        for directory in self.watched_directories:
+            if not directory.exists():
+                continue
+            for path in sorted(directory.rglob("*")):
+                if not path.is_file():
+                    continue
+                key = f"{directory.resolve()}::{path.relative_to(directory).as_posix()}"
+                info = path.stat()
+                watched_stats[key] = (info.st_size, info.st_mtime_ns)
+                if self.with_hash:
+                    watched_hashes[key] = _sha256(path)
+        return Snapshot(stats, hashes, database_mtime, watched_stats, watched_hashes)
 
     def changes_since(self, before: Snapshot) -> list[str]:
         after = self.snapshot()
@@ -61,6 +83,15 @@ class RuntimeStateGuard:
                 changes.append(f"内容変更(ハッシュ不一致): {self.reports_directory / key}")
         if before.database_mtime_ns != after.database_mtime_ns:
             changes.append(f"DBの更新日時が変化: {self.database_file}")
+        for key in sorted(set(before.watched_stats) | set(after.watched_stats)):
+            if key not in before.watched_stats:
+                changes.append(f"監視対象に追加: {key}")
+            elif key not in after.watched_stats:
+                changes.append(f"監視対象から削除: {key}")
+            elif before.watched_stats[key] != after.watched_stats[key]:
+                changes.append(f"監視対象が更新: {key}")
+            elif self.with_hash and before.watched_hashes.get(key) != after.watched_hashes.get(key):
+                changes.append(f"監視対象の内容が変更: {key}")
         return changes
 
 

@@ -146,3 +146,49 @@ class YahooFinanceClient:
         except (KeyError, IndexError, TypeError, ValueError, ZeroDivisionError):
             logger.warning("Yahoo Financeの売買代金取得に失敗しました: %s", symbol)
             return None
+
+    def get_average_turnover_details(
+        self,
+        symbol: str,
+        days: int = 20,
+        target_date: date | None = None,
+    ) -> dict[str, float | int | bool | None]:
+        """現在の平均値を変えず、使用件数と対象日行の有無も返します。"""
+        try:
+            response = request_handler.send_get(
+                f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}.T",
+                params={"interval": "1d", "range": "1mo"},
+                headers={"User-Agent": "Mozilla/5.0"},
+                timeout=30,
+            )
+            result = response["chart"]["result"][0]
+            quote = result["indicators"]["quote"][0]
+            closes = quote["close"]
+            volumes = quote["volume"]
+            values = [
+                float(close) * float(volume)
+                for close, volume in zip(closes, volumes)
+                if close is not None and volume is not None
+            ][-days:]
+            timestamps = result.get("timestamp", [])
+            aligned = len(timestamps) == len(closes) == len(volumes)
+            includes_target_date = None
+            if target_date is not None and aligned:
+                dated_values = [
+                    datetime.fromtimestamp(timestamp, tz=timezone.utc).date()
+                    for timestamp, close, volume in zip(timestamps, closes, volumes)
+                    if close is not None and volume is not None
+                ][-days:]
+                includes_target_date = target_date in dated_values
+            return {
+                "average_turnover": sum(values) / len(values) if values else None,
+                "average_days": len(values),
+                "average_includes_target_date": includes_target_date,
+            }
+        except (KeyError, IndexError, TypeError, ValueError, ZeroDivisionError, OverflowError):
+            logger.warning("Yahoo Financeの売買代金詳細取得に失敗しました: %s", symbol)
+            return {
+                "average_turnover": None,
+                "average_days": 0,
+                "average_includes_target_date": None,
+            }

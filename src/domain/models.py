@@ -337,6 +337,8 @@ class ScreeningAuditEntry:
     is_restricted: bool
     restriction_reason: str
     selected: bool
+    price: float | None = None
+    check_status: str | None = None
 
 
 @dataclass

@@ -50,7 +50,12 @@ class ScreeningUseCase:
         self.batch_started = None
         self.batch_finished = None
 
-    def execute(self, target_date=None) -> ScreeningResult:
+    def execute(
+        self,
+        target_date=None,
+        price_cap: float | None = None,
+        keep_unconfirmed: bool = False,
+    ) -> ScreeningResult:
         """
         スクリーニング処理を実行します。
         
@@ -91,7 +96,7 @@ class ScreeningUseCase:
             )
             for symbol in candidates
         }
-        price_cap = config.get_screening_price_cap()
+        price_cap = config.get_screening_price_cap() if price_cap is None else price_cap
         price_filter_result = filter_candidates_by_price(candidates, price_by_symbol, price_cap)
         remaining = price_filter_result.remaining
         logger.info(
@@ -103,6 +108,8 @@ class ScreeningUseCase:
             logger.info("価格不明により除外: %d件", price_filter_result.excluded_missing_price_count)
 
         regulations = {}
+        check_status_by_symbol = {}
+        unconfirmed_symbols = set()
         batch_size = config.SCREENING_BATCH_SIZE
         for batch_start in range(0, len(remaining), batch_size):
             batch = remaining[batch_start:batch_start + batch_size]
@@ -116,7 +123,16 @@ class ScreeningUseCase:
                         exchange = self.exchange_repository.get_primary_exchange(symbol)
                         sleep(config.API_REQUEST_INTERVAL_SECONDS)
                         if exchange is None:
-                            regulations[symbol] = Regulation(symbol, True, "優先市場情報取得失敗", 0)
+                            status_for = getattr(self.exchange_repository, "status_for", None)
+                            status = status_for(symbol) if callable(status_for) else "unconfirmed_market"
+                            check_status_by_symbol[symbol] = status
+                            unconfirmed_symbols.add(symbol)
+                            regulations[symbol] = Regulation(
+                                symbol,
+                                False if keep_unconfirmed else True,
+                                "市場情報未確認" if keep_unconfirmed else "優先市場情報取得失敗",
+                                0,
+                            )
                             continue
                         if target_date is None:
                             regulation = self.regulation_repository.get_regulation(symbol, exchange)
@@ -125,23 +141,52 @@ class ScreeningUseCase:
                                 symbol, exchange, target_date=target_date
                             )
                         sleep(config.API_REQUEST_INTERVAL_SECONDS)
+                        status_for = getattr(self.exchange_repository, "status_for", None)
+                        status = status_for(symbol) if callable(status_for) else "checked"
+                        check_failed = status != "checked" or regulation.reason == "規制情報取得失敗"
+                        if check_failed:
+                            check_status_by_symbol[symbol] = (
+                                status if status != "checked" else "unconfirmed_regulation"
+                            )
+                            unconfirmed_symbols.add(symbol)
+                            if keep_unconfirmed:
+                                regulations[symbol] = Regulation(symbol, False, "規制情報未確認", 0)
+                            else:
+                                regulations[symbol] = Regulation(
+                                    symbol,
+                                    regulation.is_restricted,
+                                    regulation.reason,
+                                    exchange,
+                                )
+                            continue
                         regulations[symbol] = Regulation(
                             symbol=symbol,
                             is_restricted=regulation.is_restricted,
                             reason=regulation.reason,
                             primary_exchange=exchange,
                         )
+                        check_status_by_symbol[symbol] = "checked"
                     except Exception:
                         logger.exception("%s の規制情報取得中にエラーが発生しました", symbol)
+                        unconfirmed_symbols.add(symbol)
+                        check_status_by_symbol[symbol] = "unconfirmed"
                         regulations[symbol] = Regulation(
-                            symbol, True, "規制情報取得時エラー", 0
+                            symbol,
+                            False if keep_unconfirmed else True,
+                            "市場・規制情報未確認" if keep_unconfirmed else "規制情報取得時エラー",
+                            0,
                         )
                         continue
             finally:
                 if self.batch_finished and not self.batch_finished(batch, batch_number):
                     raise RuntimeError(f"スクリーニングバッチ{batch_number}の銘柄解除に失敗しました")
                 logger.info("スクリーニングバッチ終了: 番号=%d | 銘柄数=%d", batch_number, len(batch))
-        exclusion_result = exclude_by_regulation(remaining, regulations)
+        regulations_for_exclusion = regulations
+        if keep_unconfirmed and unconfirmed_symbols:
+            regulations_for_exclusion = dict(regulations)
+            for symbol in unconfirmed_symbols:
+                regulations_for_exclusion[symbol] = Regulation(symbol, False, "規制未確認", 1)
+        exclusion_result = exclude_by_regulation(remaining, regulations_for_exclusion)
         symbols = limit_candidates(exclusion_result.remaining)
         selected_symbols = set(symbols)
         default_turnover_rank = len(turnover) + 1
@@ -178,6 +223,12 @@ class ScreeningUseCase:
                 is_restricted=is_restricted,
                 restriction_reason=restriction_reason,
                 selected=symbol in selected_symbols,
+                price=price_by_symbol[symbol],
+                check_status=(
+                    "not_checked_price"
+                    if symbol in price_filtered_symbols
+                    else check_status_by_symbol.get(symbol, "unconfirmed")
+                ),
             ))
         result_date = target_date.isoformat() if target_date else datetime.now().date().isoformat()
         result = ScreeningResult(result_date, symbols, datetime.now().isoformat(), audit_entries)

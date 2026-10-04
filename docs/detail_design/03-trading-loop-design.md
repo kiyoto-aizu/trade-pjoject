@@ -36,6 +36,7 @@
 
 ### ⑥ 注文・履歴
 - `place_market_order()`から本番の`send_order`または`PaperOrderClient`へ成行注文を渡す。`Result == 0`を受付成功として、`TradeSignal.to_order_history_entry()`経由で注文履歴へ記録する。API応答・例外は成功扱いにしない。
+- `PaperOrderClient`は注文開始時に価格を検証する。価格欠落は`ORDER_REJECTED_PAPER_PRICE_MISSING`、0以下・NaN・無限大・数値以外は`ORDER_REJECTED_PAPER_PRICE_INVALID`で拒否し、約定状態・注文ID・状態ファイルを変更しない。理由はクライアントの`last_rejection_reason`とERRORログに出し、通常注文の拒否判断はDecisionJournalにも記録する。注文口に価格時刻や秒数しきい値は持たせない。
 - 注文履歴の実読み書き担当は`TradingUseCase._load_order_history()` / `_save_order_history()`であり、`ORDER_HISTORY_FILE`のJSONを直接読み書きする。過去設計で担当としていた専用`OrderHistoryRepository`は現行コードにない。※規約上は永続化をinfrastructureへ寄せるべき既知の乖離であり、この設計更新ではコードを変更しない。
 - 起動時の履歴読み込みでは全行の必須項目・型・ISO timestampを検査し、不正行があれば0始まりの行番号・銘柄・値をまとめた`ValueError`で停止する。検査エラーはcriticalログに記録し、`_notify_safely()`からcritical通知する。`is_duplicate_order()` / `is_recent_order()`にも`ORDER_HISTORY_TIMESTAMP_INVALID` warningを残す二重の防御がある。
 - `OrderHistoryEntry.price`は発注時の参照価格であり、本番の実約定価格照会結果ではない。約定価格記録・照会は未実装で、[本番EOD・約定照会タスク](../tasks/task-live-eod-liquidation-and-fill-reconciliation.md)に残る。
@@ -45,6 +46,7 @@
 - 1周ごとに`LOOP_INTERVAL`（60秒）休止し、`is_market_closed()`で15:30終了を判定する。
 - `ALLOW_OVERNIGHT_HOLDING=false`（既定）では15:20以降に全保有を成行決済し、ループを終了する。15:30以降の遅延復帰では`EOD_LATE_LIQUIDATION`として同様に決済する。
 - EOD経路は`CurrentPriceTime`がJSTの当日であること、`CurrentPriceStatus`が1または8であること、`CurrentPrice`が有限かつ正であることを`_fresh_liquidation_quote()`で検証する。検証できない場合は対象銘柄を未決済として記録・通知し、保守的に発注しない。この挙動は現状paper/live共通であり、ライブで鮮度検証失敗後も成行注文を試す設計にはまだなっていない。
+- 手動緊急停止もpaperでは`_fresh_liquidation_quote()`を使い、失敗銘柄は未決済のまま残してERROR記録と銘柄まとめ通知を1回行う。status 8は引け後の価格として許容する。liveの手動緊急停止は従来どおりfreshnessを要求せず、成行注文を試みる。モード判定は`TradingUseCase._is_paper_mode()`に集約する。liveのEOD鮮度失敗時の扱いは[本番EOD・約定照会タスク](../tasks/task-live-eod-liquidation-and-fill-reconciliation.md)で別途扱う。
 - `run()`終了後に日次JSONレポートを保存し、Slackのdailyチャンネルへ通知する。評価損益、注文・スキップ統計、キルスイッチ、EOD決済結果、任意のLLM参考分析を含む。通知失敗は取引処理を止めない。
 
 ## 3. 状態・判断記録
@@ -78,6 +80,7 @@
 | `ORDER_AMOUNT_LIMIT_EXCEEDED` / `ORDER_SAFETY_BLOCKED` | 金額上限または一般安全条件で拒否 |
 | `NEW_BUY_HALTED_STATE_SAVE_FAILURE` | 状態ファイル保存の連続失敗による新規買い停止 |
 | `ORDER_REJECTED_NONE` / `ORDER_REJECTED_RESULT` | 注文応答なし、またはResultが成功値以外 |
+| `ORDER_REJECTED_PAPER_PRICE_MISSING` / `ORDER_REJECTED_PAPER_PRICE_INVALID` | ペーパー注文価格の欠落、または有限正値・数値型の検証失敗 |
 | `BOARD_RECOVERED` / `EOD_PRICE_UNAVAILABLE` | 板取得の復旧、または通常EOD経路の参照価格不明 |
 | `EOD_LIQUIDATION_POSITIONS_UNAVAILABLE` / `LIQUIDATION_BOARD_UNAVAILABLE` | 清算対象の保有一覧、またはfresh板の取得不能 |
 | `LIQUIDATION_PRICE_TIME_INVALID` / `LIQUIDATION_PRICE_NOT_TODAY` / `LIQUIDATION_PRICE_STATUS_INVALID` / `LIQUIDATION_PRICE_INVALID` | EOD価格の時刻・当日性・status・有限正値の検証失敗 |

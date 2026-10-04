@@ -1744,6 +1744,7 @@ def test_emergency_stop_liquidates_positions_and_stops_loop(monkeypatch, tmp_pat
             return {'Result': 0, 'OrderId': 'emergency-1'}
 
     monkeypatch.setattr(config, 'EMERGENCY_STOP_FILE', stop_file)
+    monkeypatch.setattr(config, 'TRADING_MODE', 'live')
     use_case = TradingUseCase(
         token='dummy',
         order_history_path=tmp_path / 'order_history.json',

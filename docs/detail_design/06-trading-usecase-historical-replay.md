@@ -3,6 +3,8 @@
 対象: `TradingUseCase.run()`を過去の営業日・価格データで実行する疑似クライアントと、実行に必要な時刻制御。
 関連ADR: [ADR-0007](../adr/0007-unify-trading-and-backtest.md)
 
+設定項目は[docs/config-reference.md](../config-reference.md)を参照。
+
 ## 1. 目的とスコープ
 
 Phase 1では、Phase 2で`TradingUseCase.run()`を単一営業日再生するためのクライアント契約と既存実装の制約を定める。独自の注文約定・資金管理ロジックは実装しない。

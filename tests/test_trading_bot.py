@@ -322,6 +322,163 @@ def test_order_history_load_corrupt(tmp_path):
         use_case._load_order_history()
 
 
+@pytest.mark.parametrize('timestamp', ['not-a-timestamp', None, 12345, ''])
+def test_order_history_load_rejects_invalid_timestamp_and_notifies(
+    monkeypatch, tmp_path, timestamp
+):
+    history_file = tmp_path / 'order_history.json'
+    history_file.write_text(json.dumps([{
+        'symbol': '7203',
+        'side': '2',
+        'price': 100.0,
+        'qty': 100,
+        'timestamp': timestamp,
+    }]), encoding='utf-8')
+    critical_messages = []
+    monkeypatch.setattr(
+        'src.application.trading_usecase.notify_critical', critical_messages.append
+    )
+    use_case = TradingUseCase(token='dummy', order_history_path=history_file)
+
+    with pytest.raises(ValueError) as exc_info:
+        use_case.run()
+
+    assert '行番号は0始まり' in str(exc_info.value)
+    assert '行=0' in str(exc_info.value)
+    assert "銘柄='7203'" in str(exc_info.value)
+    assert repr(timestamp) in str(exc_info.value)
+    assert len(critical_messages) == 1
+    assert '行=0' in critical_messages[0]
+    assert repr(timestamp) in critical_messages[0]
+
+
+def test_order_history_load_aggregates_invalid_rows(tmp_path):
+    history_file = tmp_path / 'order_history.json'
+    history_file.write_text(json.dumps([
+        {'symbol': '7203', 'side': '2', 'price': 100.0, 'qty': 100, 'timestamp': 'bad'},
+        {'symbol': '6758', 'side': '1', 'price': 200.0, 'timestamp': '2026-09-04T10:00:00'},
+    ]), encoding='utf-8')
+    use_case = TradingUseCase(token='dummy', order_history_path=history_file)
+
+    with pytest.raises(ValueError) as exc_info:
+        use_case._load_order_history()
+
+    message = str(exc_info.value)
+    assert '不正行数=2' in message
+    assert "行=0 銘柄='7203'" in message
+    assert "timestampを解釈できません: 'bad'" in message
+    assert "行=1 銘柄='6758'" in message
+    assert 'qty=<欠落>' in message
+
+
+@pytest.mark.parametrize(
+    ('field', 'value', 'expected'),
+    [
+        ('symbol', 7203, 'symbolの型が不正'),
+        ('side', 'BUY', 'sideが不正'),
+        ('price', '100', 'priceの型が不正'),
+        ('qty', 100.0, 'qtyの型が不正'),
+        ('timestamp', '2026-09-04T10:00:00', 'timestamp=<欠落>'),
+    ],
+)
+def test_order_history_load_rejects_invalid_required_fields(
+    tmp_path, field, value, expected
+):
+    history_file = tmp_path / 'order_history.json'
+    row = {
+        'symbol': '7203',
+        'side': '2',
+        'price': 100.0,
+        'qty': 100,
+        'timestamp': '2026-09-04T10:00:00',
+    }
+    if field == 'timestamp' and value == '2026-09-04T10:00:00':
+        row.pop(field)
+    else:
+        row[field] = value
+    history_file.write_text(json.dumps([row]), encoding='utf-8')
+    use_case = TradingUseCase(token='dummy', order_history_path=history_file)
+
+    with pytest.raises(ValueError) as exc_info:
+        use_case._load_order_history()
+
+    assert '行=0' in str(exc_info.value)
+    assert expected in str(exc_info.value)
+
+
+@pytest.mark.parametrize('field', ['symbol', 'side', 'price', 'qty', 'timestamp'])
+def test_order_history_load_rejects_missing_required_fields(tmp_path, field):
+    history_file = tmp_path / 'order_history.json'
+    row = {
+        'symbol': '7203',
+        'side': '2',
+        'price': 100.0,
+        'qty': 100,
+        'timestamp': '2026-09-04T10:00:00',
+    }
+    row.pop(field)
+    history_file.write_text(json.dumps([row]), encoding='utf-8')
+    use_case = TradingUseCase(token='dummy', order_history_path=history_file)
+
+    with pytest.raises(ValueError, match=f'{field}=<欠落>'):
+        use_case._load_order_history()
+
+
+def test_order_history_load_accepts_naive_and_future_iso_timestamps(tmp_path):
+    history_file = tmp_path / 'order_history.json'
+    history_file.write_text(json.dumps([{
+        'symbol': '7203',
+        'side': '2',
+        'price': 100.0,
+        'qty': 100,
+        'timestamp': '2099-09-04T10:00:00',
+    }]), encoding='utf-8')
+    use_case = TradingUseCase(token='dummy', order_history_path=history_file)
+
+    use_case._load_order_history()
+
+    assert len(use_case.order_history) == 1
+    assert use_case.order_history[0].timestamp == '2099-09-04T10:00:00'
+
+
+@pytest.mark.parametrize('timestamp', [None, 12345])
+def test_order_history_timestamp_type_errors_warn_and_do_not_escape(
+    caplog, timestamp
+):
+    signal = TradeSignal('7203', config.OrderSide.BUY, 100.0, 100)
+    entry = OrderHistoryEntry(
+        symbol='7203', side=config.OrderSide.BUY, price=100.0, qty=100,
+        timestamp=timestamp,
+    )
+
+    with caplog.at_level('WARNING', logger='src.domain.rules'):
+        assert not is_duplicate_order(signal, [entry], now=datetime(2026, 9, 4, 10))
+        assert not is_recent_order(
+            signal, [entry], lock_seconds=60, now=datetime(2026, 9, 4, 10)
+        )
+
+    warnings = [record for record in caplog.records if 'ORDER_HISTORY_TIMESTAMP_INVALID' in record.message]
+    assert len(warnings) == 2
+    assert all('銘柄=7203' in record.message for record in warnings)
+    assert all('方向=2' in record.message for record in warnings)
+    assert all(f'timestamp={timestamp!r}' in record.message for record in warnings)
+
+
+def test_recent_order_timezone_mismatch_warns_without_raising(caplog):
+    signal = TradeSignal('7203', config.OrderSide.BUY, 100.0, 100)
+    entry = OrderHistoryEntry(
+        symbol='7203', side=config.OrderSide.BUY, price=100.0, qty=100,
+        timestamp='2026-09-04T10:00:00+09:00',
+    )
+
+    with caplog.at_level('WARNING', logger='src.domain.rules'):
+        assert not is_recent_order(
+            signal, [entry], lock_seconds=60, now=datetime(2026, 9, 4, 10, 0, 30)
+        )
+
+    assert any('ORDER_HISTORY_TIMESTAMP_INVALID' in record.message for record in caplog.records)
+
+
 def test_order_history_rsi_input_roundtrip_and_legacy_compatibility(tmp_path):
     history_file = tmp_path / 'order_history.json'
     rsi_input = {

@@ -7,7 +7,7 @@
 
 `src/config/task_schedule.py`が示す平日の予定は、09:30フィルタリング、09:35〜15:30取引、15:35スクリーニング。土曜は07:30分足バックフィル、08:00バックテスト、09:00上場銘柄マスタ更新、10:00週次分析、月末最終取引日は17:00月次総合分析である。このモジュールは予定表・取引日判定用であり、プロセスを起動するスケジューラ自体ではない。
 
-`run_trading.main()`はログ設定後、`market_workflow_lock()`で市場処理の多重実行を防ぐ。ロック取得後に`process_notification("取引", notify_lifecycle=False, trigger="フィルタリング結果")`へ入り、現在日時が日本市場の取引日・取引時間内かを確認し、`FilteringResultRepository.load_for_date(now.date())`で当日結果を読む。結果がない、または銘柄が0件なら終了する。トークン取得後にUseCaseを組み立て、翌日持ち越し警告と市場レジーム判定を行い、取引開始通知をdailyチャンネルへ送る。
+`run_trading.main()`はログ設定直後に`validate_startup_config(config)`（`src/config/startup_validation.py`）で売買設定値を検証する。範囲・項目間関係の違反は全件まとめて`ConfigValidationError`となり、ERRORログと`notify_critical`（通知失敗は握りつぶす）へ出力して`SystemExit(1)`で停止する。この時点ではロック・通知コンテキスト・トークン取得・UseCase生成はいずれも開始しない。import時のATR・コスト系検証は従来どおりで、これはログ設定前に評価される。運用者は`scripts/check_startup_config.py`で`.env`の適合を事前確認できる。検証後、`market_workflow_lock()`で市場処理の多重実行を防ぐ。ロック取得後に`process_notification("取引", notify_lifecycle=False, trigger="フィルタリング結果")`へ入り、現在日時が日本市場の取引日・取引時間内かを確認し、`FilteringResultRepository.load_for_date(now.date())`で当日結果を読む。結果がない、または銘柄が0件なら終了する。トークン取得後にUseCaseを組み立て、翌日持ち越し警告と市場レジーム判定を行い、取引開始通知をdailyチャンネルへ送る。
 
 - 注文経路のガードは3条件すべてを要求する: `TRADING_MODE=live`、`IS_DEMO=false`、`ENABLE_LIVE_ORDERING=true`。`paper`では`PaperOrderClient`を注入する。どれかが不一致ならライブUseCase生成を拒否する。
 - 初回はフィルタ結果の全銘柄について確定日足と板を事前取得する。必要RSI履歴または板価格が1銘柄でも不足すれば`collect_preflight_market_data()`は失敗し、ループを開始しない。
@@ -37,6 +37,7 @@
 ### ⑥ 注文・履歴
 - `place_market_order()`から本番の`send_order`または`PaperOrderClient`へ成行注文を渡す。`Result == 0`を受付成功として、`TradeSignal.to_order_history_entry()`経由で注文履歴へ記録する。API応答・例外は成功扱いにしない。
 - 注文履歴の実読み書き担当は`TradingUseCase._load_order_history()` / `_save_order_history()`であり、`ORDER_HISTORY_FILE`のJSONを直接読み書きする。過去設計で担当としていた専用`OrderHistoryRepository`は現行コードにない。※規約上は永続化をinfrastructureへ寄せるべき既知の乖離であり、この設計更新ではコードを変更しない。
+- 起動時の履歴読み込みでは全行の必須項目・型・ISO timestampを検査し、不正行があれば0始まりの行番号・銘柄・値をまとめた`ValueError`で停止する。検査エラーはcriticalログに記録し、`_notify_safely()`からcritical通知する。`is_duplicate_order()` / `is_recent_order()`にも`ORDER_HISTORY_TIMESTAMP_INVALID` warningを残す二重の防御がある。
 - `OrderHistoryEntry.price`は発注時の参照価格であり、本番の実約定価格照会結果ではない。約定価格記録・照会は未実装で、[本番EOD・約定照会タスク](../tasks/task-live-eod-liquidation-and-fill-reconciliation.md)に残る。
 - 状態ファイルの保存・破損対応: `storage.write_json()`は一時ファイルへ書いて`os.replace`で置換し、成否を`bool`で返す(例外は出さない)。`PaperOrderClient`は起動時に`read_json_strict()`で読み、破損・読込失敗・値不正は`StateFileCorruptError`で停止する(`<名前>.corrupt-<YYYYmmdd-HHMMSS>`へコピーを残し、元ファイルは残す。`process_notification`内で生成されるためcritical通知される)。実行中の保存失敗は、注文履歴が`TradingUseCase._order_history_save_failures`、Paper状態が`PaperOrderClient.consecutive_save_failures`で連続回数を持ち、初回失敗でcritical通知して続行する。連続回数が`STATE_SAVE_CONSECUTIVE_FAILURE_THRESHOLD`(既定3)以上の間は新規買いのみ`NEW_BUY_HALTED_STATE_SAVE_FAILURE`で見送り(売り・ATR損切り・EOD決済は継続)、停止中は買いシグナルのたびに再保存を試み、成功すれば解除する。
 

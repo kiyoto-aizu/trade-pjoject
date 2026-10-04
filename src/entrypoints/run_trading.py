@@ -10,6 +10,7 @@ from datetime import datetime
 from pathlib import Path
 
 from src.config import config
+from src.config.startup_validation import ConfigValidationError, validate_startup_config
 from src.application.market_regime_usecase import MarketRegimeUseCase
 from src.application.market_tendency_notification import build_market_tendency_lines
 from src.application.trading_usecase import TradingUseCase
@@ -21,7 +22,7 @@ from src.infrastructure.persistence.filtering_diagnostics_repository import Filt
 from src.infrastructure.persistence.filter_decision_repository import FilterDecisionRepository
 from src.infrastructure.persistence.decision_journal_repository import DecisionJournalRepository
 from src.infrastructure.execution_lock import market_workflow_lock
-from src.infrastructure.notification.slack_notify import notify_daily, process_notification
+from src.infrastructure.notification.slack_notify import notify_critical, notify_daily, process_notification
 from src.infrastructure.paper.paper_order_client import PaperOrderClient
 from src.infrastructure.market_data.yahoo_index_client import YahooIndexClient
 from src.infrastructure.calendar.japanese_calendar import is_trading_session
@@ -127,6 +128,19 @@ def configure_logging() -> None:
     logging.root.addHandler(file_handler)
 
 
+def _validate_config_or_exit() -> None:
+    """設定値の違反を全件ログ・通知し、起動を止める(通知失敗は握りつぶす)。"""
+    try:
+        validate_startup_config(config)
+    except ConfigValidationError as exc:
+        logging.getLogger(__name__).error('起動時の設定値検証に失敗しました。\n%s', exc)
+        try:
+            notify_critical(f'【取引】起動を中止しました(設定値の違反)\n{exc}')
+        except Exception:
+            logging.getLogger(__name__).exception('設定値違反の通知に失敗しました。')
+        raise SystemExit(1) from exc
+
+
 def main(now_provider=None) -> None:
     """
     取引ボットを起動します。
@@ -137,6 +151,7 @@ def main(now_provider=None) -> None:
     3. TradingUseCaseを組み立てて実行
     """
     configure_logging()
+    _validate_config_or_exit()
     logging.getLogger(__name__).info('取引モード: %s', config.TRADING_MODE_LABEL)
     with market_workflow_lock() as acquired:
         if not acquired:

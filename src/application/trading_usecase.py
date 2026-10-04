@@ -482,7 +482,70 @@ class TradingUseCase:
                 data = json.loads(self.order_history_path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError) as exc:
                 raise ValueError(f"注文履歴ファイルの読み込みに失敗しました: {exc}") from exc
-        self.order_history = [OrderHistoryEntry.from_dict(item) for item in data]
+        if not isinstance(data, list):
+            message = f"注文履歴の検証に失敗しました: 行データは配列ではありません: {data!r}"
+            logger.critical(message)
+            self._notify_safely(message)
+            raise ValueError(message)
+
+        loaded_entries = []
+        invalid_rows = []
+        for row_index, item in enumerate(data):
+            symbol = item.get("symbol", "<欠落>") if isinstance(item, dict) else "<判定不能>"
+            problems = []
+            if not isinstance(item, dict):
+                problems.append(f"行データがobjectではありません: {item!r}")
+            else:
+                for field_name in ("symbol", "side", "price", "qty", "timestamp"):
+                    if field_name not in item:
+                        problems.append(f"{field_name}=<欠落>")
+                if "symbol" in item and not isinstance(item["symbol"], str):
+                    problems.append(f"symbolの型が不正: {item['symbol']!r}")
+                if "side" in item:
+                    try:
+                        config.OrderSide(item["side"])
+                    except (TypeError, ValueError):
+                        problems.append(f"sideが不正: {item['side']!r}")
+                if "price" in item and (
+                    isinstance(item["price"], bool) or not isinstance(item["price"], (int, float))
+                ):
+                    problems.append(f"priceの型が不正: {item['price']!r}")
+                if "qty" in item and (isinstance(item["qty"], bool) or not isinstance(item["qty"], int)):
+                    problems.append(f"qtyの型が不正: {item['qty']!r}")
+                if "timestamp" in item:
+                    timestamp = item["timestamp"]
+                    if not isinstance(timestamp, str):
+                        problems.append(f"timestampの型が不正: {timestamp!r}")
+                    else:
+                        try:
+                            datetime.fromisoformat(timestamp)
+                        except ValueError:
+                            problems.append(f"timestampを解釈できません: {timestamp!r}")
+
+            if problems:
+                invalid_rows.append(
+                    f"行={row_index} 銘柄={symbol!r} | " + "; ".join(problems)
+                )
+                continue
+            try:
+                loaded_entries.append(OrderHistoryEntry.from_dict(item))
+            except (KeyError, TypeError, ValueError) as exc:
+                invalid_rows.append(
+                    f"行={row_index} 銘柄={symbol!r} | 行データが不正: {exc}"
+                )
+
+        if invalid_rows:
+            shown_rows = invalid_rows[:10]
+            suffix = f"\nほか{len(invalid_rows) - len(shown_rows)}行" if len(invalid_rows) > len(shown_rows) else ""
+            message = (
+                "注文履歴の検証に失敗しました（行番号は0始まり）: "
+                f"不正行数={len(invalid_rows)}\n" + "\n".join(shown_rows) + suffix
+            )
+            logger.critical(message)
+            self._notify_safely(message)
+            raise ValueError(message)
+
+        self.order_history = loaded_entries
 
     def _save_order_history(self) -> bool:
         """現在の注文履歴をファイルに保存します。失敗を記録し、メモリ上の履歴は維持します。"""

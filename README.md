@@ -329,6 +329,8 @@ Windowsの計画実行では、スクリーニング・フィルタリングと�
 
 `register_trading_task.ps1`で登録した取引タスクは常にペーパー固定です。本番モードで実注文を行う場合は、設定を確認したうえで `python -m src.entrypoints.run_trading` を直接起動してください。
 
+起動時に売買設定値（資金・RSI・決済時刻など）を検証し、範囲外なら全件をログとSlackへ出して起動を止めます。`.env`変更後は `.\.venv\Scripts\python.exe scripts/check_startup_config.py` で事前に確認できます（違反があれば終了コード1。秘密値は表示しません）。
+
 取引終了時のレポートはLINEへ通知されるほか、日付別に `data/reports/daily/YYYY-MM-DD.json` へ保存されます。JSONには注文数、注文内容、保有銘柄の評価損益、キルスイッチ状態、LINE本文、LLM日次評価（有効時）が含まれます。注文履歴は `data/trading/order_history.json`、ペーパー口座状態は `data/trading/paper_account_state.json` に保存されます。
 
 #### 緊急停止

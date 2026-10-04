@@ -2,8 +2,8 @@
 
 - 起票日: 2026-10-04
 - 対象: `src/domain/models.py`、`src/domain/rules.py`、`src/application/trading_usecase.py`、注文履歴関連テスト
-- ステータス: **未着手**
-- 実施時期: **未定（優先度は別途判断）**
+- ステータス: **完了（2026-10-04）**
+- 実施時期: **2026-10-04**
 - 関連調査: 2026-10-02「売買部分サイレントスキップ横並び調査」。第1弾の理由コード一覧にtimestamp異常の専用コードはない。時間ロック側にはdebugログのみ存在する。
 
 ## 背景
@@ -34,7 +34,18 @@
 
 ## 確認事項
 
-- `is_recent_order()`は`ts >= cutoff`で比較する。実行確認では、timezone付きtimestampとtimezoneなしの`cutoff`を比較するとPythonが`TypeError`を送出する。naive/awareを許容・正規化する方針は実装時に決める。
+- `is_recent_order()`は`ts >= cutoff`で比較する。timezone付きtimestampとtimezoneなしの`cutoff`は比較時に`TypeError`になるため、`ORDER_HISTORY_TIMESTAMP_INVALID` warningを記録してその行を判定対象から外す。時刻の正規化は今回行わない。
+- 本番・ペーパーの`TradingUseCase.run()`は既定の`datetime.now`を時計として使用し、`_current_now`と保存timestampはいずれもtimezone情報を持たないnaive datetime。入口の市場時間判定もnaiveな`datetime.now`を使用する。
+- 履歴再生は`HistoricalClock.now()`を注入する。`HistoricalClock`は入力をJSTに変換してからtimezone情報を除くため、再生中の`_current_now`と保存timestampもnaive datetime。
+- 上記の標準経路ではaware/naive混在は発生しないが、旧履歴の手編集や独自`now_provider`では起こりうるため、比較時の`TypeError`捕捉を残す。
+- `run_trading.main()`の`process_notification(..., notify_lifecycle=False)`は例外時critical通知も抑止する。履歴検証は`_load_order_history()`からcriticalログと`_notify_safely()`を明示的に呼び、通常構成では`notify_critical`へ送る。テストでは送信関数をモックして確認する。
+
+## 実施記録（2026-10-04）
+
+- 理由コード: `ORDER_HISTORY_TIMESTAMP_INVALID`。
+- 不正行は全件収集し、先頭10行と総件数を含む`ValueError`で停止する。行番号は0始まり。例: `注文履歴の検証に失敗しました（行番号は0始まり）: 不正行数=1`に続けて`行=0 銘柄='7203' | timestampを解釈できません: 'bad'`。
+- マルチデイ再生は変更前後で一致: 13日、注文イベント8件、累積損益-489.32円（独立再計算も-489.32円）。対象日は2026-09-04、09-07〜09-11、09-14〜09-18、09-24〜09-25。
+- フルテスト: 555 passed。注文履歴異常系を含む重点テストは21 passed。
 
 ## 売買結果への影響
 

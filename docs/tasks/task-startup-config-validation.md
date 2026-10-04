@@ -2,7 +2,9 @@
 
 - 起票日: 2026-10-04
 - 対象: `src/config/config.py`、関連する設定・起動テスト、`docs/config-reference.md`
-- ステータス: **未着手**
+- ステータス: **`run_trading.py`への適用を実装済み（2026-10-04、未コミット）**。他entrypointへの適用は「未決の確認事項」のとおり未決
+- 実装: `src/config/startup_validation.py`（`validate_startup_config` / `find_config_violations` / `ConfigValidationError`）、`run_trading._validate_config_or_exit()`、`tests/test_startup_validation.py`
+- 運用者確認: `.\.venv\Scripts\python.exe scripts/check_startup_config.py`（現在の`.env`で検証し、違反があれば全件表示して終了コード1。秘密値は表示しない）
 - 実施時期: **未定（優先度は別途判断）**
 - 関連調査: 2026-10-02「売買部分サイレントスキップ横並び調査」。第1弾は実行時の見送り理由を記録するが、不正な売買パラメータを起動時に網羅検証するものではない。
 
@@ -34,6 +36,7 @@
 | 決済時刻 | `MARKET_LIQUIDATION_HOUR` / `MARKET_LIQUIDATION_MINUTE` | 15 / 20 | 整数変換のみ | 0〜23 / 0〜59 |
 | 通信・復旧 | `BOARD_FETCH_CONSECUTIVE_FAILURE_THRESHOLD` | 3 | 整数変換のみ | 1以上の整数 |
 | 通信・復旧 | `LIQUIDATION_POSITIONS_FETCH_RETRIES` | 3 | 整数変換のみ | 1以上の整数 |
+| 通信・復旧 | `STATE_SAVE_CONSECUTIVE_FAILURE_THRESHOLD` | 3 | import時に1以上を検証（タスクBで追加） | 1以上の整数（追加。決定値表には元々無かった） |
 | 通信・復旧 | `KABU_TOKEN_REFRESH_MIN_INTERVAL_SECONDS` | 60 | なし | 0以上 |
 | 通信・復旧 | `KABU_TOKEN_REFRESH_FAILURE_BACKOFF_SECONDS` | 300 | なし | 0以上 |
 | 通信・復旧 | `API_REQUEST_INTERVAL_SECONDS` | 0.12 | なし | 0以上 |
@@ -77,7 +80,7 @@
 
 ## 未決の確認事項
 
-1. 検証呼出しをどのentrypointへ入れるか。まず`run_trading.py`のみか、スクリーニング・フィルタリング・バックテスト等も対象にするかは未決。
+1. 検証呼出しをどのentrypointへ入れるか。今回は`run_trading.py`のみ実装。スクリーニング・フィルタリング・バックテスト等への適用は**要判断**（関数は値を渡すだけで再利用可能）。
 2. 運用者は実装前に`.env`実値を確認し、特に`MAX_ORDER_AMOUNT_PER_TRADE <= OPERATING_CAPITAL`等の新制約に適合するか、値そのものを共有せず適合/不適合を確認する。
 
 ## 売買結果への影響

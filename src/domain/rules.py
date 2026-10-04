@@ -162,7 +162,14 @@ def _entry_date(entry: OrderHistoryEntry):
     """
     try:
         return datetime.fromisoformat(entry.timestamp).date()
-    except ValueError:
+    except (TypeError, ValueError) as exc:
+        logger.warning(
+            "ORDER_HISTORY_TIMESTAMP_INVALID: 銘柄=%s | 方向=%s | timestamp=%r | 理由=%s",
+            entry.symbol,
+            getattr(entry.side, "value", entry.side),
+            entry.timestamp,
+            type(exc).__name__,
+        )
         return None
 
 
@@ -196,8 +203,14 @@ def is_recent_order(
                 ts = datetime.fromisoformat(entry.timestamp)
                 if ts >= cutoff:
                     return True
-            except ValueError:
-                logging.getLogger(__name__).debug("不正なタイムスタンプをスキップします: %s", entry.timestamp)
+            except (TypeError, ValueError) as exc:
+                logger.warning(
+                    "ORDER_HISTORY_TIMESTAMP_INVALID: 銘柄=%s | 方向=%s | timestamp=%r | 理由=%s",
+                    entry.symbol,
+                    getattr(entry.side, "value", entry.side),
+                    entry.timestamp,
+                    type(exc).__name__,
+                )
                 continue
     return False
 

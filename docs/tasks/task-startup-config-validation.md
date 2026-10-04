@@ -10,30 +10,56 @@
 
 設定値の型変換が行われる項目でも、値の範囲や項目間の関係が起動時に検査されていないものがある。設定の誤りが無注文、損失制限の即時発動、異常な資金配分などとして取引開始後に現れる可能性がある。
 
-## 現行コードで確認した検証
+## 検証項目一覧
 
-| 項目群 | 現在の検証 | 主な実装 |
-|---|---|---|
-| モード・認証 | `TRADING_MODE`は`paper` / `live`のみ。liveは`IS_DEMO=false`かつ`ENABLE_LIVE_ORDERING=true`を要求。必須認証・Slack環境変数は欠落時（通常runtime）に`ValueError`。 | `config.py:71-82,350-366` |
-| 建玉枠 | `TARGET_POSITIONS <= 0`と`ORDER_UNIT <= 0`は`get_screening_price_cap()`呼出時に`ValueError`。config import時の一括起動検証ではない。 | `config.py:109,159-160` |
-| ATR・MarketRegime | ATR期間、CAUTION/DANGER比率、ロット比率、倍率、損益トリガー、観測日数、実現vol期間、ADX閾値等を一部範囲検証。`MarketRegimeThresholds.__post_init__()`もfinite・非負値とdanger/caution順序を検証。 | `config.py:192-241`、`src/domain/market_regime.py:31` |
-| Backtest / Paperコスト | fee、slippage、遅延barの非負、order type選択、Paper fee/slippageの非負を検証。 | `config.py:248-263` |
-| 価格帯別上限 | `SCREENING_ALTERNATE_PRICE_CAPS`の正値・重複を検証。 | `config.py:287-295` |
-| 未検証の売買・資金値 | RSI各閾値・期間・最低終値数、`MAX_ORDER_AMOUNT_PER_TRADE`、`OPERATING_CAPITAL`、`MAX_ORDER_COUNT_PER_DAY`、`DAILY_LOSS_LIMIT_RATIO`、`API_SOFT_LIMIT`等は設定代入時の範囲検証がない。 | `config.py:106-118,142,180-184` |
+以下の範囲を新しい起動時検証の決定値とする。設定名・既定値は`src/config/config.py`で再確認した。数値変換自体が失敗した場合も設定不正として集約対象にする。
 
-## 検証候補と現状影響（範囲案。確定仕様ではない）
+| グループ | 項目 | 既定値 | 現状の検証 | 起動時に許容する範囲 |
+|---|---|---:|---|---|
+| 資金・上限 | `OPERATING_CAPITAL` | 100000 | なし | 0より大きい |
+| 資金・上限 | `MAX_ORDER_AMOUNT_PER_TRADE` | 30000 | なし | 0より大きく、`OPERATING_CAPITAL`以下 |
+| 資金・上限 | `TARGET_POSITIONS` | 3 | `get_screening_price_cap()`呼出時のみ、1以上相当を検査 | 1以上の整数 |
+| 資金・上限 | `MAX_ORDER_COUNT_PER_DAY` | 10 | なし | 1以上の整数 |
+| 資金・上限 | `DAILY_LOSS_LIMIT_RATIO` | 0.02 | なし | 0より大きく1以下 |
+| 資金・上限 | `API_SOFT_LIMIT` | 1000000 | なし | 0より大きい |
+| RSI | `RSI_PERIOD` | 14 | なし | 2以上の整数 |
+| RSI | `RSI_MINIMUM_CLOSES` | 30 | なし | `RSI_PERIOD`より大きい |
+| RSI | `RSI_ENTRY_THRESHOLD` | 55 | なし | 0〜100 |
+| RSI | `RSI_EXIT_THRESHOLD` | 45 | なし | 0〜100 |
+| RSI | `RSI_ENTRY_THRESHOLD_CAUTION` | 60 | なし | 0〜100 |
+| RSI | 閾値間の関係 | — | なし | 売り閾値 < 通常買い閾値 ≦ CAUTION買い閾値 |
+| レジーム | `MARKET_REGIME_REALIZED_VOL_CAUTION` / `_DANGER` | 17.0 / 29.0 | `MarketRegimeThresholds`が有限・非負かつDANGER > CAUTIONを検証 | CAUTION < DANGER |
+| レジーム | `MARKET_REGIME_VIX_CAUTION` / `_DANGER` | 17.0 / 27.0 | `MarketRegimeThresholds`が有限・非負かつDANGER > CAUTIONを検証 | CAUTION < DANGER |
+| レジーム | `MARKET_REGIME_NIKKEI_CHANGE_UPGRADE` | 2.0 | 有限・非負を検証 | 0より大きい |
+| 決済時刻 | `MARKET_LIQUIDATION_HOUR` / `MARKET_LIQUIDATION_MINUTE` | 15 / 20 | 整数変換のみ | 0〜23 / 0〜59 |
+| 通信・復旧 | `BOARD_FETCH_CONSECUTIVE_FAILURE_THRESHOLD` | 3 | 整数変換のみ | 1以上の整数 |
+| 通信・復旧 | `LIQUIDATION_POSITIONS_FETCH_RETRIES` | 3 | 整数変換のみ | 1以上の整数 |
+| 通信・復旧 | `KABU_TOKEN_REFRESH_MIN_INTERVAL_SECONDS` | 60 | なし | 0以上 |
+| 通信・復旧 | `KABU_TOKEN_REFRESH_FAILURE_BACKOFF_SECONDS` | 300 | なし | 0以上 |
+| 通信・復旧 | `API_REQUEST_INTERVAL_SECONDS` | 0.12 | なし | 0以上 |
+| 通信・復旧 | `LIQUIDATION_POSITIONS_FETCH_RETRY_BACKOFF_SECONDS` | 5 | なし | 0以上 |
 
-| 設定項目 | 候補となる許容範囲・関係 | 範囲外値の現在挙動（コード確認） |
-|---|---|---|
-| `RSI_PERIOD` | 整数`>= 1` | 0以下でもconfig importは通る。RSI計算時に除算エラー等が起き得る。 |
-| `RSI_ENTRY_THRESHOLD`, `RSI_ENTRY_THRESHOLD_CAUTION`, `RSI_EXIT_THRESHOLD` | 各`0..100`。`RSI_EXIT_THRESHOLD < RSI_ENTRY_THRESHOLD`、CAUTION閾値とNORMAL閾値の順序は要判断 | 値域・項目間関係をconfigでは検証しない。条件が常時成立しない、または意図しない方向の発注条件となり得る。 |
-| `RSI_MINIMUM_CLOSES` | 整数`>= max(5, RSI_PERIOD + 1)`を候補とする | 非正値・期間との不足関係をconfigでは検証しない。呼出し側の`max()`や`calculate_rsi()`側の本数判定に委ねられる。 |
-| `TARGET_POSITIONS` | 整数`>= 1` | config import時は通る。`get_screening_price_cap()`呼出時に0以下を拒否するが、起動経路により検出時点が異なる。 |
-| `MAX_ORDER_AMOUNT_PER_TRADE`, `OPERATING_CAPITAL`, `API_SOFT_LIMIT` | 有限値かつ`> 0`を候補とする | configでは範囲検証しない。負額等は予算計算・数量0・注文拒否などへ波及し得る。 |
-| `MAX_ORDER_COUNT_PER_DAY` | 整数`>= 1`を候補とする | configでは検証しない。負値なら日次上限判定が意図せず新規買いを止め得る。 |
-| `DAILY_LOSS_LIMIT_RATIO` | 有限値`0 < ratio <= 1`を候補とする。運用で1を超える値を許すかは要判断 | configでは検証しない。負値・0・過大値は停止閾値の意味を変える。 |
+## 検証済み（変更なし）
 
-上表は現状挙動とレビュー用の候補範囲であり、採用する許容値・項目間制約を確定したものではない。非有限値（NaN/inf）を含めるか、整数変換前後でどの形式を許すかも要判断。
+| 項目 | 既定値 | 既存の検証 |
+|---|---:|---|
+| `TRADING_MODE` | `paper` | `paper` / `live`以外をconfig import時に拒否 |
+| live注文ガード | `IS_DEMO=true`, `ENABLE_LIVE_ORDERING=false` | `TRADING_MODE=live`には`IS_DEMO=false`かつ`ENABLE_LIVE_ORDERING=true`を要求 |
+| API password・Slack webhook | 秘密値 | 通常runtimeでは`_load_required_env()`が必須値の欠落を拒否 |
+| `ORDER_UNIT` | 100 | `get_screening_price_cap()`呼出時に正数を確認（環境変数ではない定数） |
+| `ATR_PERIOD` / `ATR_CAUTION_RATIO` / `ATR_DANGER_RATIO` / `ATR_CAUTION_LOT_RATIO` / `ATR_DANGER_ACTION` | 14 / 1.5 / 2.0 / 0.5 / `skip` | 正数、DANGER > CAUTION、比率(0,1]、許容アクションを検証 |
+| `ATR_STOP_*_MULTIPLIER` / `ATR_PROFIT_LOCK_*_MULTIPLIER` / `ATR_PROFIT_LOCK_TRIGGER_ATR_MULTIPLE` | 1.5/1.0/0.7 / 2.5/2.0/1.0 / 0.5 | 各倍率は正数、triggerは0以上 |
+| `FILTER_DECISION_OBSERVATION_DAYS` / `MARKET_REGIME_REALIZED_VOL_WINDOW` / `MARKET_REGIME_ADX_TREND_THRESHOLD` | 5 / 20 / 27.0 | 期間は正数、ADX閾値は0以上 |
+| `MarketRegimeThresholds`の実現vol/VIX・日経変化 | 17/29 / 17/27 / 2.0 | `__post_init__()`が全値finite・非負、DANGER > CAUTIONを確認 |
+| `BACKTEST_FEE_RATE` / `BACKTEST_MARKET_SLIPPAGE_BPS` / `BACKTEST_EXECUTION_DELAY_BARS` / `BACKTEST_ORDER_TYPE` | 0.00055 / 5 / 1 / `market` | コスト・遅延は0以上、order typeは`market` / `limit` |
+| `PAPER_FEE_RATE` / `PAPER_MARKET_SLIPPAGE_BPS` | Backtest値を継承 | 0以上 |
+| `SCREENING_ALTERNATE_PRICE_CAPS` | 450, 900 | 各値は正数かつ重複なし |
+
+これら既存検証はconfig import中に実行されるため、例外になる入力では`configure_logging()`やSlack通知より先に停止する。本タスクでは既存検証の移動・変更は行わず、既知の弱点として残す。`TARGET_POSITIONS`の既存検査はimport時ではなく、`get_screening_price_cap()`呼出時である。
+
+### 対象entrypoint数
+
+`src/entrypoints/`には20ファイルがあり、そのうち現行ASTで`src.config.config`を直接importするものは13件（`run_trading.py`等）だった。レビュー調査メモの14件とは一致しないため、起動時検証の適用範囲決定時に、動的/間接利用を含めて再確認する。
 
 ## 必須対応
 
@@ -42,12 +68,17 @@
 - 既存のATR・Backtest・Paper等の検証との重複や一貫性を整理し、同じ設定の検証結果が使用経路ごとに変わらないようにする。
 - 設定値そのものや秘密値を例外・ログへ出さない。エラーは設定名と不正理由を特定できる形にする。
 
-## 要判断・運用確認
+## 決定事項
 
-1. RSI三閾値の順序制約、RSI期間と最低終値数の関係、損失比率の上限をどこまで固定するか。
-2. 正の有限値などの基本制約と、戦略上の推奨域を分けて扱うか。
-3. `.env`実値が提案範囲に適合するかは未確認。運用者が各環境でローカル確認し、秘密情報そのものは共有せず、項目ごとの適合/不適合だけを確認する必要がある。
-4. 不適合が見つかった際に値を修正するか、許容範囲を見直すかを運用判断する。`.env`を本タスクで読み取ったり変更したりしない。
+1. **範囲外値は起動を止める**: 上記「検証項目一覧」の範囲を適用し、coding-guidelines §3のfail-fastに揃える。
+2. **違反は一括で報告する**: 新設検証は全対象の違反をリストへ集めてから一度に例外化し、最初の違反だけで止めない。既存のATR等のimport時検証は本タスクでは変更しない。
+3. **検証はlogging設定後に実行する**: 候補関数名は`validate_startup_config(settings)`。値を引数で受け取る純粋な検証部とし、`config.py`をimportせず単体テスト可能にする。呼出し位置は各entrypointの`main()`で`configure_logging()`直後とする。違反一覧をログとSlackへまとめて出し、その後起動を止める。
+4. **`.env`はこの作業で読まない**: 実値の適合確認は実装前に運用者が各環境で行う。
+
+## 未決の確認事項
+
+1. 検証呼出しをどのentrypointへ入れるか。まず`run_trading.py`のみか、スクリーニング・フィルタリング・バックテスト等も対象にするかは未決。
+2. 運用者は実装前に`.env`実値を確認し、特に`MAX_ORDER_AMOUNT_PER_TRADE <= OPERATING_CAPITAL`等の新制約に適合するか、値そのものを共有せず適合/不適合を確認する。
 
 ## 売買結果への影響
 
@@ -55,9 +86,12 @@
 
 ## 完了条件
 
-- 既存検証項目と今回対象の未検証項目を整理した設定仕様表がある。
-- 有効境界値・境界外値・NaN/inf・相互制約違反を含む単体テストで、設定名とエラー内容を確認する。
-- 無効設定時に各entrypointのUseCase・PaperOrderClient・注文送信が開始されないことをテストする。
+- 範囲外値が複数ある場合、違反がまとめて表示されて起動が停止する。
+- 範囲違反一覧が`configure_logging()`後にログとSlackの両方へ出力される。
+- 既定値と運用者確認済みの`.env`実値で起動が停止しない（実値の確認は運用者が行う）。
+- 検証関数は値を直接渡して単体テストでき、`config.py`のimportを必要としない。
+- 有効境界値・範囲外値・NaN/inf・相互制約違反を確認し、範囲表とfail-fast挙動が一致する。
+- 検証対象として決定したentrypointで、違反時にUseCase・PaperOrderClient・注文送信が開始されないことをテストする。
 - テストは環境変数を明示的に隔離し、実`.env`の秘密値やユーザー設定を読み書きしない。
 - 実kabu注文を発生させるテストは行わない。
 

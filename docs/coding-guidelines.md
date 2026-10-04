@@ -1,4 +1,6 @@
-# trade-pjoject コーディング規約・設計方針 第2版
+# trade-pjoject コーディング規約・設計方針 第3版
+
+更新日: 2026-10-04
 
 このドキュメントは、trade-pjoject でコードを書く／レビューする際に従うべきルールをまとめたものです。
 AIにコードを書かせる・レビューさせる際は、このファイルをコンテキストとして読み込ませてください。
@@ -11,38 +13,39 @@ AIにコードを書かせる・レビューさせる際は、このファイル
 ```
 trade-pjoject/
 ├── src/
-├── src/config/
-│   └── config.py                   # 設定の定義・検証のみ。副作用なし
-├── src/domain/
-│   ├── enums.py                    # OrderSide, SignalType など
-│   ├── models.py                   # Domainモデル（Order, Position, PriceLimit など）
-│   └── rules.py                    # 判断ロジック・安全チェック
-├── src/application/
-│   ├── trading_usecase.py          # 売買実行ユースケース
-│   ├── screening_usecase.py        # 銘柄スクリーニングユースケース
-│   └── filtering_usecase.py        # 動的評価ユースケース
-├── src/infrastructure/
-│   ├── kabu/
-│   │   ├── kabu_client.py
-│   │   ├── board_repository.py
-│   │   ├── wallet_repository.py
-│   │   ├── position_repository.py
-│   │   └── order_repository.py
-│   ├── market_data/
-│   │   └── yahoo_finance_client.py
-│   ├── notification/
-│   │   └── line_notify_client.py
-│   └── persistence/
-│       └── order_history_repository.py
-├── src/entrypoints/
-│   ├── run_trading.py              # 起動トリガー別の薄いラッパー
-│   ├── run_screening.py
-│   └── run_filtering.py
-├── main.py                         # デフォルト実行・CLI用のランナー
-└── tests/
-    ├── domain/
-    ├── application/
-    └── infrastructure/
+│   ├── api/                        # request_handler.py: infrastructure専用HTTP共通処理
+│   ├── application/                # usecase・分析/配分機能
+│   ├── config/                     # config.py, task_schedule.py
+│   ├── domain/                     # enums, models, rules, ATR/市場分析
+│   ├── entrypoints/                # 現行CLI群（下記参照）
+│   ├── executor/
+│   ├── filter_dynamic/
+│   ├── infrastructure/
+│   │   ├── analysis/  ├── backtest/  ├── calendar/  ├── kabu/
+│   │   ├── market_data/  ├── notification/  ├── paper/  └── persistence/
+│   ├── sample/
+│   ├── screening/
+│   └── trading/
+├── tests/                          # 現状は各test_*.pyを直下に配置
+├── docs/
+└── scripts/
+```
+
+`main.py`はリポジトリ直下にも`src/`直下にも存在しない。`tests/`も現状は平置きで、`tests/domain/`等のサブディレクトリはない。
+
+### 現行entrypoints一覧
+
+```text
+backtest_v2_multi_day_check.py    backtest_v2_single_day_check.py
+run_adx_analysis.py               run_atr_ratio_analysis.py
+run_backtest.py                   run_daily_diary.py
+run_daily_task_check.py           run_daily_task_plan.py
+run_filtering.py                  run_filtering_override.py
+run_market_regime.py              run_market_volatility_analysis.py
+run_minute_backfill.py            run_monthly_analysis.py
+run_screening.py                  run_strategy_review.py
+run_trading.py                    run_vix_analysis.py
+run_weekly_analysis.py            update_daily_bar_cache.py
 ```
 
 ### 1.1 各層の責務と依存方向
@@ -51,6 +54,7 @@ trade-pjoject/
 - `application` はユースケースの司令塔で、`domain` のロジックと `infrastructure` の入出力をつなぐ。
 - `infrastructure` は外部API・DB・通知・永続化の具体実装のみを担当し、ロジックは持たない。
 - `entrypoints` は起動時の「初期化」と「ユースケース呼び出し」だけを担当する。
+- `src/api/request_handler.py`はHTTP共通ハンドラで、`infrastructure/kabu`および`infrastructure/market_data`から利用する。`application` / `domain`から直接利用しない。ハンドラ自身は`config`にのみ依存する。将来、`infrastructure`配下へ移す案は選択肢として残す。
 
 ```python
 # src/domain/enums.py
@@ -67,7 +71,7 @@ class EvaluateSymbolUseCase:
         self._order_repo = order_repo
         self._safety_checker = safety_checker
 
-    def execute(self, symbol: str, limits: PriceLimit) -> Optional[Signal]:
+    def execute(self, symbol: str, limits: PriceLimit) -> Optional[TradeSignal]:
         board = self._board_repo.get_current_board(symbol)
         if board is None or board.current_price is None:
             # データが取れない場合は評価をスキップする。価格を推測・捏造しない。
@@ -127,6 +131,21 @@ class EvaluateSymbolUseCase:
 - 「いつ・どの銘柄を・いくらで・何を根拠に」発注したかを、判定に使った数値とともにログに残す。
 - 標準出力だけに頼らず、ログファイル／監査ログに記録する。
 
+### 3.5 既知の乖離（このタスクでは解消しない）
+
+以下は現行コードで確認した規約との乖離であり、この規約更新ではコードを変更しない。
+
+| 現状 | 規約上の望ましい形 |
+|---|---|
+| `TradingUseCase._load_order_history()` / `_save_order_history()`が`ORDER_HISTORY_FILE`をUseCase内で直接読み書きする | 注文履歴の永続化をinfrastructureのRepositoryへ移す |
+| `src/application/trading_usecase.py`は2,069行、`TradingUseCase.run()`は717行 | UseCaseを責務単位に分割し、ループ制御・判断・通知を分離する |
+| `src/application/backtest_usecase.py`は1,320行 | シミュレーション処理を責務単位に分割する |
+
+### 3.6 テスト配置の現状と将来方針
+
+- 現状の`tests/`は平置きで、`tests/test_*.py`に配置する。`tests/domain/`・`tests/application/`等のサブディレクトリ分割はしていない。
+- 将来の方針: テスト数・保守性の課題が明確になった段階で、責務別サブディレクトリへの移行を検討する。
+
 ---
 
 ## 4. テスト観点
@@ -135,6 +154,7 @@ class EvaluateSymbolUseCase:
 - `domain` 層（シグナル判定・安全性チェックのロジック）は外部APIから完全に切り離し、ネットワークなしでテストできる状態を保つ。
 - `infrastructure` 層は repository/client のインターフェースを介して呼び出せるようにし、テスト時にモックへ差し替え可能にする。
 - `pytest --cov=src --cov-branch --cov-fail-under=80` をCIおよび変更前の確認コマンドとし、全体カバレッジ80%未満の変更はマージしない。
+- 現状値（2026-10-04実測）: branch coverage **82%**、全517テスト通過。下位モジュールは`entrypoints/run_backtest.py` 29%、`entrypoints/backtest_v2_multi_day_check.py` 34%、`entrypoints/update_daily_bar_cache.py` 48%、`infrastructure/persistence/backtest_input_repository.py` 59%、`infrastructure/market_data/yahoo_backtest_history_client.py` 62%。全体基準を満たしていても、これらを変更する場合は該当経路のテストを追加する。
 - 外部API・通知・永続化は実ネットワークへ接続せず、成功応答、タイムアウト・HTTPエラー、欠損または不正な応答をモックした契約テストで検証する。
 
 ### 4.2 テストすべき観点
@@ -166,58 +186,35 @@ class EvaluateSymbolUseCase:
 
 ---
 
-## 5. 起動契機とエントリポイント（第2版）
+## 5. 起動契機とエントリポイント（第3版）
 
 - 起動契機が異なる場合、エントリポイントを分けるのは許容される。
-- ただし、エントリポイントは「薄いラッパー」にとどめる。
+- ただし、エントリポイントは原則として初期化・引数解析・依存構築・UseCase呼び出しにとどめる。
 - 実ビジネスロジックは `application` / `domain` に置き、`entrypoints/` は依存関係の組み立てとユースケース呼び出しだけを行う。
-- `src/entrypoints/` の実装では、現行コードのように市場セッション判定・ロック・事前データ取得までを行う場合、薄いラッパーの責務を超えるため、その処理を application 側へ移すか、例外として設計書に明記する。
-
-### 5.1 例: 良い構成
-
-```
-src/
-  entrypoints/
-    run_trading.py
-    run_screening.py
-    run_filtering.py
-  main.py
-  application/
-  domain/
-  infrastructure/
-  config/
-```
+- `src/config/task_schedule.py`は日付ごとの予定表を返すが、OSスケジューラやcronの代わりにプロセスを起動するものではない。
 
 ### 5.2 `entrypoints` の責務
 - 設定読み込み
 - ロギング初期化
 - 依存オブジェクトの生成
 - ユースケースの呼び出し
-- `if __name__ == '__main__'` のみを持つ
+- CLIの`main()`と`if __name__ == '__main__'`を持つ場合がある。例外表の確定方針と期限に従う。
 
 ### 5.3 `entrypoints` を分けるべきケース
 - スケジュール実行と手動実行で起動条件が異なる場合
 - サービス起動とバッチ実行で初期化プロセスが異なる場合
 - Webhook など、外部トリガーが専用起動フローを必要とする場合
 
-### 5.4 エントリポイントのサンプル
+### 現状の例外（行数実測 2026-10-04）
 
-```python
-# src/entrypoints/run_trading.py
-from src.config import config
-from src.infrastructure.kabu.get_token import get_api_token
-from src.trading.trading import TradingBot
+| ファイル | 行数 | 方針 | 薄くない処理・移設/終了時の対応 |
+|---|---:|---|---|
+| `run_filtering.py` | 322行、クラス3つ | **移す（別タスク）**。完了まで暫定例外 | `RegistrationAwareBoardCache`と`CachedVolumeClient`はinfrastructureへ移し、`main()`内の価格帯別フィルタループはapplicationへ移す。移設時に`run_filtering_override.py`が同entrypointから`BoardClient`等をimportするentrypoint間依存と、テストがentrypointおよびその部品をimportする依存も解消する。移設自体はこの文書更新の対象外。 |
+| `backtest_v2_single_day_check.py` | 310行 | **期限つき例外** | 履歴入力・疑似時計準備、単日疑似実行、性能比較を行う検証CLI。ADR-0007 Phase 5で正式バックテストエンジンへ昇格する際にapplicationへ移す。 |
+| `backtest_v2_multi_day_check.py` | 505行 | **期限つき例外** | 日付・データ充足探索、複数日疑似実行、比較集計、scratch出力を行う検証CLI。ADR-0007 Phase 5で正式バックテストエンジンへ昇格する際にapplicationへ移す。 |
+| `run_backtest.py` | 199行 | **例外（廃止予定）** | 旧エンジンのCLI。ADR-0007 Phase 6の旧エンジン廃止まで現状維持し、applicationへの移設は行わない。 |
 
-
-def main():
-  token = get_api_token()
-  bot = TradingBot(token)
-  bot.run()
-
-
-if __name__ == '__main__':
-    main()
-```
+`tests/`は現状平置きである。`tests/domain/`等への分割は将来の方針として検討する。
 
 ---
 
@@ -230,3 +227,12 @@ if __name__ == '__main__':
 5. 判定・安全性チェックのロジックを `domain` 層に純粋関数として抽出する
 6. `domain` / `application` にユニットテストを追加する
 7. 司令塔クラスを `application` 層のユースケースに分割する
+
+---
+
+## 7. 変更履歴
+
+- 第3版（2026-10-04）: 構成図を実ディレクトリ・entrypointsに更新し、存在しない`main.py`等を除去。
+- 第3版（2026-10-04）: `src/api`の位置づけ、entrypoint例外表、既知の責務・永続化乖離を追加。
+- 第3版（2026-10-04）: テスト配置・coverageの現状値と将来方針を追記。
+- 第3版（2026-10-04追記）: entrypoint例外の移設方針・期限を確定し、ADR-0007 Phase 5/6と整合。

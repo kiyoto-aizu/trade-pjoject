@@ -1,11 +1,13 @@
 import sys
 from contextlib import contextmanager
 from datetime import datetime
+import logging
 from pathlib import Path
 from types import SimpleNamespace
 
 from src.entrypoints import run_filtering
-from src.entrypoints.run_filtering import RegistrationAwareBoardCache
+from src.infrastructure.kabu.registration_aware_board_cache import RegistrationAwareBoardCache
+from src.infrastructure.market_data.cached_volume_client import CachedVolumeClient
 from src.config import config
 
 
@@ -54,7 +56,25 @@ def test_registration_aware_board_cache_deduplicates_and_clears_at_batch_limit()
     assert cache.cache_hit_count == 1
 
 
-def test_main_saves_270_filter_before_isolated_price_band_failures(monkeypatch):
+def test_cached_volume_client_reuses_results_without_sharing_mutable_dicts():
+    calls = []
+
+    class VolumeStub:
+        def get_average_turnover_details(self, symbol, days, target_date):
+            calls.append((symbol, days, target_date))
+            return {"average_turnover": 100.0}
+
+    client = CachedVolumeClient(VolumeStub())
+    first = client.get_average_turnover_details("7203", target_date=datetime(2026, 10, 5).date())
+    first["average_turnover"] = 0.0
+    second = client.get_average_turnover_details("7203", target_date=datetime(2026, 10, 5).date())
+
+    assert second == {"average_turnover": 100.0}
+    assert calls == [("7203", 20, datetime(2026, 10, 5).date())]
+
+
+def test_main_saves_270_filter_before_isolated_price_band_failures(monkeypatch, caplog):
+    caplog.set_level(logging.INFO)
     events = []
     board_requests = []
     saved_results = {}
@@ -126,7 +146,7 @@ def test_main_saves_270_filter_before_isolated_price_band_failures(monkeypatch):
         "unregister_all",
         lambda _token: unregister_calls.append("clear") or events.append(("unregister",)) or {},
     )
-    monkeypatch.setattr(run_filtering, "BoardClient", FakeBoardClient)
+    monkeypatch.setattr(run_filtering, "BoardRepository", FakeBoardClient)
     monkeypatch.setattr(run_filtering, "FilteringUseCase", FakeFilteringUseCase)
     monkeypatch.setattr(run_filtering, "ScreeningResultRepository", FakeRepository)
     monkeypatch.setattr(run_filtering, "FilteringResultRepository", FakeRepository)
@@ -145,6 +165,102 @@ def test_main_saves_270_filter_before_isolated_price_band_failures(monkeypatch):
     assert events.index(("alternate_failed", 450.0)) < events.index(("alternate_complete", 900.0))
     assert token_requests == ["token"]
     assert len(unregister_calls) == 4
+    messages = [record.getMessage() for record in caplog.records]
+    assert "価格帯別フィルタに失敗しました: 上限=450円" in messages
+    assert (
+        f"価格帯別フィルタ完了: 上限=900円 | 採用=2件 | "
+        f"保存先={config.FILTERING_PRICE_BAND_RESULT_ROOT / '900'}"
+    ) in messages
+    summary = next(record for record in caplog.records if record.msg.startswith("価格帯別板取得サマリー:"))
+    assert summary.args[0:2] == (3, 4)
+    assert summary.args[4] == 2
+
+
+def test_main_stops_price_bands_when_unregister_after_primary_fails(monkeypatch, caplog):
+    executions = []
+    unregister_count = 0
+
+    @contextmanager
+    def context(*_args, **_kwargs):
+        yield
+
+    @contextmanager
+    def acquired_lock():
+        yield True
+
+    class FakeFilteringUseCase:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def execute(self, target_date=None, price_cap=None, **_kwargs):
+            executions.append(price_cap)
+            return SimpleNamespace(symbols=[])
+
+    def unregister(_token):
+        nonlocal unregister_count
+        unregister_count += 1
+        return None if unregister_count == 2 else {}
+
+    monkeypatch.setattr(sys, "argv", ["run_filtering.py"])
+    monkeypatch.setattr(run_filtering, "configure_logging", lambda: None)
+    monkeypatch.setattr(run_filtering, "is_trading_day", lambda _day: True)
+    monkeypatch.setattr(run_filtering, "market_workflow_lock", acquired_lock)
+    monkeypatch.setattr(run_filtering, "process_notification", context)
+    monkeypatch.setattr(run_filtering, "get_api_token", lambda: "token")
+    monkeypatch.setattr(run_filtering, "get_token_provider", lambda: SimpleNamespace(recovery_failed=False))
+    monkeypatch.setattr(run_filtering, "unregister_all", unregister)
+    monkeypatch.setattr(run_filtering, "BoardRepository", lambda _token: object())
+    monkeypatch.setattr(run_filtering, "FilteringUseCase", FakeFilteringUseCase)
+    monkeypatch.setattr(run_filtering, "ScreeningResultRepository", lambda *_args: object())
+    monkeypatch.setattr(run_filtering, "FilteringResultRepository", lambda *_args: object())
+    monkeypatch.setattr(run_filtering, "FilteringDiagnosticsRepository", lambda *_args: object())
+    monkeypatch.setattr(run_filtering, "DecisionJournalRepository", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(run_filtering, "YahooFinanceClient", lambda: object())
+    monkeypatch.setattr(config, "SCREENING_ALTERNATE_PRICE_CAPS", (450.0, 900.0))
+
+    run_filtering.main()
+
+    assert executions == [None]
+    assert "270円フィルタ保存後の銘柄登録解除に失敗したため、追加価格帯フィルタを中止します。" in [
+        record.getMessage() for record in caplog.records
+    ]
+
+
+def test_main_skips_price_bands_for_historical_date_without_board_cache(monkeypatch):
+    executions = []
+
+    @contextmanager
+    def context(*_args, **_kwargs):
+        yield
+
+    @contextmanager
+    def acquired_lock():
+        yield True
+
+    class FakeFilteringUseCase:
+        def __init__(self, _screening, board_client, _volume, _result, *_args, **_kwargs):
+            assert board_client is None
+
+        def execute(self, target_date=None, price_cap=None, **_kwargs):
+            executions.append((target_date, price_cap))
+            return SimpleNamespace(symbols=[])
+
+    monkeypatch.setattr(sys, "argv", ["run_filtering.py", "--date", "2026-10-02"])
+    monkeypatch.setattr(run_filtering, "configure_logging", lambda: None)
+    monkeypatch.setattr(run_filtering, "is_trading_day", lambda _day: True)
+    monkeypatch.setattr(run_filtering, "market_workflow_lock", acquired_lock)
+    monkeypatch.setattr(run_filtering, "process_notification", context)
+    monkeypatch.setattr(run_filtering, "get_api_token", lambda: (_ for _ in ()).throw(AssertionError()))
+    monkeypatch.setattr(run_filtering, "FilteringUseCase", FakeFilteringUseCase)
+    monkeypatch.setattr(run_filtering, "ScreeningResultRepository", lambda *_args: object())
+    monkeypatch.setattr(run_filtering, "FilteringResultRepository", lambda *_args: object())
+    monkeypatch.setattr(run_filtering, "FilteringDiagnosticsRepository", lambda *_args: object())
+    monkeypatch.setattr(run_filtering, "YahooFinanceClient", lambda: object())
+    monkeypatch.setattr(config, "SCREENING_ALTERNATE_PRICE_CAPS", (450.0,))
+
+    run_filtering.main()
+
+    assert executions == [(datetime(2026, 10, 2).date(), None)]
 
 
 def test_price_band_deadline_preserves_primary_and_releases_lock_after_unregister(monkeypatch, tmp_path):

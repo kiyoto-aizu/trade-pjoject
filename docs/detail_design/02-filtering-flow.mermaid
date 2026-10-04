@@ -5,7 +5,7 @@ flowchart TD
     Lock -->|取得失敗| End
     Lock -->|取得| Token["token取得・登録解除"]
     Token --> Input["ScreeningResultRepositoryから候補読込"]
-    Input --> Board["RegistrationAwareBoardCache経由で板取得<br/>50件ごと登録解除・同日結果再利用"]
+    Input --> Board["infrastructure RegistrationAwareBoardCache経由で板取得<br/>50件ごと登録解除・同日結果再利用"]
     Board --> Value["TradingValueまたは現在値×累積出来高"]
     Value --> Average["Yahoo平均売買代金を取得<br/>対象日混入有無も記録"]
     Average --> Score["calculate_volume_surge_ratio()<br/>相対順位から上位10銘柄"]
@@ -14,7 +14,7 @@ flowchart TD
     Diagnostic --> Journal["decision_journalへ段件数・理由を記録"]
     Journal --> Notify["通常結果をSlack dailyへ通知"]
     Notify --> Clear["登録銘柄を解除"]
-    Clear --> Bands["SCREENING_ALTERNATE_PRICE_CAPS別に再評価"]
+    Clear --> Bands["application PriceBandFilteringUseCaseで<br/>SCREENING_ALTERNATE_PRICE_CAPS別に再評価"]
     Bands --> Deadline{"FILTERING_PRICE_BAND_DEADLINE_TIME内?"}
     Deadline -->|No| Partial["未処理銘柄を診断<br/>当該価格帯結果は保存しない"]
     Deadline -->|Yes| BandSave["価格帯別FilteringResult・診断を保存"]

@@ -15,14 +15,17 @@ trade-pjoject/
 ├── src/
 │   ├── api/                        # request_handler.py: infrastructure専用HTTP共通処理
 │   ├── application/                # usecase・分析/配分機能
+│   │   └── price_band_filtering_usecase.py # 価格帯別フィルタ実行制御
 │   ├── config/                     # config.py, task_schedule.py
 │   ├── domain/                     # enums, models, rules, ATR/市場分析
 │   ├── entrypoints/                # 現行CLI群（下記参照）
 │   ├── executor/
 │   ├── filter_dynamic/
 │   ├── infrastructure/
-│   │   ├── analysis/  ├── backtest/  ├── calendar/  ├── kabu/
-│   │   ├── market_data/  ├── notification/  ├── paper/  └── persistence/
+│   │   ├── analysis/  ├── backtest/  ├── calendar/
+│   │   ├── kabu/          # registration_aware_board_cache.py: 登録枠を考慮した板キャッシュ
+│   │   ├── market_data/   # cached_volume_client.py: 出来高平均キャッシュ
+│   │   ├── notification/  ├── paper/  └── persistence/
 │   ├── sample/
 │   ├── screening/
 │   └── trading/
@@ -209,10 +212,11 @@ class EvaluateSymbolUseCase:
 
 | ファイル | 行数 | 方針 | 薄くない処理・移設/終了時の対応 |
 |---|---:|---|---|
-| `run_filtering.py` | 322行、クラス3つ | **移す（別タスク）**。完了まで暫定例外 | `RegistrationAwareBoardCache`と`CachedVolumeClient`はinfrastructureへ移し、`main()`内の価格帯別フィルタループはapplicationへ移す。移設時に`run_filtering_override.py`が同entrypointから`BoardClient`等をimportするentrypoint間依存と、テストがentrypointおよびその部品をimportする依存も解消する。移設自体はこの文書更新の対象外。 |
 | `backtest_v2_single_day_check.py` | 310行 | **期限つき例外** | 履歴入力・疑似時計準備、単日疑似実行、性能比較を行う検証CLI。ADR-0007 Phase 5で正式バックテストエンジンへ昇格する際にapplicationへ移す。 |
 | `backtest_v2_multi_day_check.py` | 505行 | **期限つき例外** | 日付・データ充足探索、複数日疑似実行、比較集計、scratch出力を行う検証CLI。ADR-0007 Phase 5で正式バックテストエンジンへ昇格する際にapplicationへ移す。 |
 | `run_backtest.py` | 199行 | **例外（廃止予定）** | 旧エンジンのCLI。ADR-0007 Phase 6の旧エンジン廃止まで現状維持し、applicationへの移設は行わない。 |
+
+- 解消（2026-10-04）: `run_filtering.py`の板/出来高キャッシュをinfrastructureへ、価格帯別フィルタ実行制御を`PriceBandFilteringUseCase`へ移設した。`run_filtering_override.py`のentrypoint間importも解消し、両entrypointは`BoardRepository`・共通ロギング・`notify_daily`を直接利用する。
 
 `tests/`は現状平置きである。`tests/domain/`等への分割は将来の方針として検討する。
 

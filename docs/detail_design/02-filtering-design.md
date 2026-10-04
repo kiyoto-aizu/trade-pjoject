@@ -83,20 +83,15 @@ kabuステーション`/board/{symbol}`から当日の`TradingValue`を取得す
 
 - `FilteringDiagnosticsRepository`は候補別のnumerator/取得元・board価格・平均売買代金・ratio・rank・採用有無・理由コード、集計のinput/evaluated/skipped/selected件数、reason counts、処理時間・締切状態を保存する。診断ファイルは通常運用で保存し、異常系の調査に使う。
 - `DecisionJournalRepository`は日付ごとの入力件数・評価件数・スキップ件数・採用件数と理由別件数を`filter_stage_summaries`に保存する。個別の除外理由も銘柄×日付×理由で集約する。
-- `RegistrationAwareBoardCache`（`run_filtering.py`）は同一実行内の板結果と例外を銘柄別に再利用する。kabu登録枠の上限に合わせて50件ごとに登録解除し、解除失敗後は新しい板取得をブロックする。取得回数・キャッシュヒット・時間・解除回数も集計する。
+- `infrastructure/kabu/registration_aware_board_cache.py`の`RegistrationAwareBoardCache`は同一実行内の板結果と例外を銘柄別に再利用する。kabu登録枠の上限に合わせて50件ごとに登録解除し、解除失敗後は新しい板取得をブロックする。取得回数・キャッシュヒット・時間・解除回数も集計する。
+- `infrastructure/market_data/cached_volume_client.py`の`CachedVolumeClient`は同一実行内の重複した平均売買代金取得を再利用する。
 - 通常結果に加え、`SCREENING_ALTERNATE_PRICE_CAPS`（既定450/900円）ごとの結果を生成し、`FILTERING_PRICE_BAND_RESULT_ROOT/<上限>/`へ保存する。`FILTERING_PRICE_BAND_DEADLINE_TIME`（既定09:33）までに終わらない価格帯は中断し、未処理銘柄を診断に残す。通常の本番入力とは別の分析用系列である。
+- 上記価格帯別処理の実行制御は`application/price_band_filtering_usecase.py`の`PriceBandFilteringUseCase`が担当し、`run_filtering.py`は主フィルタ完了後に呼び出す。
 - 同時刻帯の過去分足がないため、現行も絶対倍率による足切りはせず、候補内の相対順位で選ぶ。
 
-### 既知の配置乖離と移設方針
+### 配置整理の記録（2026-10-04）
 
-`run_filtering.py`は板取得キャッシュ・平均売買代金キャッシュ、登録解除、価格帯別フィルタの実行制御をentrypoint内に持つ。暫定例外として、別タスクで次のように移設する。
-
-- `RegistrationAwareBoardCache`と`CachedVolumeClient`はinfrastructureへ移す。
-- `main()`内の価格帯別フィルタループはapplicationへ移す。
-- `run_filtering_override.py`から`BoardClient`、ログ設定、通知関数等をentrypoint間importしている依存を解消する。
-- `tests/test_filtering_entrypoint.py`等がentrypointやその部品を直接importしているテスト依存も、移設後の層に合わせる。
-
-この移設は未実施であり、この設計書更新ではコードを変更しない。coding-guidelines §5の例外表を参照。
+上記のキャッシュと価格帯別処理は記載先へ移設済み。`run_filtering_override.py`は他entrypointに依存せず、両entrypointは`BoardRepository`を利用する。キャッシュのテストimportもinfrastructureへ移行した。
 
 ### infrastructure/persistence/filtering_result_repository.py（新規）
 - `save(result: FilteringResult) -> None`

@@ -14,12 +14,13 @@ from datetime import date
 from pathlib import Path
 
 from src.application.filtering_usecase import FilteringUseCase
-from src.entrypoints.run_filtering import BoardClient, configure_logging, notify_result
 from src.infrastructure.execution_lock import market_workflow_lock
+from src.infrastructure.kabu.board_repository import BoardRepository
 from src.infrastructure.kabu.get_token import get_api_token
+from src.infrastructure.logging_config import configure_logging
 from src.infrastructure.kabu.unregister import unregister_all
 from src.infrastructure.market_data.yahoo_finance_client import YahooFinanceClient
-from src.infrastructure.notification.slack_notify import process_notification
+from src.infrastructure.notification.slack_notify import notify_daily, process_notification
 from src.infrastructure.persistence.filtering_result_repository import FilteringResultRepository
 from src.infrastructure.persistence.screening_result_repository import ScreeningResultRepository
 
@@ -78,10 +79,10 @@ def main() -> None:
             )
             usecase = FilteringUseCase(
                 screening_repository,
-                BoardClient(token),
+                BoardRepository(token),
                 YahooFinanceClient(),
                 FilteringResultRepository(root / 'filtering'),
-                notify_result,
+                notify_daily,
             )
             # target_date=Noneでライブ板情報の分岐(本日実行)を使う。
             # スクリーニング結果は上のラッパーにより常にargs.screening_dateのものが使われる。

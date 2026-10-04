@@ -19,7 +19,7 @@ flowchart TD
     C3a --> NextSymbol
     C3b --> NextSymbol
     NextSymbol -->|No| B2
-    NextSymbol -->|Yes| D1["結果サマリをLINE通知"]
+    NextSymbol -->|Yes| D1["結果サマリをSlack analysisチャンネルへ通知"]
     D1 --> End2(["終了"])
 
     style A2a fill:#f8d7da,stroke:#c0392b

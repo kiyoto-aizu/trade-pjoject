@@ -5,45 +5,33 @@
 
 ---
 
-## 1. 実行タイミングの制約（重要）
+## 1. 実行タイミング
 
-kabuステーションAPIの `GET /ranking` は「kabuステーションが保持している**当日**のデータ」を返す仕様で、
-株価情報ランキングは **平日7:53頃〜9:00過ぎ頃にデータがクリアされる**（yaml記載）。
-
-→ そのため本機能は、**前日の大引け後〜当日7:53より前**の時間帯に実行する必要がある。
-この時間帯であれば「前日」の値上がり率・売買代金等のランキングが「当日データ」として取得できる。
-7:53以降に実行するとランキングが空レスポンスになるため、スケジューラ側で実行時刻を固定するか、
-実行前に空レスポンスを検知して即エラー終了する安全策が必要。
-
-- **実行時刻: 前日大引け直後（15:35頃）に確定。**
-  - 大引け後のランキングは翌朝7:53のクリアまで内容が変わらないため、15:35以降であればいつ実行しても結果は同じ。
-  - 最も「前日の結果」に忠実で、夜間バッチ等の他処理に巻き込まれるリスクも避けられるため、この時刻を採用する。
-- `entrypoints/run_screening.py` を専用エントリポイントとして分離（coding-guidelines.md 5.3節「スケジュール実行と手動実行で起動条件が異なる場合」に該当）
+- `src/config/task_schedule.py`の予定は平日15:35。翌営業日向けの上場銘柄マスタとYahoo日足によるランキングを作る。
+- 現行の通常経路はkabuステーション`GET /ranking`ではなく、`HistoricalRankingRepository`が対象日の上場銘柄ごとに日足データを読み、売買代金・値上がり率を算出する。したがって、旧記載の7:53頃の`/ranking`データクリア制約は通常経路には適用されない。
+- `run_screening.py`は市場・規制APIの照会結果を`ScreeningApiCheckRepository`で日付単位に記録・再利用する。通常実行の出力は`SCREENING_RESULT_DIRECTORY`、追加価格帯は別ディレクトリに保存する。
+- 価格上限を優先したユニバース選定への移行は[ADR-0001](../adr/0001-price-first-universe-selection.md)を参照（設計書内で決定内容を重複記載しない）。
 
 ---
 
 ## 2. 処理フロー
 
 ```
-① ランキング取得（2種別 × 市場区分ごとに取得して結合）
-  → GET /ranking （Type=4:売買代金, Type=1:値上がり率 の2種類を取得）
-  → ExchangeDivision=ALLは1回の呼び出しにつき上位50件しか返らず値がさ株に偏るため、
-    config.SCREENING_EXCHANGE_DIVISIONS（既定: TP/TS/TG）で市場区分ごとに個別取得し母集団を拡大する
-①’ 価格上限フィルタ（実装差分、5節参照）
-  → 統合済み候補から、1銘柄あたりの想定予算で1単元も買えない高額銘柄・価格不明銘柄を除外する
-  → domain/rules.py の`filter_candidates_by_price()`、上限値は`config.get_screening_price_cap()`
-② 規制・除外条件の確認
-  → GET /regulations/{symbol}（値幅制限・信用規制など）
-  → GET /primaryexchange/{symbol}（取引所確認、対象外市場の除外）
-  → 登録銘柄枠を消費するAPIのため、config.SCREENING_BATCH_SIZE件ずつバッチ処理する（3節参照）
-③ ドメインルールでスコアリング・絞り込み
-  → domain/rules.py の純粋関数でランキング結果を統合評価
-④ 30〜50銘柄に絞って永続化
-  → infrastructure/persistence/screening_result_repository.py
-⑤ 結果を通知（監視も兼ねる。1〜2行に要約）
-  → infrastructure/notification/line_notify_client.py
-  → 内容: 最終件数 / 除外内訳（価格上限・価格不明・規制・地方取引所） / 上位銘柄（代表値付き）
-     詳細はセクション3.5参照
+① 対象日付の上場銘柄と日足からランキングを生成
+  → ListedSecurityRepository + HistoricalRankingRepository
+  → Yahoo日足から売買代金（終値×出来高）・値上がり率を算出
+② 価格上限を先に適用
+  → domain/rules.py の`filter_candidates_by_price()`
+  → `get_screening_price_cap()`で本番上限を決め、通常結果を保存
+③ 規制・市場チェック
+  → `ScreeningApiCheckRepository`が対象日ごとの市場・規制API結果を保存・再利用
+  → `SCREENING_BATCH_SIZE`単位で銘柄登録・照会・解除
+④ 統合順位から候補を選び、監査情報とともに永続化
+  → `ScreeningResultRepository`、監査行は`ScreeningAuditEntry`
+⑤ Slack dailyへ完了件数・除外内訳・代表銘柄を通知（3.5節参照）
+⑥ 通常の価格上限とは別に、`SCREENING_ALTERNATE_PRICE_CAPS`（既定450円・900円）の価格帯別結果を作成
+  → `SCREENING_PRICE_BAND_RESULT_ROOT/<価格上限>/`
+  → 追加価格帯は規制・市場情報が未確認でも候補を残す検証用経路（`keep_unconfirmed=True`）
 ```
 
 > （2026-09-17更新）当初は「銘柄選定では株価による除外を行わない」方針だったが、1銘柄あたりの
@@ -64,12 +52,10 @@ kabuステーションAPIの `GET /ranking` は「kabuステーションが保�
 - **（実装差分）`execute(target_date: date | None = None)`**: バックテスト用に過去日付を指定してランキング・規制情報を取得し直す「リプレイ」に対応する。`target_date=None`（通常運用）の場合は従来通り当日実行を前提とした呼び出しを行い、指定時のみ`RankingRepository`・`RegulationRepository`に`target_date`を追加で渡す
 - **（実装差分）`batch_started` / `batch_finished`フック**: `②規制・除外条件の確認`はkabuステーションAPIの銘柄登録枠を消費するため、`config.SCREENING_BATCH_SIZE`件ずつのバッチに分割して処理する。各バッチの前後で`batch_started(batch, batch_number)` / `batch_finished(batch, batch_number)`を呼び出し、`entrypoints/run_screening.py`側でkabuステーションAPIへの銘柄登録(`register_symbols`)・解除(`unregister_all`)に接続する。フックが失敗（`False`を返す）した場合はそのバッチで処理を中断する
 
-### infrastructure/kabu/ranking_repository.py（新規）
-- `get_ranking(ranking_type: RankingType, exchange_division: str = "ALL") -> list[RankingEntry]`
-- API: `GET /ranking`（`Type`パラメータをEnum化。coding-guidelines.md 2.3節「マジックストリングはEnum化」に準拠）
-- `RankingType.TURNOVER`（Type=4: 売買代金）と `RankingType.PRICE_GAIN`（Type=1: 値上がり率）の2種類を取得し、`ScreeningUseCase`側で結合する
-- `exchange_division` は `/ranking` の `ExchangeDivision`（市場区分）にそのまま渡す。`ScreeningUseCase._collect_ranking` が `config.SCREENING_EXCHANGE_DIVISIONS` の各市場区分ごとに呼び出し、同一銘柄は順位の良い方を採用して結合する
-- 応答の `CurrentPrice` は監査・将来のサイジング用途として保持する
+### market_data/historical_ranking_repository.py（現行）
+- `HistoricalRankingRepository.get_ranking()`は`ListedSecurityRepository.load_for_date()`で対象日に上場している銘柄を列挙し、Yahoo日足からランキングを作る。
+- 売買代金は`close × volume`、値上がり率は`close / previous_close - 1`。通常実行では`run_screening.py`がこのリポジトリを使用する。
+- kabu市場・規制APIの取得結果は`ScreeningApiCheckRepository`で対象日JSONにキャッシュする。これはランキング取得用ではなく、API照会の再利用・監査用。
 
 ### infrastructure/kabu/regulation_repository.py（新規）
 - `get_regulation(symbol: str) -> Regulation`
@@ -126,7 +112,7 @@ kabuステーションAPIの `GET /ranking` は「kabuステーションが保�
 - 保存先: 日付付きファイル（例: `data/screening/2026-08-15.json`）
 - 用途: ②のフィルタ機能が翌朝この結果を読み込んで使用する
 
-### 3.5 通知内容の設計（LINE通知）
+### 3.5 通知内容の設計（Slack dailyチャンネル）
 
 **方針**: 監視も兼ねる。1〜2行に収め、銘柄コードの羅列はしない。
 
@@ -154,7 +140,7 @@ kabuステーションAPIの `GET /ranking` は「kabuステーションが保�
 
 | ケース | 対応 |
 |---|---|
-| `/ranking` が空レスポンス（7:53以降に実行してしまった等） | 処理を中断し、推測値で補わず即エラー終了・通知（coding-guidelines.md 3.3節） |
+| 対象日の上場銘柄または日足が不足しランキングが空 | `ScreeningUseCase.execute()`が処理を中断する。推測値で補わない。 |
 | ランキング応答の`CurrentPrice`が欠損 | 当該銘柄は安全側に倒して除外（候補に残さない。高額かどうか判定不能なため） |
 | 規制情報API取得失敗 | 当該銘柄は安全側に倒して除外（候補に残さない） |
 | 絞り込み後の候補が30件未満 | 警告ログを出し、処理は継続（発注可否は②③側の責務。①は「候補を出す」までが責務） |
@@ -164,7 +150,7 @@ kabuステーションAPIの `GET /ranking` は「kabuステーションが保�
 
 ## 5. すり合わせ済み事項（2026-08-15）
 
-- ランキング種別: 売買代金（Type=4） + 値上がり率（Type=1）の組み合わせ
+- ランキング種別: 売買代金 + 値上がり率（当初のkabu `/ranking` Type=4/1方式は上場銘柄マスタ+日足による自前計算へ置き換え済み、2026-10-04）
 - 流動性フィルタ: 初回リリースでは導入しない（実績を見てから再検討）
 - 実行タイミング: 前日大引け直後（15:35頃）
 - 銘柄統合ロジック: 順位合算方式（両ランキングの合計順位が小さい順）
@@ -177,20 +163,21 @@ kabuステーションAPIの `GET /ranking` は「kabuステーションが保�
   - `ScreeningUseCase.execute(target_date=None)`: バックテスト用の過去日付リプレイ対応（3節参照）
   - `batch_started`/`batch_finished`フック: ②の規制情報取得を銘柄登録枠の制約に合わせてバッチ処理するための仕組み（3節参照）
 
-## 6. 実行スケジュール（cron設定例）
+- **（2026-10-04追記）通常経路はkabu `/ranking`取得から上場銘柄マスタ+Yahoo日足による価格上限先行選定へ置き換え済み**。過去の`/ranking`前提は履歴として保持し、実装はADR-0001・本節の現行フローを参照。
+- **（2026-10-04追記）通常価格上限とは別に、`SCREENING_ALTERNATE_PRICE_CAPS`で価格帯別検証結果を保存する。市場・規制API結果は`SCREENING_API_CHECK_DIRECTORY`に対象日単位で保存・再利用する。**
 
-```cron
-# 平日15:35に前日スクリーニングを実行
-35 15 * * 1-5 /usr/bin/python3 /path/to/trade-pjoject/entrypoints/run_screening.py >> /var/log/trade-pjoject/screening.log 2>&1
-```
+## 6. 実行スケジュール
 
-- 祝日・大納会/大発会等の非営業日はcron側では判定しない。`run_screening.py`側で「取引所が休場だった場合、`/ranking`が空になる」ことを想定し、§4の異常系（空レスポンス検知→即エラー終了）で吸収する
-- サーバー時刻とkabuステーション（証券会社サーバー）側の時刻ズレを考慮し、実運用では15:35ちょうどではなく数分後（例: 15:40）に設定する余地もある。まずは15:35で開始し、実運用で問題があれば調整する
+`src/config/task_schedule.py`は取引日カレンダーに応じた予定表を返し、スクリーニングを平日15:35に設定している。実際のプロセス起動はOSスケジューラ等が行う。
 
-## 7. 残る検討事項（実装フェーズで対応）
+| タスク | 予定 |
+|---|---|
+| スクリーニング | 平日15:35（翌営業日向け） |
 
-これらは設計方針としては確定済みで、実装時の具体的なパラメータ調整のみが残る。
+## 7. 残る確認事項
 
-1. cron実行時刻を15:35のまま運用するか、余裕を見て数分ずらすか（§6参照、実運用データを見て判断）
-2. 休場日の扱い（祝日カレンダーとの連携要否）
-3. 通知の上位銘柄件数（3件か5件か）の最終決定、および除外内訳の具体的な文言（§3.5参照、運用しながら調整）
+1. リポジトリ内の`task_schedule.py`は予定を返すだけで、OSスケジューラへの登録状態はコードから確認できない。運用環境の起動設定は別途確認する。
+2. 価格帯別結果を通常の取引候補へ採用するかは、診断データ蓄積後に判断する。
+
+## 8. 設定項目
+設定項目は[docs/config-reference.md](../config-reference.md)を参照。

@@ -6,7 +6,7 @@
 
 本システムは、次の3段階で取引対象を決定します。
 
-1. **スクリーニング**: kabuステーションのランキングから候補銘柄を抽出
+1. **スクリーニング**: 上場銘柄マスタとYahoo日足から候補を評価し、価格上限を優先して抽出
 2. **フィルタリング**: 出来高急騰率を計算し、候補を上位銘柄に絞り込み
 3. **取引実行**: 移動平均を基準に売買シグナルを生成し、注文を送信
 
@@ -16,8 +16,9 @@
 
 ### スクリーニング
 
-- kabuステーションAPI の `GET /ranking` から売買代金・値上がり率ランキングを取得
-- 複数ランキングを順位合算方式で統合
+- 上場銘柄マスタとYahoo日足から売買代金・値上がり率を計算
+- 価格上限を先行適用し、規制・市場APIの結果を日付単位で記録・再利用
+- `SCREENING_ALTERNATE_PRICE_CAPS`による価格帯別検証結果を別保存
 - 規制銘柄と対象外市場の銘柄を除外
 - 前日大引け後から翌朝のランキングデータクリア前に実行
 
@@ -32,11 +33,10 @@
 
 ### 取引
 
-- 過去5日間の終値から移動平均を計算
-- 値上がり率・出来高急増で選んだ銘柄に対し、`MA * 1.01` 以上かつ `RSI14 >= 55` で買いシグナルを生成
-- `MA * 0.99` 以下かつ `RSI14 <= 45` で保有ポジションの決済シグナルを生成
-- 資金、保有株、重複注文、注文間隔、注文数などを確認
-- 取引終了後にLINEで結果を通知
+- 確定日足からSMAバンド・RSI・ATRを計算し、MarketRegimeに応じて新規買いを制御
+- ATRによる数量調整・損切り・トレーリング利確と、15:20の持ち越し防止決済を行う
+- 資金、保有枠、重複注文、注文間隔、注文数、日次損失などを確認
+- 取引終了後に日次レポートを保存し、Slackへ通知
 
 ## アーキテクチャ
 
@@ -47,7 +47,7 @@ application       ユースケースの実行制御
        |
 domain            モデルと外部依存のないビジネスルール
        |
-infrastructure    kabuステーション、Yahoo Finance、JSON、LINE
+infrastructure    kabuステーション、Yahoo Finance、JSON、Slack
 ```
 
 | 層 | 主な責務 |
@@ -61,15 +61,15 @@ infrastructure    kabuステーション、Yahoo Finance、JSON、LINE
 
 ```text
 src/
+├── api/              infrastructure専用HTTP共通処理
 ├── application/       ユースケース
 ├── config/            環境設定
 ├── domain/            モデル、Enum、ビジネスルール
 ├── entrypoints/       スクリーニング等の起動処理
 ├── infrastructure/
-│   ├── api/            HTTP共通処理
 │   ├── kabu/           kabuステーションAPI連携
 │   ├── market_data/    Yahoo Finance連携
-│   ├── notification/   LINE通知
+│   ├── notification/   Slack通知
 │   └── persistence/    JSON永続化
 ├── screening/          スクリーニング実行ラッパー
 ├── filter_dynamic/     フィルタリング実行ラッパー
@@ -154,6 +154,7 @@ pip install -r requirements.txt
 ### 環境変数
 
 `.env` またはシステム環境変数に設定してください。パスワードなどの秘密情報はコミットしないでください。
+全設定項目は[docs/config-reference.md](docs/config-reference.md)を参照してください。
 
 #### 運用モード
 
@@ -182,8 +183,9 @@ API_PORT_PRD=18080
 TRADING_MODE=paper
 ENABLE_LIVE_ORDERING=false
 
-LINE_MESSAGE_CHANNEL_TOKEN=<チャネルアクセストークン>
-LINE_MESSAGE_TO=<送信先ユーザーID>
+SLACK_WEBHOOK_CRITICAL=<criticalチャンネルのWebhook>
+SLACK_WEBHOOK_DAILY=<dailyチャンネルのWebhook>
+SLACK_WEBHOOK_ANALYSIS=<analysisチャンネルのWebhook>
 
 # 日次LLM分析（任意。利用時はAPIキーを秘密情報として管理する）
 LLM_DAILY_ANALYSIS_ENABLED=false

@@ -1,34 +1,33 @@
 ```mermaid
 flowchart TD
-    Start([平日 09:30以降]) --> Lock[市場ワークフローロック取得]
-    Lock --> Session{取引時間内か？}
-    Session -->|No| End([終了])
-    Session -->|Yes| Token[APIトークン取得]
-    Token --> Filter[当日のFilteringResultを読み込み]
-    Filter --> FilterCheck{当日結果・銘柄あり？}
-    FilterCheck -->|No| NotifySkip[通知して終了]
-    FilterCheck -->|Yes| Preflight[10候補の確定終値と板情報を事前取得]
-    Preflight --> PreflightCheck{全銘柄のデータ取得成功？}
-    PreflightCheck -->|No| NotifySkip
-    PreflightCheck -->|Yes| Loop[フィルタ結果の全候補を監視]
-
-    Loop --> History[確定終値からSMA5・RSI14を計算]
-    History --> Board[対象銘柄の現在値を取得]
-    Board --> Signal{SMA乖離とRSIの条件に合致？}
-    Signal -->|No| Next[次の銘柄]
-    Signal -->|Yes| Account[現金残高・保有株を再取得]
-    Account --> Safety{キルスイッチ・予算・保有上限・重複注文がOK？}
-    Safety -->|No| Next
-    Safety -->|Yes| Order[注文送信]
-    Order --> Record[成功時のみ注文履歴・監査情報を保存]
-    Record --> Next
-    Next --> AllDone{全銘柄処理済み？}
-    AllDone -->|No| Loop
-    AllDone -->|Yes| Sleep[60秒スリープ]
-    Sleep --> Closed{15:30以降？}
-    Closed -->|No| Loop
-    Closed -->|Yes| Report[日次レポートを保存・通知]
-    Report --> End
+    subgraph Daily[平日]
+        Screening[15:35 run_screening.py<br/>翌営業日候補を保存]
+        Filtering[09:30 run_filtering.py<br/>通常 + 価格帯別候補を保存]
+        Trading[09:35-15:30 run_trading.py<br/>当日結果を読み取引・EOD清算]
+        Filtering --> Trading
+        Screening -.->|翌営業日| Filtering
+    end
+    subgraph Saturday[土曜]
+        Backfill[07:30 run_minute_backfill.py]
+        Backtest[08:00 run_backtest.py]
+        Universe[09:00 上場銘柄マスタ更新]
+        Weekly[10:00 run_weekly_analysis.py]
+        Backfill --> Backtest --> Universe --> Weekly
+    end
+    MonthEnd[月末最終取引日 17:00 run_monthly_analysis.py]
+    Plan[run_daily_task_plan.py / run_daily_task_check.py<br/>日程・実行確認をSlackへ通知]
+    Checks[手動検証: backtest_v2_single_day_check.py<br/>backtest_v2_multi_day_check.py]
+    Checks -. scratch結果 .-> Backtest
 ```
 
-週次の保守タスクは、土曜07:30に分足バックフィル、08:00にバックテスト、09:00に週次分析を実行する。
+`src/config/task_schedule.py`は日付ごとの予定を返すモジュールで、OSタスクスケジューラやcronの代わりにプロセスを起動するものではない。v2検証スクリプトは通常の`run_backtest.py`と別のヒストリカル再生CLIで、結果は`data/backtest_v2_scratch/`を使う。
+
+## Slack通知
+
+| チャンネル | 主な送信内容 |
+|---|---|
+| `critical` | 取引キルスイッチ、緊急停止・EOD未決済、401復旧失敗、タスク実行要確認、例外終了（`process_notification`でライフサイクル通知を有効にした場合） |
+| `daily` | スクリーニング・フィルタ結果、取引開始・日次レポート、日次タスク予定と実行結果 |
+| `analysis` | 分足バックフィル、通常バックテスト、週次・月次分析 |
+
+`process_notification()`は開始・終了をログに記録し、例外時に例外ログと設定されていればLLM原因分析を行って例外を再送出する。`notify_lifecycle=True`のときだけ開始/終了Slack通知を行い、異常終了はcriticalへ送る。現行entrypointの多くは`notify_lifecycle=False`で、処理結果を機能ごとにdaily/analysis/criticalへ個別通知する。通知失敗は本処理を停止させずログへ記録する。

@@ -7,7 +7,12 @@ from typing import Callable, Dict, List, Optional
 from pathlib import Path
 
 from src.config import config
-from src.infrastructure.persistence.storage import read_json, write_json
+from src.infrastructure.persistence.storage import (
+    StateFileCorruptError,
+    preserve_corrupt_copy,
+    read_json_strict,
+    write_json,
+)
 
 
 @dataclass
@@ -27,42 +32,67 @@ class PaperOrderClient:
     today_provider: Callable[[], date] = field(default=date.today, repr=False, compare=False)
     state_path: Optional[Path] = None
     _next_order_id: int = 1
+    # 状態ファイルの保存が連続して失敗した回数(成功で0に戻る)。TradingUseCaseが参照する
+    consecutive_save_failures: int = field(default=0, init=False)
 
     def __post_init__(self) -> None:
         if self.state_path is None:
             return
-        state = read_json(self.state_path)
-        if not isinstance(state, dict):
+        state = read_json_strict(self.state_path)
+        if state is None:
             return
-        self.cash = float(state.get('cash', self.cash))
-        self.holdings = {
+        try:
+            self._apply_state(state)
+        except (TypeError, ValueError, AttributeError, OverflowError) as exc:
+            raise StateFileCorruptError(
+                self.state_path,
+                f"値が不正です({type(exc).__name__}: {exc})",
+                preserve_corrupt_copy(self.state_path),
+            ) from exc
+
+    def _apply_state(self, state: dict) -> None:
+        cash = float(state.get('cash', self.cash))
+        holdings = {
             str(symbol): int(quantity)
             for symbol, quantity in state.get('holdings', {}).items()
             if int(quantity) > 0
         }
-        self.average_costs = {
+        average_costs = {
             str(symbol): float(cost)
             for symbol, cost in state.get('average_costs', {}).items()
-            if symbol in self.holdings
+            if symbol in holdings
         }
-        self._next_order_id = max(1, int(state.get('next_order_id', self._next_order_id)))
-        self.realized_pnl_date = state.get('realized_pnl_date', self.realized_pnl_date)
-        self.realized_pnl = (
+        next_order_id = max(1, int(state.get('next_order_id', self._next_order_id)))
+        realized_pnl_date = state.get('realized_pnl_date', self.realized_pnl_date)
+        realized_pnl = (
             float(state.get('realized_pnl', 0.0))
-            if self.realized_pnl_date == self.today_provider().isoformat()
+            if realized_pnl_date == self.today_provider().isoformat()
             else 0.0
         )
+        self.cash = cash
+        self.holdings = holdings
+        self.average_costs = average_costs
+        self._next_order_id = next_order_id
+        self.realized_pnl_date = realized_pnl_date
+        self.realized_pnl = realized_pnl
 
-    def _save_state(self) -> None:
-        if self.state_path is not None:
-            write_json(self.state_path, {
-                'cash': self.cash,
-                'holdings': self.holdings,
-                'average_costs': self.average_costs,
-                'next_order_id': self._next_order_id,
-                'realized_pnl': self.realized_pnl,
-                'realized_pnl_date': self.realized_pnl_date,
-            })
+    def _save_state(self) -> bool:
+        if self.state_path is None:
+            return True
+        saved = write_json(self.state_path, {
+            'cash': self.cash,
+            'holdings': self.holdings,
+            'average_costs': self.average_costs,
+            'next_order_id': self._next_order_id,
+            'realized_pnl': self.realized_pnl,
+            'realized_pnl_date': self.realized_pnl_date,
+        })
+        self.consecutive_save_failures = 0 if saved else self.consecutive_save_failures + 1
+        return saved
+
+    def retry_save_state(self) -> bool:
+        """現在のメモリ状態を保存し直す。"""
+        return self._save_state()
 
     def set_price(self, symbol: str, price: float) -> None:
         self.prices[symbol] = price

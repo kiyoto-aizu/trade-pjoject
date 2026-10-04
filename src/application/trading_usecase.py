@@ -135,7 +135,10 @@ class TradingUseCase:
         self._auth_recovery_notified = False
         self._board_fetch_all_failed_streak = 0
         self._board_fetch_failure_notified = False
-
+        # 状態ファイル保存失敗: 注文履歴の連続失敗回数と、通知済みの連続失敗ストリーク
+        self._order_history_save_failures = 0
+        self._save_failure_notified_sources: set[str] = set()
+        self._new_buy_halt_notified = False
     @property
     def _execution_mode(self) -> str:
         return config.TRADING_MODE
@@ -481,9 +484,64 @@ class TradingUseCase:
                 raise ValueError(f"注文履歴ファイルの読み込みに失敗しました: {exc}") from exc
         self.order_history = [OrderHistoryEntry.from_dict(item) for item in data]
 
-    def _save_order_history(self) -> None:
-        """現在の注文履歴をファイルに保存します。"""
-        write_json(self.order_history_path, [entry.to_dict() for entry in self.order_history])
+    def _save_order_history(self) -> bool:
+        """現在の注文履歴をファイルに保存します。失敗を記録し、メモリ上の履歴は維持します。"""
+        saved = write_json(self.order_history_path, [entry.to_dict() for entry in self.order_history])
+        self._order_history_save_failures = 0 if saved else self._order_history_save_failures + 1
+        self._check_state_save_failure_notification()
+        return saved
+
+    def _state_save_failure_counts(self) -> dict[str, tuple[str, int]]:
+        """保存対象ごとの(ファイル名, 連続失敗回数)。"""
+        counts = {"order_history": (self.order_history_path.name, self._order_history_save_failures)}
+        state_path = getattr(self.order_sender, "state_path", None)
+        if state_path is not None:
+            counts["paper_state"] = (
+                Path(state_path).name,
+                int(getattr(self.order_sender, "consecutive_save_failures", 0) or 0),
+            )
+        return counts
+
+    def _check_state_save_failure_notification(self) -> None:
+        """保存失敗の連続を初回失敗時にcritical通知する。成功でストリークをリセットする。"""
+        for source, (filename, failures) in self._state_save_failure_counts().items():
+            if failures == 0:
+                self._save_failure_notified_sources.discard(source)
+                continue
+            logger.error(
+                "STATE_SAVE_FAILURE: ファイル=%s | 連続失敗=%d回", filename, failures
+            )
+            if source in self._save_failure_notified_sources:
+                continue
+            self._save_failure_notified_sources.add(source)
+            self._notify_safely("\n".join([
+                "【業務】取引運用",
+                "【機能】状態ファイル保存",
+                "【概要】",
+                "状態ファイルの保存に失敗しました。処理は続行し、次の保存機会に再試行します。",
+                "【詳細】",
+                f"ファイル: {filename}",
+                f"連続失敗回数: {failures}",
+                "例外: OSError(詳細はログを確認してください)",
+            ]))
+
+    def _is_new_buy_halted_by_save_failure(self) -> bool:
+        """保存失敗が連続して閾値に達していれば、再保存を試してなお失敗中かを返す。"""
+        threshold = config.STATE_SAVE_CONSECUTIVE_FAILURE_THRESHOLD
+        if not any(failures >= threshold for _, failures in self._state_save_failure_counts().values()):
+            self._new_buy_halt_notified = False
+            return False
+        # 買いが止まっている間は注文がなく保存機会もないため、ここで再保存して解除を可能にする
+        if self._order_history_save_failures >= threshold:
+            self._save_order_history()
+        retry = getattr(self.order_sender, "retry_save_state", None)
+        if callable(retry) and getattr(self.order_sender, "consecutive_save_failures", 0) >= threshold:
+            retry()
+            self._check_state_save_failure_notification()
+        halted = any(failures >= threshold for _, failures in self._state_save_failure_counts().values())
+        if not halted:
+            self._new_buy_halt_notified = False
+        return halted
 
     def prepare_market_regime(self):
         """取引開始前に市場レジームを取得し、通知・レポートで再利用します。"""
@@ -1935,6 +1993,28 @@ class TradingUseCase:
                         continue
                     # 注文の安全性を確認
                     has_holdings = self._has_holdings(symbol, positions)
+                    if signal.side == config.OrderSide.BUY and self._is_new_buy_halted_by_save_failure():
+                        self._journal_decision(
+                            symbol, "NEW_BUY_HALTED_STATE_SAVE_FAILURE", now, current_price=current_price,
+                            quantity_after=signal.qty, side=signal.side.name,
+                        )
+                        self._log_trade_reason_once(
+                            logging.ERROR,
+                            "NEW_BUY_HALTED_STATE_SAVE_FAILURE",
+                            symbol,
+                            "状態ファイルの保存失敗が連続したため新規買いを停止中",
+                        )
+                        if not self._new_buy_halt_notified:
+                            self._new_buy_halt_notified = True
+                            self._notify_safely("\n".join([
+                                "【業務】取引運用",
+                                "【機能】新規買い停止",
+                                "【概要】",
+                                "NEW_BUY_HALTED_STATE_SAVE_FAILURE: 状態ファイルの保存失敗が"
+                                f"{config.STATE_SAVE_CONSECUTIVE_FAILURE_THRESHOLD}回以上連続したため、新規の買いを停止しました。",
+                                "売り・損切り・決済は継続します。",
+                            ]))
+                        continue
                     should_warn_missing_holdings = (
                         signal.side == config.OrderSide.SELL
                         and not has_holdings

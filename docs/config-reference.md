@@ -133,6 +133,7 @@
 | `RSI_MINIMUM_CLOSES` | "30" | 任意 |  |
 | `RSI_PERIOD` | "14" | 任意 | 売買シグナルのトレンド確認（Wilder方式のRSI） |
 | `RSI_SELL_THRESHOLD` | "45" | 任意 |  |
+| `STATE_SAVE_CONSECUTIVE_FAILURE_THRESHOLD` | "3" | 任意 | 注文履歴・Paper状態ファイルの保存が何回連続で失敗したら新規買いを止めるか(売り・決済は止めない) |
 | `TARGET_POSITIONS` | "3" | 任意 | フィルタリング候補から目指す分散ポジション数 |
 | `TRADING_MODE` | "paper" | 任意 |  |
 

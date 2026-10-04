@@ -2,7 +2,7 @@
 
 - 起票日: 2026-10-04
 - 対象: `src/infrastructure/paper/paper_order_client.py`、`src/infrastructure/persistence/storage.py`、注文履歴読み書き、関連テスト
-- ステータス: **未着手**
+- ステータス: **実装済み(2026-10-04、未コミット)**。キルスイッチ基準・日次レポートの保存失敗は未対応(所見は実装報告参照)
 - 実施時期: **未定（優先度は別途判断）**
 - 関連調査: 2026-10-02「売買部分サイレントスキップ横並び調査」。第1弾は取引判断理由を`DecisionJournalRepository.TRADING_REASON_CODES`等へ記録したが、状態ファイル読込/保存失敗の専用記録はなく、共通JSON層は一般ログだけを出す。
 

@@ -38,6 +38,7 @@
 - `place_market_order()`から本番の`send_order`または`PaperOrderClient`へ成行注文を渡す。`Result == 0`を受付成功として、`TradeSignal.to_order_history_entry()`経由で注文履歴へ記録する。API応答・例外は成功扱いにしない。
 - 注文履歴の実読み書き担当は`TradingUseCase._load_order_history()` / `_save_order_history()`であり、`ORDER_HISTORY_FILE`のJSONを直接読み書きする。過去設計で担当としていた専用`OrderHistoryRepository`は現行コードにない。※規約上は永続化をinfrastructureへ寄せるべき既知の乖離であり、この設計更新ではコードを変更しない。
 - `OrderHistoryEntry.price`は発注時の参照価格であり、本番の実約定価格照会結果ではない。約定価格記録・照会は未実装で、[本番EOD・約定照会タスク](../tasks/task-live-eod-liquidation-and-fill-reconciliation.md)に残る。
+- 状態ファイルの保存・破損対応: `storage.write_json()`は一時ファイルへ書いて`os.replace`で置換し、成否を`bool`で返す(例外は出さない)。`PaperOrderClient`は起動時に`read_json_strict()`で読み、破損・読込失敗・値不正は`StateFileCorruptError`で停止する(`<名前>.corrupt-<YYYYmmdd-HHMMSS>`へコピーを残し、元ファイルは残す。`process_notification`内で生成されるためcritical通知される)。実行中の保存失敗は、注文履歴が`TradingUseCase._order_history_save_failures`、Paper状態が`PaperOrderClient.consecutive_save_failures`で連続回数を持ち、初回失敗でcritical通知して続行する。連続回数が`STATE_SAVE_CONSECUTIVE_FAILURE_THRESHOLD`(既定3)以上の間は新規買いのみ`NEW_BUY_HALTED_STATE_SAVE_FAILURE`で見送り(売り・ATR損切り・EOD決済は継続)、停止中は買いシグナルのたびに再保存を試み、成功すれば解除する。
 
 ### ⑦〜⑨ ループ終了・決済・レポート
 - 1周ごとに`LOOP_INTERVAL`（60秒）休止し、`is_market_closed()`で15:30終了を判定する。
@@ -74,6 +75,7 @@
 | `POSITION_LIMIT_REACHED` / `WALLET_UNKNOWN` | 建玉上限または買付余力不明 |
 | `MARKET_REGIME_DANGER_SKIP` | DANGERによる新規買い見送り |
 | `ORDER_AMOUNT_LIMIT_EXCEEDED` / `ORDER_SAFETY_BLOCKED` | 金額上限または一般安全条件で拒否 |
+| `NEW_BUY_HALTED_STATE_SAVE_FAILURE` | 状態ファイル保存の連続失敗による新規買い停止 |
 | `ORDER_REJECTED_NONE` / `ORDER_REJECTED_RESULT` | 注文応答なし、またはResultが成功値以外 |
 | `BOARD_RECOVERED` / `EOD_PRICE_UNAVAILABLE` | 板取得の復旧、または通常EOD経路の参照価格不明 |
 | `EOD_LIQUIDATION_POSITIONS_UNAVAILABLE` / `LIQUIDATION_BOARD_UNAVAILABLE` | 清算対象の保有一覧、またはfresh板の取得不能 |

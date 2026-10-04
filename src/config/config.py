@@ -131,6 +131,22 @@ KABU_TOKEN_REFRESH_FAILURE_BACKOFF_SECONDS = float(os.getenv("KABU_TOKEN_REFRESH
 # 対象銘柄全件の板取得が何回連続で失敗したら通知するか（取引ループの1周を1回と数える）
 BOARD_FETCH_CONSECUTIVE_FAILURE_THRESHOLD = int(os.getenv("BOARD_FETCH_CONSECUTIVE_FAILURE_THRESHOLD", "3"))
 
+
+def _positive_int_env(name: str, raw: str) -> int:
+    try:
+        value = int(raw.strip())
+    except ValueError:
+        value = 0
+    if value < 1:
+        raise ValueError(f"{name}は1以上の整数を指定してください: {raw!r}")
+    return value
+
+
+# 注文履歴・Paper状態ファイルの保存が何回連続で失敗したら新規買いを止めるか(売り・決済は止めない)
+STATE_SAVE_CONSECUTIVE_FAILURE_THRESHOLD = _positive_int_env(
+    "STATE_SAVE_CONSECUTIVE_FAILURE_THRESHOLD", os.getenv("STATE_SAVE_CONSECUTIVE_FAILURE_THRESHOLD", "3")
+)
+
 # 強制決済(緊急停止・EOD)時に保有株一覧の取得が失敗した場合の再試行回数・間隔(秒)。
 # 失敗(None)と保有ゼロ([])を取り違えないための安全策
 LIQUIDATION_POSITIONS_FETCH_RETRIES = int(os.getenv("LIQUIDATION_POSITIONS_FETCH_RETRIES", "3"))

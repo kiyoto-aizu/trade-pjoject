@@ -1,49 +1,50 @@
 flowchart TD
-    Start(["cron: 当日9:35頃起動<br/>run_trading.py"]) --> A1["API接続 & トークン取得"]
-    A1 --> A2["FilteringResultRepository.load_for_date()<br/>当日の候補を最大10銘柄読み込み"]
-    A2 --> A3{"当日結果・銘柄あり?"}
-    A3 -->|No| A3a(["起動中止 + 通知<br/>ループ開始しない"])
-    A3 -->|Yes| A4["最大10候補の確定終値・板情報を事前取得"]
-    A4 --> A4chk{"全銘柄のデータ取得成功?"}
-    A4chk -->|No| A3a
-    A4chk -->|Yes| Allocate["資金配分で発注対象を最大3銘柄に決定"]
+    Start(["予定: 平日09:35-15:30<br/>run_trading.py"]) --> Mode{"paper または<br/>live: TRADING_MODE=live<br/>IS_DEMO=false<br/>ENABLE_LIVE_ORDERING=true"}
+    Mode -->|No| StopMode(["起動拒否"])
+    Mode -->|Yes| Lock["market_workflow_lock取得"]
+    Lock -->|取得失敗| StopLock(["他の市場処理が実行中<br/>終了"])
+    Lock -->|取得| Notify["process_notification開始<br/>ライフサイクル通知は無効"]
+    Notify --> Session{"取引日・取引時間内?"}
+    Session -->|No| End(["終了"])
+    Session -->|Yes| Filter["当日FilteringResult.load_for_date()"]
+    Filter --> FilterCheck{"当日結果・銘柄あり?"}
+    FilterCheck -->|No| End
+    FilterCheck -->|Yes| Token["kabu token取得<br/>401時は1回自動復旧・再試行"]
+    Token --> Regime["MarketRegime取得<br/>NORMAL / CAUTION / DANGER"]
+    Regime --> Cutoff{"15:20以降?"}
+    Cutoff -->|Yes| Run["TradingUseCase.run()<br/>遅延時は15:30以降にEOD_LATE_LIQUIDATION"]
+    Cutoff -->|No| Preflight["全候補の日足・板を事前取得"]
+    Preflight --> PreflightCheck{"全候補の必要データあり?"}
+    PreflightCheck -->|No| End
+    PreflightCheck -->|Yes| Run
 
-    Allocate --> Loop["メイン監視ループ開始<br/>(配分後の銘柄を1日固定)"]
+    Run --> Loop{"緊急停止または取引終了?"}
+    Loop -->|緊急停止| Emergency["キルスイッチ<br/>全保有の清算を試行"]
+    Loop -->|15:20以上| EOD["全保有の持ち越し防止決済"]
+    Loop -->|監視継続| Data["確定日足 + GET /board/{symbol}"]
+    Data --> Decision["calculate_price_limit / calculate_rsi<br/>TradeSignal.evaluate"]
+    Decision --> RegimeCheck{"レジーム・ATR・RSI条件成立?"}
+    RegimeCheck -->|No / 見送り| Journal["理由コード・decision_journal<br/>filter decision eventを記録"]
+    RegimeCheck -->|Yes| Safety["口座状態・予算・重複・<br/>建玉枠・キルスイッチ確認"]
+    Safety -->|NG| Journal
+    Safety -->|OK| Order["成行注文送信"]
+    Order -->|Result=0| History["OrderHistoryEntryを作成<br/>注文履歴JSONへ直接保存"]
+    Order -->|拒否・応答なし| Journal
+    History --> Journal
+    Journal --> More{"全候補を評価済み?"}
+    More -->|No| Data
+    More -->|Yes| Recover["401復旧失敗 / 板全件連続失敗を確認"]
+    Recover --> Sleep["LOOP_INTERVAL = 60秒"]
+    Sleep --> Loop
+    EOD --> Fresh{"CurrentPriceTime/Status<br/>正の有限価格が有効?"}
+    Fresh -->|Yes| Liquidate["成行決済を試行"]
+    Fresh -->|No| Unresolved["未決済記録・通知<br/>paper/live共通で発注しない"]
+    Emergency --> Liquidate
+    Liquidate --> SameDay["same_day_*を当日確定"]
+    Unresolved --> SameDay
+    SameDay --> Report["日次JSONレポート<br/>Slack daily通知"]
+    Report --> End
 
-    subgraph LOOP["監視ループ（各銘柄ごと）"]
-        direction TB
-        S3["確定終値からSMA5・RSI14を計算"]
-        S3 --> S4["③ GET /board/symbol<br/>現在値取得"]
-        S4 --> S4chk{"取得不可?"}
-        S4chk -->|Yes| Skip["当該銘柄のみ評価スキップ"]
-        S4chk -->|No| S5
-
-        S5["④ domain/rules.py<br/>売買条件判定<br/>→ Signal(BUY/SELL/NONE)"]
-        S5 --> S5chk{"Signalあり?"}
-        S5chk -->|NONE| Skip
-
-        S5chk -->|BUY/SELL| S6a["⑤ GET /wallet/cash・/positions・/apisoftlimit 再取得"]
-        S6a --> S6b["⑤ 発注セーフティチェック<br/>予算/重複注文/保有有無<br/>+ キルスイッチ判定"]
-        S6b --> S6chk{"チェックOK?"}
-        S6chk -->|NG| Skip
-
-        S6chk -->|OK| S7["⑥ POST /sendorder<br/>発注実行"]
-        S7 --> S6log["注文履歴へ永続化<br/>監査ログ記録"]
-        S6log --> Skip
-    end
-
-    Loop --> LOOP
-    Skip --> AllDone{"全銘柄処理済み?"}
-    AllDone -->|No| LOOP
-    AllDone -->|Yes| S8["⑦ 60秒スリープ"]
-
-    S8 --> S9["⑧ 次のループ開始時にis_market_closed()"]
-    S9 --> S9chk{"取引時間内?"}
-    S9chk -->|Yes| Loop
-    S9chk -->|No| S10
-
-    S10["⑨ 日次レポートをJSON保存・通知<br/>発注件数・評価損益・キルスイッチ<br/>LLM分析は有効時のみ参考情報として追加"]
-    S10 --> End(["終了"])
-
-    style A3a fill:#f8d7da,stroke:#c0392b
-    style Skip fill:#fff3cd,stroke:#d4a017
+    style StopMode fill:#f8d7da,stroke:#c0392b
+    style StopLock fill:#fff3cd,stroke:#d4a017
+    style Unresolved fill:#f8d7da,stroke:#c0392b

@@ -11,10 +11,13 @@ from pathlib import Path
 
 from src.config import config
 from src.application.market_regime_usecase import MarketRegimeUseCase
+from src.application.market_tendency_notification import build_market_tendency_lines
 from src.application.trading_usecase import TradingUseCase
+from src.domain.market_tendency import TendencyPeriod
 from src.domain.rules import is_market_closed
 from src.infrastructure.kabu.get_token import get_api_token
 from src.infrastructure.persistence.filtering_result_repository import FilteringResultRepository
+from src.infrastructure.persistence.filtering_diagnostics_repository import FilteringDiagnosticsRepository
 from src.infrastructure.persistence.filter_decision_repository import FilterDecisionRepository
 from src.infrastructure.persistence.decision_journal_repository import DecisionJournalRepository
 from src.infrastructure.execution_lock import market_workflow_lock
@@ -32,6 +35,36 @@ def _create_decision_journal_repository():
     except Exception:
         logging.getLogger(__name__).exception('判断記録DBの初期化に失敗しました。記録なしで続行します。')
         return None
+
+
+def _load_filtering_activity_ratios(target_date, symbols):
+    try:
+        diagnostics = FilteringDiagnosticsRepository(
+            config.FILTERING_DIAGNOSTICS_DIRECTORY
+        ).load_latest_for_date(target_date.isoformat())
+    except Exception as exc:
+        logging.getLogger(__name__).warning(
+            "TENDENCY_ACTIVITY_UNAVAILABLE: 診断ファイル読込失敗 | 理由=%s",
+            type(exc).__name__,
+        )
+        diagnostics = None
+
+    ratios_by_symbol = {}
+    if diagnostics is not None:
+        ratios_by_symbol = {
+            str(candidate.get("symbol")): candidate.get("ratio")
+            for candidate in diagnostics.get("candidates", [])
+            if candidate.get("selected")
+        }
+    ratios = [ratios_by_symbol.get(str(symbol)) for symbol in symbols]
+    missing = sum(ratio is None for ratio in ratios)
+    if missing:
+        logging.getLogger(__name__).warning(
+            "TENDENCY_ACTIVITY_UNAVAILABLE: 対象銘柄=%d | 欠損=%d",
+            len(symbols),
+            missing,
+        )
+    return ratios
 
 
 def create_trading_use_case(token: str) -> TradingUseCase:
@@ -140,6 +173,13 @@ def main(now_provider=None) -> None:
             use_case.warn_on_overnight_positions()
             if hasattr(use_case, 'prepare_market_regime'):
                 use_case.prepare_market_regime()
+                tendency_lines = build_market_tendency_lines(
+                    getattr(use_case, "market_regime_assessment", None),
+                    _load_filtering_activity_ratios(now.date(), filtering_result.symbols),
+                    period=TendencyPeriod.CURRENT_DAY,
+                    activity_label="対象銘柄の活発度",
+                    include_market_line=False,
+                )
                 message = (
                     "【業務】取引運用\n"
                     "【機能】取引開始\n"
@@ -147,7 +187,7 @@ def main(now_provider=None) -> None:
                     f"{config.TRADING_MODE_LABEL}を開始しました。\n"
                     "【詳細】\n"
                     f"対象銘柄数: {len(filtering_result.symbols)}\n"
-                    + "\n".join(use_case.market_conditions_detail())
+                    + "\n".join([*use_case.market_conditions_detail(), *tendency_lines])
                 )
                 notify_daily(message)
             if not config.ALLOW_OVERNIGHT_HOLDING and is_market_closed(

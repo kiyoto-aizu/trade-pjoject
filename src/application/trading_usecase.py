@@ -511,7 +511,7 @@ class TradingUseCase:
         )
 
     def market_conditions_detail(self) -> list[str]:
-        """市場指標を意味と現在の状態付きで通知用に整形します。"""
+        """市場指標の値と既存状態ラベルを通知用に整形します。"""
         assessment = self.market_regime_assessment
         if assessment is None or not getattr(assessment, "data_available", False):
             reason = getattr(assessment, "failure_reason", None) or "データ未取得"
@@ -525,17 +525,15 @@ class TradingUseCase:
             return [self.market_conditions_summary(), "補足: 一部の市場指標を取得できませんでした。"]
         thresholds = config.MARKET_REGIME_THRESHOLDS
         lines = [
-            "MarketRegime: " + self.market_regime.value,
-            "意味: 市場全体の警戒度です。",
-            "現在の状態: " + {
+            "MarketRegime: " + self.market_regime.value + "（" + {
                 MarketRegime.NORMAL: "通常",
                 MarketRegime.CAUTION: "やや警戒",
                 MarketRegime.DANGER: "危険・新規買い停止",
-            }[self.market_regime],
-            f"日経前日比: {nikkei_change:.2f}%（意味: 日経平均の前日からの変化率 / 状態: {'上昇' if nikkei_change >= 0 else '下落'}）",
-            f"実現ボラティリティ: {realized_volatility:.2f}%（意味: 市場全体の値動きの大きさ / 状態: {'危険' if realized_volatility >= thresholds.realized_vol_danger else '注意' if realized_volatility >= thresholds.realized_vol_caution else '通常'}）",
-            f"VIX: {vix:.2f}（意味: 市場の不安心理 / 状態: {'危険' if vix >= thresholds.vix_danger else '注意' if vix >= thresholds.vix_caution else '通常'}）",
-            f"ADX: {adx:.2f}（意味: トレンドの強さ / 状態: {'強いトレンド' if adx >= config.MARKET_REGIME_ADX_TREND_THRESHOLD else '強いトレンドなし'}）",
+            }[self.market_regime] + "）",
+            f"日経前日比: {nikkei_change:.2f}%（状態: {'上昇' if nikkei_change >= 0 else '下落'}）",
+            f"実現ボラティリティ: {realized_volatility:.2f}%（状態: {'危険' if realized_volatility >= thresholds.realized_vol_danger else '注意' if realized_volatility >= thresholds.realized_vol_caution else '通常'}）",
+            f"VIX: {vix:.2f}（状態: {'危険' if vix >= thresholds.vix_danger else '注意' if vix >= thresholds.vix_caution else '通常'}）",
+            f"ADX: {adx:.2f}（状態: {'強いトレンド' if adx >= config.MARKET_REGIME_ADX_TREND_THRESHOLD else '強いトレンドなし'}）",
         ]
         return lines
 

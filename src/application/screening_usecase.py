@@ -5,19 +5,21 @@
 ランキング情報から規制対象外の銘柄を抽出し、スクリーニング結果として出力します。
 ================================================================================
 """
-from datetime import datetime
+from datetime import date, datetime
 import logging
 from time import sleep
 
 from src.config import config
 from src.domain.enums import RankingType
 from src.domain.models import Regulation, ScreeningAuditEntry, ScreeningResult
+from src.domain.market_tendency import TendencyPeriod
 from src.domain.rules import (
     exclude_by_regulation,
     filter_candidates_by_price,
     limit_candidates,
     merge_ranking_candidates,
 )
+from src.application.market_tendency_notification import build_market_tendency_lines
 from src.infrastructure.notification.slack_notify import format_result_notification
 
 logger = logging.getLogger(__name__)
@@ -31,7 +33,17 @@ class ScreeningUseCase:
     取引対象銘柄のリストを生成します。
     """
     
-    def __init__(self, ranking_repository, regulation_repository, exchange_repository, result_repository, notifier=None):
+    def __init__(
+        self,
+        ranking_repository,
+        regulation_repository,
+        exchange_repository,
+        result_repository,
+        notifier=None,
+        *,
+        market_regime_usecase=None,
+        turnover_client=None,
+    ):
         """
         ScreeningUseCaseを初期化します。
         
@@ -47,6 +59,8 @@ class ScreeningUseCase:
         self.exchange_repository = exchange_repository
         self.result_repository = result_repository
         self.notifier = notifier
+        self.market_regime_usecase = market_regime_usecase
+        self.turnover_client = turnover_client
         self.batch_started = None
         self.batch_finished = None
 
@@ -241,6 +255,7 @@ class ScreeningUseCase:
                 symbols,
                 turnover_by_symbol,
                 price_gain_by_symbol,
+                date.fromisoformat(result_date),
             )
         return result
 
@@ -275,6 +290,7 @@ class ScreeningUseCase:
         symbols,
         turnover_by_symbol,
         price_gain_by_symbol,
+        target_date,
     ) -> None:
         details = [
             f"採用銘柄数: {len(symbols)}件",
@@ -284,6 +300,23 @@ class ScreeningUseCase:
             f"規制除外数: {exclusion_result.excluded_by_regulation_count}件",
             f"地方取引所除外数: {exclusion_result.excluded_by_exchange_count}件",
         ]
+        activity_ratios = self._selected_turnover_ratios(
+            symbols, turnover_by_symbol, target_date
+        )
+        try:
+            assessment = (
+                self.market_regime_usecase.execute()
+                if self.market_regime_usecase is not None else None
+            )
+        except Exception:
+            logger.exception("TENDENCY_MARKET_UNAVAILABLE: MarketRegime取得に失敗しました")
+            assessment = None
+        details.extend(build_market_tendency_lines(
+            assessment,
+            activity_ratios,
+            period=TendencyPeriod.PREVIOUS_CLOSE,
+            activity_label="候補の活発度",
+        ))
         top_entries = []
         for symbol in exclusion_result.remaining[:3]:
             turnover_entry = turnover_by_symbol.get(symbol)
@@ -316,6 +349,29 @@ class ScreeningUseCase:
             self.notifier(message)
         except Exception:
             logger.exception("スクリーニング完了通知に失敗しました。")
+
+    def _selected_turnover_ratios(self, symbols, turnover_by_symbol, target_date):
+        if self.turnover_client is None:
+            return [None for _ in symbols]
+        ratios = []
+        for symbol in symbols:
+            entry = turnover_by_symbol.get(symbol)
+            try:
+                average = self.turnover_client.get_average_turnover_before(symbol, target_date, 20)
+                ratio = (
+                    entry.value / average
+                    if entry is not None and average is not None and average > 0
+                    else None
+                )
+            except Exception as exc:
+                logger.warning(
+                    "TENDENCY_ACTIVITY_UNAVAILABLE: 銘柄=%s | 理由=%s",
+                    symbol,
+                    type(exc).__name__,
+                )
+                ratio = None
+            ratios.append(ratio)
+        return ratios
 
     def _analyze_anomaly_if_needed(self, candidates, price_filter_result, exclusion_result, symbols) -> str | None:
         """採用件数が閾値を下回るなど普段と異なる可能性がある時だけLLMを呼び出し、クレジットを節約する。"""

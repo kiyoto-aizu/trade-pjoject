@@ -11,6 +11,7 @@ from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
 
 from src.config import config
+from src.application.market_regime_usecase import MarketRegimeUseCase
 from src.infrastructure.kabu.get_token import get_api_token
 from src.infrastructure.kabu.regulation_repository import RegulationRepository
 from src.infrastructure.kabu.primaryexchange_repository import PrimaryExchangeRepository
@@ -25,6 +26,7 @@ from src.infrastructure.persistence.historical_regulation_repository import Hist
 from src.infrastructure.persistence.screening_api_check_repository import ScreeningApiCheckRepository
 from src.infrastructure.market_data.historical_ranking_repository import HistoricalRankingRepository
 from src.infrastructure.market_data.yahoo_finance_client import YahooFinanceClient
+from src.infrastructure.market_data.yahoo_index_client import YahooIndexClient
 from src.application.screening_usecase import ScreeningUseCase
 from src.infrastructure.calendar.japanese_calendar import is_trading_day
 
@@ -92,9 +94,10 @@ def main() -> None:
             # 価格を意識した絞り込みができない。上場銘柄マスタ+日足データから
             # 全銘柄のランキングを自前計算するHistoricalRankingRepositoryを、
             # 通常運用(過去日付指定なし)でも常用する。
+            market_data_client = YahooFinanceClient()
             ranking_repository = HistoricalRankingRepository(
                 ListedSecurityRepository(root / 'data' / 'universe' / 'listed_securities.csv'),
-                YahooFinanceClient(),
+                market_data_client,
             )
             if args.target_date:
                 # 過去日付を明示指定した場合のみ、規制情報もその時点の履歴で再現する
@@ -119,6 +122,14 @@ def main() -> None:
                 exchange_repository,
                 ScreeningResultRepository(config.SCREENING_RESULT_DIRECTORY),
                 notify_result,
+                market_regime_usecase=MarketRegimeUseCase(
+                    market_data_client=YahooIndexClient(),
+                    thresholds=config.MARKET_REGIME_THRESHOLDS,
+                    realized_volatility_window=config.MARKET_REGIME_REALIZED_VOL_WINDOW,
+                    data_range=config.MARKET_REGIME_DATA_RANGE,
+                    adx_threshold=config.MARKET_REGIME_ADX_TREND_THRESHOLD,
+                ),
+                turnover_client=market_data_client,
             )
             usecase.batch_started = lambda batch, _: register_symbols(token, batch) is not None
             usecase.batch_finished = lambda _, __: unregister_all(token) is not None

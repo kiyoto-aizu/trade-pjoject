@@ -15,3 +15,12 @@ class FilteringDiagnosticsRepository:
         path = self.directory / f"{diagnostics['date']}_{timestamp}.json"
         path.write_text(json.dumps(diagnostics, ensure_ascii=False, indent=2), encoding="utf-8")
         return path
+
+    def load_latest_for_date(self, target_date: str) -> dict | None:
+        """指定日の診断ファイルから最も新しい記録を読み込みます。"""
+        paths = sorted(self.directory.glob(f"{target_date}_*.json"), reverse=True)
+        for path in paths:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if data.get("date") == target_date:
+                return data
+        return None

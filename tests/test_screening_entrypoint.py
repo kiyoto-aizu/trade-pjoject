@@ -40,8 +40,9 @@ def test_main_saves_primary_screening_before_price_band_results(monkeypatch):
         yield True
 
     class FakeScreeningUseCase:
-        def __init__(self, *args):
+        def __init__(self, *args, **kwargs):
             self.args = args
+            self.kwargs = kwargs
             self.batch_started = None
             self.batch_finished = None
             usecases.append(self)

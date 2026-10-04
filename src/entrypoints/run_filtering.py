@@ -12,6 +12,7 @@ from pathlib import Path
 from time import monotonic, perf_counter
 
 from src.config import config
+from src.application.market_regime_usecase import MarketRegimeUseCase
 from src.application.filtering_usecase import FilteringDeadlineExceeded, FilteringUseCase
 from src.infrastructure.persistence.decision_journal_repository import DecisionJournalRepository
 from src.infrastructure.kabu.get_board import get_current_board
@@ -20,6 +21,7 @@ from src.infrastructure.kabu.unregister import unregister_all
 from src.infrastructure.kabu.token_provider import get_token_provider
 from src.infrastructure.execution_lock import market_workflow_lock
 from src.infrastructure.market_data.yahoo_finance_client import YahooFinanceClient
+from src.infrastructure.market_data.yahoo_index_client import YahooIndexClient
 from src.infrastructure.notification.slack_notify import notify_daily, process_notification
 from src.infrastructure.persistence.filtering_result_repository import FilteringResultRepository
 from src.infrastructure.persistence.filtering_diagnostics_repository import FilteringDiagnosticsRepository
@@ -232,6 +234,13 @@ def main() -> None:
                     FilteringDiagnosticsRepository(config.FILTERING_DIAGNOSTICS_DIRECTORY)
                     if args.target_date is None else None
                 ),
+                        market_regime_usecase=MarketRegimeUseCase(
+                            market_data_client=YahooIndexClient(),
+                            thresholds=config.MARKET_REGIME_THRESHOLDS,
+                            realized_volatility_window=config.MARKET_REGIME_REALIZED_VOL_WINDOW,
+                            data_range=config.MARKET_REGIME_DATA_RANGE,
+                            adx_threshold=config.MARKET_REGIME_ADX_TREND_THRESHOLD,
+                        ),
             )
             try:
                 usecase.execute(target_date=args.target_date)

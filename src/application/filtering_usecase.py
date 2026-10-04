@@ -10,7 +10,9 @@ import logging
 from time import monotonic
 
 from src.domain.models import FilteringResult, ScoredCandidate
+from src.domain.market_tendency import TendencyPeriod
 from src.domain.rules import calculate_volume_surge_ratio, select_top_n_by_surge_ratio
+from src.application.market_tendency_notification import build_market_tendency_lines
 from src.config import config
 from src.infrastructure.calendar.japanese_calendar import is_trading_day
 from src.infrastructure.persistence.decision_journal_repository import STAGE_FILTERING
@@ -35,6 +37,7 @@ class FilteringUseCase:
         self, screening_repository, board_client, volume_client, result_repository, notifier=None,
         decision_journal_repository=None,
         diagnostics_repository=None,
+        market_regime_usecase=None,
     ):
         """
         FilteringUseCaseを初期化します。
@@ -53,6 +56,7 @@ class FilteringUseCase:
         self.notifier = notifier
         self.decision_journal_repository = decision_journal_repository
         self.diagnostics_repository = diagnostics_repository
+        self.market_regime_usecase = market_regime_usecase
 
     def execute(
         self,
@@ -342,12 +346,32 @@ class FilteringUseCase:
     def _notify_completion(
         self, screening, symbols, scored, skipped_count: int = 0, reason_counts: dict[str, int] | None = None
     ) -> None:
+        selected_symbols = set(symbols)
+        activity_ratios = [
+            candidate.surge_ratio
+            for candidate in scored
+            if candidate.symbol in selected_symbols
+        ]
+        try:
+            assessment = (
+                self.market_regime_usecase.execute()
+                if self.market_regime_usecase is not None else None
+            )
+        except Exception:
+            logger.exception("TENDENCY_MARKET_UNAVAILABLE: MarketRegime取得に失敗しました")
+            assessment = None
+        tendency_lines = build_market_tendency_lines(
+            assessment,
+            activity_ratios,
+            period=TendencyPeriod.PREVIOUS_CLOSE,
+            activity_label="通過銘柄の活発度",
+        )
         if not screening:
             message = format_result_notification(
                 "銘柄選定",
                 "フィルタリング",
                 "前日の結果がないため完了しました。",
-                ["採用銘柄数: 0件"],
+                ["採用銘柄数: 0件", *tendency_lines],
             )
         else:
             ratios_by_symbol = {candidate.symbol: candidate.surge_ratio for candidate in scored}
@@ -356,6 +380,7 @@ class FilteringUseCase:
                 f"入力銘柄数: {len(screening.symbols)}件",
                 f"評価完了数: {len(scored)}件",
                 f"評価対象外数: {skipped_count}件",
+                *tendency_lines,
             ]
             if reason_counts:
                 details.append(

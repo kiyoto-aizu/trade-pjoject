@@ -110,6 +110,52 @@ def test_paper_order_client_rejects_orders_without_changing_state():
     assert executor.orders == []
 
 
+@pytest.mark.parametrize(
+    ("price", "reason"),
+    [
+        (None, "ORDER_REJECTED_PAPER_PRICE_MISSING"),
+        (0, "ORDER_REJECTED_PAPER_PRICE_INVALID"),
+        (-1, "ORDER_REJECTED_PAPER_PRICE_INVALID"),
+        (float("nan"), "ORDER_REJECTED_PAPER_PRICE_INVALID"),
+        (float("inf"), "ORDER_REJECTED_PAPER_PRICE_INVALID"),
+        (float("-inf"), "ORDER_REJECTED_PAPER_PRICE_INVALID"),
+        ("100", "ORDER_REJECTED_PAPER_PRICE_INVALID"),
+    ],
+)
+@pytest.mark.parametrize("side", [config.OrderSide.BUY.value, config.OrderSide.SELL.value])
+def test_paper_order_client_rejects_invalid_prices_without_mutating_state(
+    tmp_path, caplog, price, reason, side
+):
+    state_path = tmp_path / "paper_state.json"
+    executor = PaperOrderClient(
+        prices={"7203": price},
+        cash=10_000.0,
+        order_qty=100,
+        holdings={"7203": 100},
+        average_costs={"7203": 80.0},
+        orders=[{"OrderId": "paper-6"}],
+        realized_pnl=123.0,
+        state_path=state_path,
+        _next_order_id=7,
+    )
+    assert executor._save_state()
+    state_before = state_path.read_bytes()
+
+    result = executor.place_market_order("unused", "7203", side)
+
+    assert result is None
+    assert executor.last_rejection_reason == reason
+    assert executor.cash == 10_000.0
+    assert executor.holdings == {"7203": 100}
+    assert executor.average_costs == {"7203": 80.0}
+    assert executor.orders == [{"OrderId": "paper-6"}]
+    assert executor._next_order_id == 7
+    assert executor.realized_pnl == 123.0
+    assert state_path.read_bytes() == state_before
+    assert reason in caplog.text
+    assert "7203" in caplog.text
+
+
 def test_paper_order_client_restores_account_state_after_restart(tmp_path):
     state_path = tmp_path / 'paper_account_state.json'
     executor = PaperOrderClient(

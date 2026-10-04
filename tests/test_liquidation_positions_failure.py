@@ -76,6 +76,7 @@ def test_emergency_stop_retries_and_succeeds_after_transient_positions_failure(m
     stop_file = tmp_path / "emergency_stop"
     stop_file.write_text("requested", encoding="utf-8")
     monkeypatch.setattr(config, "EMERGENCY_STOP_FILE", stop_file)
+    monkeypatch.setattr(config, "TRADING_MODE", "live")
     monkeypatch.setattr(config, "LIQUIDATION_POSITIONS_FETCH_RETRIES", 3)
     monkeypatch.setattr(config, "LIQUIDATION_POSITIONS_FETCH_RETRY_BACKOFF_SECONDS", 0)
     sleep_calls = []

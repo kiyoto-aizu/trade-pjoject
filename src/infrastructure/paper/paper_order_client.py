@@ -1,8 +1,11 @@
 """実注文を発生させないペーパートレード用の注文実行実装。"""
 from __future__ import annotations
 
+import logging
+import math
 from dataclasses import dataclass, field
 from datetime import date
+from numbers import Real
 from typing import Callable, Dict, List, Optional
 from pathlib import Path
 
@@ -13,6 +16,8 @@ from src.infrastructure.persistence.storage import (
     read_json_strict,
     write_json,
 )
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -32,6 +37,7 @@ class PaperOrderClient:
     today_provider: Callable[[], date] = field(default=date.today, repr=False, compare=False)
     state_path: Optional[Path] = None
     _next_order_id: int = 1
+    last_rejection_reason: Optional[str] = field(default=None, init=False)
     # 状態ファイルの保存が連続して失敗した回数(成功で0に戻る)。TradingUseCaseが参照する
     consecutive_save_failures: int = field(default=0, init=False)
 
@@ -100,8 +106,33 @@ class PaperOrderClient:
     def place_market_order(self, token: str, symbol: str, side: str, quantity: Optional[int] = None) -> Optional[dict]:
         """成行注文を不利方向のスリッページ・手数料込みで仮想約定する。"""
         del token
+        self.last_rejection_reason = None
         price = self.prices.get(symbol)
         if price is None:
+            self.last_rejection_reason = "ORDER_REJECTED_PAPER_PRICE_MISSING"
+            logger.error(
+                "%s: 銘柄=%s | 方向=%s | 価格=%r",
+                self.last_rejection_reason,
+                symbol,
+                side,
+                price,
+            )
+            return None
+        try:
+            if isinstance(price, bool) or not isinstance(price, Real):
+                raise TypeError("価格が数値ではありません")
+            price = float(price)
+        except (TypeError, ValueError, OverflowError):
+            price = None
+        if price is None or not math.isfinite(price) or price <= 0:
+            self.last_rejection_reason = "ORDER_REJECTED_PAPER_PRICE_INVALID"
+            logger.error(
+                "%s: 銘柄=%s | 方向=%s | 価格=%r",
+                self.last_rejection_reason,
+                symbol,
+                side,
+                self.prices.get(symbol),
+            )
             return None
 
         quantity = quantity if quantity is not None else self.order_qty

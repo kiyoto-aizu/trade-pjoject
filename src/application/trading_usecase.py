@@ -143,6 +143,9 @@ class TradingUseCase:
     def _execution_mode(self) -> str:
         return config.TRADING_MODE
 
+    def _is_paper_mode(self) -> bool:
+        return self._execution_mode == "paper"
+
     def _record_filter_decision_safely(
         self,
         event_type: str,
@@ -1397,7 +1400,7 @@ class TradingUseCase:
                             quantity,
                             price,
                         )
-                    elif self.order_sender and self.order_sender.__class__.__name__ == "PaperOrderClient":
+                    elif self._is_paper_mode():
                         logger.info("持ち越し防止売りが成立しました: 銘柄=%s | 数量=%s", symbol, quantity)
                     else:
                         logger.info("持ち越し防止売りを発注しました: 銘柄=%s | 数量=%s", symbol, quantity)
@@ -1553,7 +1556,7 @@ class TradingUseCase:
             if self._is_emergency_stop_requested():
                 self.emergency_stop_triggered = True
                 self._trigger_kill_switch("手動緊急停止フラグが検知されました")
-                self._liquidate_all_positions()
+                self._liquidate_all_positions(require_fresh_price=self._is_paper_mode())
                 break
             now = initial_now if first_loop else now_provider()
             self._current_now = now
@@ -2165,13 +2168,19 @@ class TradingUseCase:
                             order_result.get('OrderId'),
                         )
                     elif order_result is None:
+                        rejection_reason = getattr(self.order_sender, "last_rejection_reason", None)
+                        if rejection_reason not in (
+                            "ORDER_REJECTED_PAPER_PRICE_MISSING",
+                            "ORDER_REJECTED_PAPER_PRICE_INVALID",
+                        ):
+                            rejection_reason = "ORDER_REJECTED_NONE"
                         self._journal_decision(
-                            symbol, "ORDER_REJECTED_NONE", now, current_price=current_price,
+                            symbol, rejection_reason, now, current_price=current_price,
                             quantity_after=signal.qty, side=signal.side.name,
                         )
                         logger.error(
                             "%s: 銘柄=%s | 方向=%s | 数量=%s | 応答=None",
-                            "ORDER_REJECTED_NONE",
+                            rejection_reason,
                             symbol,
                             signal.side.name,
                             signal.qty,

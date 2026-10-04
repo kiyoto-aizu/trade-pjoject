@@ -2,8 +2,8 @@
 
 - 起票日: 2026-10-04
 - 対象: `src/infrastructure/paper/paper_order_client.py`、`src/application/trading_usecase.py`、`src/infrastructure/kabu/board_repository.py`、ヒストリカル再生クライアント、関連テスト
-- ステータス: **未着手**
-- 実施時期: **未定（優先度は別途判断）**
+- ステータス: **完了（2026-10-04）**
+- 実施時期: **2026-10-04**
 - 関連調査: 2026-10-02「売買部分サイレントスキップ横並び調査」。第1弾は`ORDER_REJECTED_NONE` / `ORDER_REJECTED_RESULT`等を`DecisionJournalRepository.TRADING_REASON_CODES`に記録する。価格値の不正を区別する理由コードはまだない。
 
 ## 背景
@@ -45,12 +45,21 @@
 
 ## 完了条件
 
-- 買い・売り双方で価格が欠落、0以下、NaN、正負infのとき、約定せず理由コード付きで記録されることをテストする。
-- 緊急停止で鮮度検証に失敗した場合、発注されずERROR記録とSlack通知（失敗銘柄まとめ1回）が行われ、ペーパー保有が未決済で残ることをテストする。
-- 緊急停止で鮮度検証が成功した場合、従来どおり全保有が決済されることをテストする。
-- freshness検証のJST当日/翌日、status 1・8/その他、価格の有限正値をテストする。
-- バックテストv2の複数日再生（13日・8注文）の結果が従来値と一致することを実装時に確認する。
-- 実kabu注文を行うテストは作成しない。
+- [x] 買い・売り双方で価格が欠落、0以下、NaN、正負inf、数値以外のとき約定せず、理由コードを記録する。
+- [x] 緊急停止で鮮度検証に失敗した場合、発注せずERROR記録と銘柄まとめ通知を1回行い、ペーパー保有を残す。
+- [x] 緊急停止で鮮度検証が成功した場合、決済する。status 8の引け後価格も受け入れる。
+- [x] freshness検証の当日性、status 1/8、正の有限価格を確認する既存テストを維持する。
+- [x] バックテストv2の複数日再生（13日・8注文）の結果を実装前後で確認する。
+- [x] 実kabu注文を行うテストを作成しない。
+- [x] 手動緊急停止はpaperだけfreshness検証を要求し、liveは従来の非fresh経路を維持する。
+- [x] フルテストスイートを実行する。
+
+## 実施記録（2026-10-04）
+
+- PaperOrderClientは注文開始時に価格を検証し、`None`を`ORDER_REJECTED_PAPER_PRICE_MISSING`、0以下・非有限・数値以外を`ORDER_REJECTED_PAPER_PRICE_INVALID`として拒否する。拒否理由は`last_rejection_reason`とERRORログで公開し、UseCaseのDecisionJournalにも記録する。約定状態・注文ID・状態ファイルは更新しない。
+- モード判定は`TradingUseCase._is_paper_mode()`へ集約した。手動緊急停止でpaperは既存のfreshness検証を使用し、liveは`require_fresh_price=False`の従来挙動を維持する。
+- 複数日再生の実装前基準: 13日、8注文、実現損益 -489.32円（独立再計算一致）。実装後も同値。
+- paper価格拒否、緊急停止paper/live分岐、status 8、既存15:20/遅延決済をテストで確認。全テストは完了時の実行記録を参照。
 
 ## 関連資料
 

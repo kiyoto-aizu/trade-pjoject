@@ -141,6 +141,41 @@ def test_trading_loop_journals_zero_quantity_with_budget_and_account(monkeypatch
     assert "ORDER_QUANTITY_ZERO" in by_reason
 
 
+@pytest.mark.parametrize(
+    "reason_code",
+    [
+        "ORDER_REJECTED_PAPER_PRICE_MISSING",
+        "ORDER_REJECTED_PAPER_PRICE_INVALID",
+    ],
+)
+def test_trading_loop_journals_paper_price_rejection_reason(
+    monkeypatch, tmp_path, reason_code
+):
+    class PriceRejectedOrderSender:
+        last_rejection_reason = reason_code
+
+        def set_price(self, symbol, price):
+            pass
+
+        def place_market_order(self, token, symbol, side, quantity):
+            return None
+
+    use_case, _, _, symbols_path, now_provider, sleep = _build_loop(
+        monkeypatch, tmp_path, order_sender=PriceRejectedOrderSender(),
+    )
+    journal_path = tmp_path / "journal.sqlite3"
+    use_case.decision_journal_repository = DecisionJournalRepository(journal_path)
+
+    use_case.run(symbols_path, now_provider=now_provider, sleep=sleep)
+
+    row = next(
+        row for row in _rows(journal_path)
+        if row["reason_code"] == reason_code
+    )
+    assert row["occurrence_count"] == 3
+    assert row["symbol"] == "7203"
+
+
 def test_journal_failure_does_not_stop_trading(monkeypatch, tmp_path):
     use_case, sender, _, symbols_path, now_provider, sleep = _build_loop(monkeypatch, tmp_path)
 

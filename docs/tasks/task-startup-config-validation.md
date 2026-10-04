@@ -2,10 +2,10 @@
 
 - 起票日: 2026-10-04
 - 対象: `src/config/config.py`、関連する設定・起動テスト、`docs/config-reference.md`
-- ステータス: **`run_trading.py`への適用を実装済み（2026-10-04、未コミット）**。他entrypointへの適用は「未決の確認事項」のとおり未決
+- ステータス: **`run_trading.py`への適用を実装済み・コミット済み（`c56be4a`、2026-10-04）**。他entrypointへの適用は「未決の確認事項」のとおり未決
 - 実装: `src/config/startup_validation.py`（`validate_startup_config` / `find_config_violations` / `ConfigValidationError`）、`run_trading._validate_config_or_exit()`、`tests/test_startup_validation.py`
 - 運用者確認: `.\.venv\Scripts\python.exe scripts/check_startup_config.py`（現在の`.env`で検証し、違反があれば全件表示して終了コード1。秘密値は表示しない）
-- 実施時期: **未定（優先度は別途判断）**
+- 実施時期: **2026-10-04**
 - 関連調査: 2026-10-02「売買部分サイレントスキップ横並び調査」。第1弾は実行時の見送り理由を記録するが、不正な売買パラメータを起動時に網羅検証するものではない。
 
 ## 背景

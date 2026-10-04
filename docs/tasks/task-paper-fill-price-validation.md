@@ -3,6 +3,7 @@
 - 起票日: 2026-10-04
 - 対象: `src/infrastructure/paper/paper_order_client.py`、`src/application/trading_usecase.py`、`src/infrastructure/kabu/board_repository.py`、ヒストリカル再生クライアント、関連テスト
 - ステータス: **完了（2026-10-04）**
+- コミット経緯: **`90495b6`で実装、`ad7952f`で取り下げ、`9ac2217`で再適用。**
 - 実施時期: **2026-10-04**
 - 関連調査: 2026-10-02「売買部分サイレントスキップ横並び調査」。第1弾は`ORDER_REJECTED_NONE` / `ORDER_REJECTED_RESULT`等を`DecisionJournalRepository.TRADING_REASON_CODES`に記録する。価格値の不正を区別する理由コードはまだない。
 

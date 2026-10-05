@@ -1,5 +1,6 @@
 import json
 import logging
+import time
 from datetime import date, datetime
 from pathlib import Path
 
@@ -41,7 +42,15 @@ class ScreeningApiCheckRepository:
         }
         temporary_path = self.path.with_suffix(".json.tmp")
         temporary_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        temporary_path.replace(self.path)
+        # Windowsではウイルス対策/同期ソフト等が一時的にファイルを掴むため短くリトライする
+        for attempt in range(5):
+            try:
+                temporary_path.replace(self.path)
+                return
+            except PermissionError:
+                if attempt == 4:
+                    raise
+                time.sleep(0.2 * (attempt + 1))
 
     def _entry(self, symbol: str) -> dict:
         return self._checks.setdefault(str(symbol), {})

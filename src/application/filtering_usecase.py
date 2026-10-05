@@ -561,6 +561,8 @@ class FilteringUseCase:
             activity_ratios,
             period=TendencyPeriod.PREVIOUS_CLOSE,
             activity_label="通過銘柄の活発度",
+            include_market_line=False,
+            include_tendency_line=False,
         )
         if not screening:
             message = format_result_notification(

@@ -16,6 +16,8 @@ def build_market_tendency_lines(
     period: TendencyPeriod,
     activity_label: str,
     include_market_line: bool = True,
+    include_tendency_line: bool = True,
+    include_activity_line: bool = True,
 ) -> list[str]:
     """生成失敗時は空行を返し、既存通知を維持しながら理由を記録します。"""
     if assessment is None or not assessment.data_available:
@@ -50,9 +52,13 @@ def build_market_tendency_lines(
             summary.activity_missing_count,
         )
 
-    lines = [summary.tendency_line, summary.activity_line]
+    lines = []
     if include_market_line:
-        lines.insert(0, summary.market_line)
+        lines.append(summary.market_line)
+    if include_tendency_line:
+        lines.append(summary.tendency_line)
+    if include_activity_line:
+        lines.append(summary.activity_line)
     if summary.today_action_line is not None:
         lines.append(summary.today_action_line)
     return lines

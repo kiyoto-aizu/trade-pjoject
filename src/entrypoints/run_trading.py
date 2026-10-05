@@ -194,6 +194,7 @@ def main(now_provider=None) -> None:
                     period=TendencyPeriod.CURRENT_DAY,
                     activity_label="対象銘柄の活発度",
                     include_market_line=False,
+                    include_activity_line=False,
                 )
                 message = (
                     "【業務】取引運用\n"

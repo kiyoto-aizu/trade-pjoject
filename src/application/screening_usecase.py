@@ -316,6 +316,8 @@ class ScreeningUseCase:
             activity_ratios,
             period=TendencyPeriod.PREVIOUS_CLOSE,
             activity_label="候補の活発度",
+            include_market_line=False,
+            include_tendency_line=False,
         ))
         top_entries = []
         for symbol in exclusion_result.remaining[:3]:

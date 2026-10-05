@@ -66,10 +66,9 @@ def test_screening_notification_includes_previous_close_tendency_and_candidate_a
     ).execute(target_date=date(2026, 10, 5))
 
     message = notifications[0]
-    assert "地合い(前日終値ベース): 通常" in message
-    assert "傾向(前日終値ベース): 方向感は出にくく、値幅はやや出やすい地合い。パニック的な下げではない。" in message
+    assert "地合い" not in message
+    assert "傾向(" not in message
     assert "候補の活発度: 20日平均売買代金比 最大0.5倍・平均0.5倍(動きは小さめ)" in message
-    assert "前日終値ベース" in message
 
 
 def test_filtering_notification_uses_selected_surge_ratios(tmp_path):
@@ -105,10 +104,9 @@ def test_filtering_notification_uses_selected_surge_ratios(tmp_path):
 
     assert result.symbols == ["7203"]
     message = notifications[0]
-    assert "地合い(前日終値ベース): 通常" in message
-    assert "傾向(前日終値ベース):" in message
+    assert "地合い" not in message
+    assert "傾向(" not in message
     assert "通過銘柄の活発度: 20日平均売買代金比 最大0.5倍・平均0.5倍(動きは小さめ)" in message
-    assert "前日終値ベース" in message
 
 
 @pytest.mark.parametrize(
@@ -211,7 +209,7 @@ def test_trading_start_notification_for_danger_and_normal(
     assert all(line in message for line in expected_lines)
     assert "地合い:" not in message
     assert "意味:" not in message
-    assert "対象銘柄の活発度: 20日平均売買代金比 最大0.7倍・平均0.7倍(動きは小さめ)" in message
+    assert "活発度" not in message
 
 
 def test_unavailable_activity_is_logged_and_market_tendency_line_remains(caplog):
@@ -225,6 +223,20 @@ def test_unavailable_activity_is_logged_and_market_tendency_line_remains(caplog)
     assert any("地合い(前日終値ベース)" in line for line in lines)
     assert any("売買代金比を算出できません" in line for line in lines)
     assert "TENDENCY_ACTIVITY_UNAVAILABLE" in caplog.text
+
+
+def test_build_market_tendency_lines_selects_lines_by_caller():
+    lines = build_market_tendency_lines(
+        market_assessment(),
+        [0.5],
+        period=TendencyPeriod.PREVIOUS_CLOSE,
+        activity_label="候補の活発度",
+        include_market_line=False,
+        include_tendency_line=False,
+    )
+
+    assert len(lines) == 1
+    assert lines[0].startswith("候補の活発度:")
 
 
 def test_filtering_diagnostics_repository_loads_latest_date(tmp_path):

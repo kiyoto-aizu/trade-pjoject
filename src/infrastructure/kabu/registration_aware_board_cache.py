@@ -18,6 +18,9 @@ class RegistrationAwareBoardCache:
         self._started_at = perf_counter()
         self._last_clear_at: float | None = None
         self._fetch_meta: dict[str, dict] = {}
+        self._retry_meta: dict[str, dict] = {}
+        self._first_fetch_at: dict[str, float] = {}
+        self._last_fetch_at: float | None = None
     @property
     def requests_since_clear(self) -> int:
         return self._requests_since_clear
@@ -64,11 +67,17 @@ class RegistrationAwareBoardCache:
 
         started = perf_counter()
         self.fetch_count += 1
-        self._fetch_meta[key] = {
+        meta = {
             "board_fetch_seq": self.fetch_count,
             "requests_since_clear": self._requests_since_clear,
             "seconds_since_last_clear": round(self.seconds_since_last_clear, 3),
+            "seconds_since_previous_fetch": (
+                round(started - self._last_fetch_at, 3) if self._last_fetch_at is not None else None
+            ),
         }
+        self._fetch_meta[key] = meta
+        self._last_fetch_at = started
+        self._first_fetch_at.setdefault(key, started)
         diagnostic_getter = getattr(self.board_client, "get_current_board_for_diagnostics", None)
         try:
             board = (diagnostic_getter or self.board_client.get_current_board)(symbol)
@@ -77,6 +86,48 @@ class RegistrationAwareBoardCache:
             raise
         finally:
             self._requests_since_clear += 1
-            self.fetch_duration_ms += (perf_counter() - started) * 1000
+            elapsed = perf_counter() - started
+            meta["board_fetch_elapsed_ms"] = round(elapsed * 1000, 3)
+            self.fetch_duration_ms += elapsed * 1000
         self._cache[key] = ("result", board)
+        return board
+
+    def get_retry_meta(self, symbol) -> dict | None:
+        return self._retry_meta.get(str(symbol))
+
+    def refetch_current_board(self, symbol):
+        """キャッシュを通さず板を取り直す。取得できた結果はキャッシュも更新し、失敗時は既存のキャッシュを残す。"""
+        key = str(symbol)
+        if self._blocked_error is not None:
+            raise self._blocked_error
+        cleared = False
+        if self._requests_since_clear >= self.batch_size:
+            if not self.clear_registrations():
+                raise self._blocked_error
+            cleared = True
+
+        started = perf_counter()
+        self.fetch_count += 1
+        first = self._first_fetch_at.get(key)
+        meta = {
+            "retry_fetch_seq": self.fetch_count,
+            "retry_requests_since_clear": self._requests_since_clear,
+            "retry_preceded_by_registration_clear": cleared,
+            "retry_seconds_since_first_fetch": round(started - first, 3) if first is not None else None,
+            "retry_seconds_since_previous_fetch": (
+                round(started - self._last_fetch_at, 3) if self._last_fetch_at is not None else None
+            ),
+        }
+        self._retry_meta[key] = meta
+        self._last_fetch_at = started
+        diagnostic_getter = getattr(self.board_client, "get_current_board_for_diagnostics", None)
+        try:
+            board = (diagnostic_getter or self.board_client.get_current_board)(symbol)
+        finally:
+            self._requests_since_clear += 1
+            elapsed = perf_counter() - started
+            meta["retry_elapsed_ms"] = round(elapsed * 1000, 3)
+            self.fetch_duration_ms += elapsed * 1000
+        if board:
+            self._cache[key] = ("result", board)
         return board

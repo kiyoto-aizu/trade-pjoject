@@ -54,6 +54,7 @@
 | `FILTERING_PRICE_BAND_DEADLINE_TIME` | "09:33" | 任意 |  |
 | `FILTERING_PRICE_BAND_RESULT_ROOT` | str(_repo_root / 'data' / 'filtering_price_bands') | 任意 |  |
 | `FILTERING_RESULT_DIRECTORY` | str(_repo_root / 'data' / 'filtering') | 任意 |  |
+| `FILTER_BOARD_RETRY_ENABLED` | "true" | 任意 | 270円フィルタで板の売買代金・売買高が取れなかった銘柄を、結果保存前に再取得する(450/900円には適用しない) |
 | `FILTER_DECISION_OBSERVATION_DAYS` | "5" | 任意 |  |
 
 ## paper

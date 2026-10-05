@@ -6,12 +6,12 @@
 """
 import argparse
 import logging
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from time import monotonic, perf_counter
 
 from src.config import config
 from src.application.market_regime_usecase import MarketRegimeUseCase
-from src.application.filtering_usecase import FilteringUseCase
+from src.application.filtering_usecase import BoardRetryPolicy, FilteringUseCase
 from src.application.price_band_filtering_usecase import PriceBandFilteringUseCase
 from src.infrastructure.persistence.decision_journal_repository import DecisionJournalRepository
 from src.infrastructure.kabu.board_repository import BoardRepository
@@ -29,6 +29,22 @@ from src.infrastructure.persistence.filtering_result_repository import Filtering
 from src.infrastructure.persistence.filtering_diagnostics_repository import FilteringDiagnosticsRepository
 from src.infrastructure.persistence.screening_result_repository import ScreeningResultRepository
 from src.infrastructure.calendar.japanese_calendar import is_trading_day
+
+def _build_board_retry_policy(board_cache) -> BoardRetryPolicy | None:
+    """270円(通常結果)の板欠損リトライ設定。打ち切りは価格帯の締め切りの手前に置く。"""
+    if board_cache is None or not config.FILTER_BOARD_RETRY_ENABLED:
+        return None
+    now = datetime.now()
+    deadline_at = datetime.combine(now.date(), config.FILTERING_PRICE_BAND_DEADLINE_TIME) - timedelta(
+        seconds=config.FILTER_BOARD_RETRY_MARGIN_SECONDS
+    )
+    return BoardRetryPolicy(
+        max_rounds=config.FILTER_BOARD_RETRY_MAX_ROUNDS,
+        wait_seconds=config.FILTER_BOARD_RETRY_WAIT_SECONDS,
+        deadline_monotonic=monotonic() + (deadline_at - now).total_seconds(),
+        deadline_at=deadline_at,
+    )
+
 
 def main() -> None:
     """
@@ -105,7 +121,7 @@ def main() -> None:
                 ),
             )
             try:
-                usecase.execute(target_date=args.target_date)
+                usecase.execute(target_date=args.target_date, board_retry=_build_board_retry_policy(board_cache))
             except Exception:
                 if board_cache is not None and not board_cache.clear_registrations():
                     logging.getLogger(__name__).error("フィルタ失敗後の銘柄登録解除にも失敗しました。")

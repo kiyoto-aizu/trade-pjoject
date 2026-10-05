@@ -313,6 +313,25 @@ FILTERING_PRICE_BAND_DEADLINE_TIME = time.fromisoformat(
     os.getenv("FILTERING_PRICE_BAND_DEADLINE_TIME", "09:33")
 )
 
+
+def _non_negative_env(name: str, default: str, cast):
+    raw = os.getenv(name, default)
+    try:
+        value = cast(raw.strip())
+    except ValueError:
+        value = -1
+    if value < 0:
+        raise ValueError(f"{name}は0以上の数値を指定してください: {raw!r}")
+    return value
+
+
+# 270円フィルタで板の売買代金・売買高が取れなかった銘柄を、結果保存前に再取得する(450/900円には適用しない)
+FILTER_BOARD_RETRY_ENABLED = os.getenv("FILTER_BOARD_RETRY_ENABLED", "true").strip().lower() in ("1", "true", "yes")
+FILTER_BOARD_RETRY_MAX_ROUNDS = _non_negative_env("FILTER_BOARD_RETRY_MAX_ROUNDS", "2", int)
+FILTER_BOARD_RETRY_WAIT_SECONDS = _non_negative_env("FILTER_BOARD_RETRY_WAIT_SECONDS", "10", float)
+# リトライの打ち切り時刻 = FILTERING_PRICE_BAND_DEADLINE_TIME - この秒数
+FILTER_BOARD_RETRY_MARGIN_SECONDS = _non_negative_env("FILTER_BOARD_RETRY_MARGIN_SECONDS", "30", float)
+
 # ================================================================================
 # 注文履歴・市場設定
 # ================================================================================

@@ -5,9 +5,10 @@
 前日のスクリーニング結果に基づいて、本日の出来高変動を分析します。
 ================================================================================
 """
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 import logging
-from time import monotonic
+from time import monotonic, sleep
 
 from src.domain.models import FilteringResult, ScoredCandidate
 from src.domain.market_tendency import TendencyPeriod
@@ -25,6 +26,16 @@ class FilteringDeadlineExceeded(RuntimeError):
     """価格帯別フィルタが設定された締め切りまでに完了しませんでした。"""
 
 
+@dataclass(frozen=True)
+class BoardRetryPolicy:
+    """売買代金欠損の板を結果保存前に再取得するための設定。打ち切りを超えても結果保存は妨げない。"""
+
+    max_rounds: int
+    wait_seconds: float
+    deadline_monotonic: float
+    deadline_at: datetime | None = None
+
+
 class FilteringUseCase:
     """
     フィルタリング処理を実行するユースケッククラス。
@@ -38,6 +49,8 @@ class FilteringUseCase:
         decision_journal_repository=None,
         diagnostics_repository=None,
         market_regime_usecase=None,
+        sleep_func=None,
+        monotonic_clock=None,
     ):
         """
         FilteringUseCaseを初期化します。
@@ -57,6 +70,8 @@ class FilteringUseCase:
         self.decision_journal_repository = decision_journal_repository
         self.diagnostics_repository = diagnostics_repository
         self.market_regime_usecase = market_regime_usecase
+        self._sleep = sleep_func
+        self._monotonic_clock = monotonic_clock
 
     def execute(
         self,
@@ -64,6 +79,7 @@ class FilteringUseCase:
         price_cap: float | None = None,
         deadline_monotonic: float | None = None,
         price_band: str | None = None,
+        board_retry: BoardRetryPolicy | None = None,
     ) -> FilteringResult:
         """
         フィルタリング処理を実行します。
@@ -97,12 +113,134 @@ class FilteringUseCase:
         timed_out = False
         next_unprocessed_index = 0
 
-        def mark_skipped(record, diagnostic_reason, journal_reason):
+        def mark_skipped(record, diagnostic_reason, journal_reason, already_listed=False):
             record["status"] = "skipped"
             record["reason_code"] = diagnostic_reason
-            diagnostics.append(record)
+            if not already_listed:
+                diagnostics.append(record)
             reason_counts[diagnostic_reason] = reason_counts.get(diagnostic_reason, 0) + 1
             skips.append((record["symbol"], journal_reason))
+
+        retry_active = board_retry is not None and callable(getattr(self.board_client, "refetch_current_board", None))
+        retry_pending: list[tuple[dict, str]] = []
+        retry_stats = {
+            "attempted": 0, "succeeded": 0, "rounds_run": 0, "stopped_by_cutoff": False, "round_success": {},
+        }
+
+        def run_board_retry():
+            clock = self._monotonic_clock or monotonic
+            sleeper = self._sleep or sleep
+            handled: set[int] = set()
+
+            def finalize_missing(record):
+                handled.add(id(record))
+                mark_skipped(
+                    record, "FILTER_TURNOVER_MISSING", "FILTER_TURNOVER_MISSING", already_listed=True
+                )
+                logger.warning(
+                    "フィルタリング評価対象外: 銘柄=%s 理由=当日売買代金を計算できません", record["symbol"]
+                )
+
+            def attempt(record, symbol, round_no) -> bool:
+                if not record["retry_attempted"]:
+                    retry_stats["attempted"] += 1
+                record["retry_attempted"] = True
+                try:
+                    board = self.board_client.refetch_current_board(symbol)
+                except Exception as exc:
+                    record["retry_error_type"] = type(exc).__name__
+                    board = None
+                meta = getattr(self.board_client, "get_retry_meta", lambda _s: None)(symbol)
+                if isinstance(meta, dict):
+                    record.update(meta)
+                if board:
+                    record["retry_board_trading_volume"] = board.get("raw_trading_volume", board.get("trading_volume"))
+                    record["retry_board_trading_value"] = board.get("raw_trading_value", board.get("trading_value"))
+                    record["retry_board_current_price_status"] = board.get("current_price_status")
+                    record["retry_board_trading_volume_time"] = board.get("trading_volume_time")
+                value = board.get("trading_value") if board else None
+                volume = board.get("trading_volume") if board else None
+                source = "TradingValue_retry"
+                if value is None and board and volume is not None and board.get("current_price") is not None:
+                    value = float(board["current_price"]) * float(volume)
+                    source = "current_price_x_cumulative_volume_retry"
+                if value is None:
+                    logger.info("板リトライ失敗: 銘柄=%s ラウンド=%d", symbol, round_no)
+                    return False
+                logger.info("板リトライ成功: 銘柄=%s ラウンド=%d", symbol, round_no)
+                handled.add(id(record))
+                retry_stats["succeeded"] += 1
+                key = str(round_no)
+                retry_stats["round_success"][key] = retry_stats["round_success"].get(key, 0) + 1
+                record["retry_succeeded"] = True
+                record["retry_round_succeeded"] = round_no
+                record["status"] = "evaluated"
+                record["reason_code"] = None
+                record["numerator_source"] = source
+                record["board_current_price"] = board.get("current_price")
+                record["numerator"] = float(value)
+                try:
+                    average = self._load_average(symbol, today, board, record)
+                except Exception as exc:
+                    record["error_type"] = type(exc).__name__
+                    mark_skipped(
+                        record, "FILTER_AVERAGE_MISSING", "FILTER_AVERAGE_TURNOVER_MISSING", already_listed=True
+                    )
+                    logger.exception("平均売買代金の取得に失敗しました: 銘柄=%s", symbol)
+                    return True
+                if average is None:
+                    mark_skipped(
+                        record, "FILTER_AVERAGE_MISSING", "FILTER_AVERAGE_TURNOVER_MISSING", already_listed=True
+                    )
+                    logger.warning("フィルタリング評価対象外: 銘柄=%s 理由=平均売買代金なし", symbol)
+                    return True
+                record["average_turnover"] = float(average)
+                try:
+                    surge_ratio = calculate_volume_surge_ratio(float(value), average)
+                except ValueError:
+                    mark_skipped(
+                        record, "FILTER_AVERAGE_NON_POSITIVE", "FILTER_AVERAGE_NON_POSITIVE", already_listed=True
+                    )
+                    logger.warning("フィルタリング評価対象外: 銘柄=%s 理由=平均出来高が0以下", symbol)
+                    return True
+                scored.append(ScoredCandidate(symbol, float(value), average, surge_ratio))
+                record["ratio"] = surge_ratio
+                if value == 0 and volume == 0:
+                    record["reason_code"] = "FILTER_NO_TRADES"
+                    reason_counts["FILTER_NO_TRADES"] = reason_counts.get("FILTER_NO_TRADES", 0) + 1
+                return True
+
+            try:
+                unresolved = list(retry_pending)
+                logger.info(
+                    "板取得リトライ開始: 対象%d件 打ち切り時刻=%s 最大%dラウンド 待機%s秒",
+                    len(unresolved), board_retry.deadline_at.isoformat() if board_retry.deadline_at else "-",
+                    board_retry.max_rounds, board_retry.wait_seconds,
+                )
+                for round_no in range(1, board_retry.max_rounds + 1):
+                    if not unresolved:
+                        break
+                    if clock() + board_retry.wait_seconds > board_retry.deadline_monotonic:
+                        retry_stats["stopped_by_cutoff"] = True
+                        break
+                    sleeper(board_retry.wait_seconds)
+                    retry_stats["rounds_run"] = round_no
+                    still_missing = []
+                    for position, (record, symbol) in enumerate(unresolved):
+                        if clock() >= board_retry.deadline_monotonic:
+                            retry_stats["stopped_by_cutoff"] = True
+                            still_missing.extend(unresolved[position:])
+                            break
+                        if not attempt(record, symbol, round_no):
+                            still_missing.append((record, symbol))
+                    unresolved = still_missing
+                    if retry_stats["stopped_by_cutoff"]:
+                        break
+            except Exception:
+                logger.exception("板取得リトライ中に想定外の例外が発生しました。残りは欠損として続行します。")
+            for record, _symbol in retry_pending:
+                if id(record) not in handled:
+                    finalize_missing(record)
 
         if screening:
             for index, symbol in enumerate(screening.symbols):
@@ -196,6 +334,14 @@ class FilteringUseCase:
                         else "FILTER_TURNOVER_MISSING"
                     )
                     self._attach_board_diagnostics(record, board)
+                    if retry_active and missing_reason == "FILTER_TURNOVER_MISSING":
+                        # 全銘柄を一巡した後にまとめて再取得する。欠損の確定とログはその後に行う
+                        record.update(retry_attempted=False, retry_succeeded=False, retry_round_succeeded=None)
+                        record["status"] = "skipped"
+                        record["reason_code"] = missing_reason
+                        diagnostics.append(record)
+                        retry_pending.append((record, symbol))
+                        continue
                     mark_skipped(record, missing_reason, "FILTER_TURNOVER_MISSING")
                     logger.warning("フィルタリング評価対象外: 銘柄=%s 理由=当日売買代金を計算できません", symbol)
                     continue
@@ -208,18 +354,7 @@ class FilteringUseCase:
                     timed_out = True
                     break
                 try:
-                    if hasattr(self.volume_client, "get_average_turnover_details"):
-                        average_details = self.volume_client.get_average_turnover_details(symbol, 20, today)
-                        average = average_details["average_turnover"]
-                        record["average_days"] = average_details["average_days"]
-                        record["average_includes_target_date"] = average_details[
-                            "average_includes_target_date"
-                        ]
-                    elif hasattr(self.volume_client, "get_average_turnover"):
-                        average = self.volume_client.get_average_turnover(symbol, 20)
-                    else:
-                        average_volume = self.volume_client.get_average_volume(symbol, 20)
-                        average = average_volume * float(board["current_price"]) if average_volume is not None else None
+                    average = self._load_average(symbol, today, board, record)
                 except Exception as exc:
                     record["error_type"] = type(exc).__name__
                     mark_skipped(record, "FILTER_AVERAGE_MISSING", "FILTER_AVERAGE_TURNOVER_MISSING")
@@ -245,6 +380,8 @@ class FilteringUseCase:
                 if deadline_monotonic is not None and monotonic() >= deadline_monotonic:
                     timed_out = True
                     break
+            if retry_pending and not timed_out:
+                run_board_retry()
             # 同時刻帯の過去分足が取得できないため、絶対倍率の足切りは行わず相対順位で選ぶ。
             candidates = scored
         if deadline_monotonic is not None and monotonic() >= deadline_monotonic:
@@ -294,6 +431,14 @@ class FilteringUseCase:
             "stop_reason": "FILTER_TIME_LIMIT" if timed_out else None,
             "unprocessed_count": sum(record["status"] == "not_evaluated" for record in diagnostics),
         }
+        if retry_active:
+            summary.update({
+                "retry_attempted_count": retry_stats["attempted"],
+                "retry_succeeded_count": retry_stats["succeeded"],
+                "retry_rounds_run": retry_stats["rounds_run"],
+                "retry_stopped_by_cutoff": retry_stats["stopped_by_cutoff"],
+                "retry_round_success_counts": retry_stats["round_success"],
+            })
         logger.info(
             "フィルタリングサマリー: date=%s input=%d evaluated=%d skipped=%d selected=%d reasons=%s elapsed_ms=%.3f",
             today.isoformat(), summary["input_count"], summary["evaluated_count"], skipped_count,
@@ -324,6 +469,17 @@ class FilteringUseCase:
         if self.notifier:
             self._notify_completion(screening, symbols, scored, skipped_count, reason_counts)
         return result
+
+    def _load_average(self, symbol, today, board, record):
+        if hasattr(self.volume_client, "get_average_turnover_details"):
+            average_details = self.volume_client.get_average_turnover_details(symbol, 20, today)
+            record["average_days"] = average_details["average_days"]
+            record["average_includes_target_date"] = average_details["average_includes_target_date"]
+            return average_details["average_turnover"]
+        if hasattr(self.volume_client, "get_average_turnover"):
+            return self.volume_client.get_average_turnover(symbol, 20)
+        average_volume = self.volume_client.get_average_volume(symbol, 20)
+        return average_volume * float(board["current_price"]) if average_volume is not None else None
 
     def _attach_fetch_meta(self, record: dict, symbol: str) -> None:
         """実取得順・登録解除からの取得回数を診断に付ける(キャッシュ非対応クライアントでは何もしない)。"""

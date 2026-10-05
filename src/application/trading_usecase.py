@@ -22,6 +22,7 @@ from src.domain.models import OrderHistoryEntry, PriceLimit, TradeSignal
 from src.domain.rules import calculate_buy_quantity, calculate_price_limit, calculate_rsi, check_kill_switch, is_buy_order_amount_allowed, is_market_closed, is_safe_to_order
 from src.domain.volatility import DailyBar, VolatilityLevel, adjust_quantity_for_volatility, assess_volatility, resolve_atr_exit_multiplier, stop_loss_multiplier
 from src.domain.market_regime import MarketRegime, resolve_rsi_entry_threshold
+from src.domain.trading_progress_report import build_trading_progress_report
 from src.infrastructure.kabu.get_board import (
     get_current_board,
     get_current_board_with_freshness,
@@ -139,6 +140,8 @@ class TradingUseCase:
         self._order_history_save_failures = 0
         self._save_failure_notified_sources: set[str] = set()
         self._new_buy_halt_notified = False
+        self._progress_reports_sent: set[str] = set()
+        self._progress_report_start_time: datetime | None = None
     @property
     def _execution_mode(self) -> str:
         return config.TRADING_MODE
@@ -428,6 +431,155 @@ class TradingUseCase:
                 self.last_positions = positions
         except Exception:
             logger.exception("通知用の保有銘柄取得に失敗しました")
+
+    def _load_positions_for_progress_report(self) -> list[dict] | None:
+        try:
+            if self.positions_client:
+                positions = self.positions_client.get_positions(self.token)
+            elif self.order_sender and hasattr(self.order_sender, "get_positions"):
+                positions = self.order_sender.get_positions(self.token)
+            else:
+                positions = get_positions(self.token)
+            if positions is None:
+                return None
+            self.last_positions = positions
+            return [
+                {
+                    "symbol": position.get("Symbol", ""),
+                    "quantity": int(position.get("HoldQty", 0) or 0),
+                    "profit_loss": self._optional_number(position.get("ProfitLoss")),
+                }
+                for position in positions
+                if self._is_open_position(position)
+            ]
+        except Exception:
+            logger.exception("中間報告用の保有株取得に失敗しました")
+            return None
+
+    @staticmethod
+    def _optional_number(value) -> float | None:
+        try:
+            number = float(value)
+            return number if math.isfinite(number) else None
+        except (TypeError, ValueError, OverflowError):
+            return None
+
+    def _progress_report_events(self, as_of: datetime) -> list[str]:
+        events = []
+        cutoff = as_of.replace(tzinfo=None).isoformat(timespec="seconds")
+        event_labels = {
+            "ATR_DANGER_SKIP": "ATR DANGERによる新規買い見送り",
+            "ATR_STOP_EXIT": "ATR損切り",
+            "MARKET_REGIME_DANGER_SKIP": "MarketRegime DANGERによる新規買い見送り",
+            "MARKET_REGIME_CAUTION_RSI_FILTER": "CAUTION時のRSI条件による新規買い見送り",
+        }
+        try:
+            summaries = self.filter_decision_repository.load_summaries(
+                start=as_of.date(), end=as_of.date(), execution_mode=self._execution_mode
+            )
+            for item in summaries:
+                occurred_at = str(item.get("occurred_at", ""))[:19]
+                label = event_labels.get(item.get("event_type"))
+                if label and occurred_at <= cutoff:
+                    events.append(f"{label}: {item.get('symbol', '')}")
+        except Exception:
+            logger.exception("中間報告用の判定イベント取得に失敗しました")
+
+        if self.decision_journal_repository is not None:
+            reason_labels = {
+                "NEW_BUY_HALTED_STATE_SAVE_FAILURE": "状態保存失敗による新規買い停止",
+                "POSITION_LIMIT_REACHED": "保有上限による新規買い見送り",
+                "WALLET_UNKNOWN": "買付余力不明による新規買い見送り",
+                "ORDER_AMOUNT_LIMIT_EXCEEDED": "注文金額上限による新規買い見送り",
+                "ORDER_SAFETY_BLOCKED": "安全条件による新規買い見送り",
+                "caution_rounding_to_zero": "CAUTION数量調整による新規買い見送り",
+                "atr_quantity_adjustment_zero": "ATR数量調整による新規買い見送り",
+            }
+            try:
+                records = self.decision_journal_repository.load_records(
+                    as_of.date().isoformat(), STAGE_TRADING, self._execution_mode
+                )
+                for record in records:
+                    occurred_at = str(record.get("last_occurred_at", ""))[:19]
+                    label = reason_labels.get(record.get("reason_code"))
+                    if label and occurred_at <= cutoff:
+                        count = int(record.get("occurrence_count", 1))
+                        events.append(
+                            f"{label}: {record.get('symbol', '')} ({count}回)"
+                        )
+            except Exception:
+                logger.exception("中間報告用の判断記録取得に失敗しました")
+        return events
+
+    def _send_trading_progress_report(self, as_of: datetime, scheduled_time: str) -> None:
+        today = as_of.date().isoformat()
+        orders = [
+            entry for entry in self.order_history
+            if entry.timestamp[:10] == today
+            and entry.timestamp[:19] <= as_of.replace(tzinfo=None).isoformat(timespec="seconds")
+        ]
+        realized_pnl = None
+        if self.order_sender and hasattr(self.order_sender, "get_daily_realized_pnl"):
+            try:
+                realized_pnl = self._optional_number(self.order_sender.get_daily_realized_pnl())
+            except Exception:
+                logger.exception("中間報告用の確定損益取得に失敗しました")
+        holdings = self._load_positions_for_progress_report()
+
+        nikkei_change = None
+        market_client = getattr(self.market_regime_usecase, "market_data_client", None)
+        getter = getattr(market_client, "get_intraday_change_percent", None)
+        if callable(getter):
+            try:
+                nikkei_change = getter("^N225", as_of)
+            except Exception:
+                logger.exception("中間報告用の日経225値取得に失敗しました")
+
+        report = build_trading_progress_report(
+            reported_at=as_of,
+            scheduled_time=scheduled_time,
+            order_count=len(orders),
+            order_count_label=(
+                "約定件数" if self._is_paper_mode()
+                else "注文受付件数（実約定未照会）"
+            ),
+            realized_pnl=realized_pnl,
+            holdings=holdings,
+            market_regime=self.market_regime.value,
+            nikkei_change_percent=nikkei_change,
+            events=self._progress_report_events(as_of),
+            kill_switch_triggered=self.kill_switch_triggered,
+            emergency_stop_triggered=self.emergency_stop_triggered,
+        )
+        try:
+            if self.notifier:
+                self.notifier(report)
+            else:
+                notify_daily(report)
+        except Exception:
+            logger.exception("中間報告の通知に失敗しました")
+
+    def _send_due_progress_reports(self, previous: datetime, current: datetime) -> None:
+        if self._progress_report_start_time is None:
+            return
+        schedules = (
+            (config.TRADING_PROGRESS_REPORT_1_HOUR, config.TRADING_PROGRESS_REPORT_1_MINUTE),
+            (config.TRADING_PROGRESS_REPORT_2_HOUR, config.TRADING_PROGRESS_REPORT_2_MINUTE),
+        )
+        for hour, minute in schedules:
+            label = f"{hour:02d}:{minute:02d}"
+            if label in self._progress_reports_sent:
+                continue
+            scheduled = current.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            started_after_schedule = self._progress_report_start_time.replace(tzinfo=None) > scheduled.replace(tzinfo=None)
+            crossed_schedule = previous.replace(tzinfo=None) < scheduled.replace(tzinfo=None) <= current.replace(tzinfo=None)
+            started_at_schedule = (
+                previous.replace(tzinfo=None) == scheduled.replace(tzinfo=None)
+                and current.replace(tzinfo=None) == scheduled.replace(tzinfo=None)
+            )
+            if not started_after_schedule and (crossed_schedule or started_at_schedule):
+                self._progress_reports_sent.add(label)
+                self._send_trading_progress_report(current, label)
 
     def _check_auth_recovery_notification(self) -> None:
         """トークン再取得後も401が続いた(復旧失敗)場合、1runにつき1回だけ通知する。"""
@@ -1084,6 +1236,7 @@ class TradingUseCase:
     def _send_end_of_day_report(self) -> None:
         """市場終了時に本日の取引レポートを送信します。"""
         self._load_order_history()
+        self._progress_reports_sent.clear()
         report_now = self._current_now or self._now_provider()
         today = report_now.date().isoformat()
         log_error_summary = self._daily_log_error_summary(today)
@@ -1529,6 +1682,7 @@ class TradingUseCase:
         if initial_now is None:
             initial_now = now_provider()
             self._current_now = initial_now
+        self._progress_report_start_time = initial_now
         today = initial_now.date().isoformat()
 
         if self.market_regime_usecase is not None:
@@ -1550,6 +1704,7 @@ class TradingUseCase:
         kill_switch_triggered = False
         filter_decisions_initialized = False
         first_loop = True
+        previous_loop_now = initial_now
         # 市場終了時刻まで取引ループを実行
         use_preflight_market_data = bool(preflight_market_data)
         while not kill_switch_triggered:
@@ -1578,6 +1733,7 @@ class TradingUseCase:
                 self._liquidate_all_positions(require_fresh_price=True)
                 self._finalize_same_day_filter_decisions_safely(now, include_today=True)
                 break
+            self._send_due_progress_reports(previous_loop_now, now)
             board_fetch_attempted = 0
             board_fetch_failed = 0
             for symbol in symbols:
@@ -2207,6 +2363,7 @@ class TradingUseCase:
             self._check_board_fetch_failure_notification(board_fetch_attempted, board_fetch_failed)
             self._flush_decision_journal_safely()
             use_preflight_market_data = False
+            previous_loop_now = now
             sleep(config.LOOP_INTERVAL)
 
         # 最終的な評価損益を取得して報告

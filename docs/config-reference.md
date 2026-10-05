@@ -137,5 +137,9 @@
 | `STATE_SAVE_CONSECUTIVE_FAILURE_THRESHOLD` | "3" | 任意 | 注文履歴・Paper状態ファイルの保存が何回連続で失敗したら新規買いを止めるか(売り・決済は止めない) |
 | `TARGET_POSITIONS` | "3" | 任意 | フィルタリング候補から目指す分散ポジション数 |
 | `TRADING_MODE` | "paper" | 任意 |  |
+| `TRADING_PROGRESS_REPORT_1_HOUR` | "11" | 任意 | 取引中間報告の送信時刻（日本標準時） |
+| `TRADING_PROGRESS_REPORT_1_MINUTE` | "30" | 任意 |  |
+| `TRADING_PROGRESS_REPORT_2_HOUR` | "14" | 任意 |  |
+| `TRADING_PROGRESS_REPORT_2_MINUTE` | "0" | 任意 |  |
 
-説明欄が空の項目: 51件。
+説明欄が空の項目: 54件。

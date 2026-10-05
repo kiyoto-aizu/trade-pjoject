@@ -1,6 +1,7 @@
 """Yahoo Financeから市場指数の日足OHLCを取得します。"""
 import logging
-from datetime import datetime, timedelta, timezone
+import math
+from datetime import date, datetime, timedelta, timezone
 
 from src.api import request_handler
 from src.domain.market_volatility import MarketDailyBar
@@ -59,3 +60,52 @@ class YahooIndexClient:
         except (KeyError, IndexError, TypeError, ValueError, OverflowError):
             logger.warning("Yahoo Financeの指数日足取得に失敗しました: %s", symbol)
             return []
+
+    def get_intraday_change_percent(self, symbol: str, as_of: datetime) -> float | None:
+        """日経225の当日値を1回の取得で読み、直近営業日の終値比を返します。"""
+        if symbol != "^N225":
+            raise ValueError("日中の前日比取得に対応する指数は^N225のみです")
+
+        try:
+            response = request_handler.send_get(
+                f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}",
+                params={"interval": "1m", "range": "5d"},
+                headers={"User-Agent": "Mozilla/5.0"},
+                timeout=30,
+            )
+            result = response["chart"]["result"][0] if response else None
+            if result is None:
+                return None
+            if as_of.tzinfo is None:
+                as_of = as_of.replace(tzinfo=JST)
+            target_date = as_of.astimezone(JST).date()
+            timestamps = result.get("timestamp", [])
+            closes = result["indicators"]["quote"][0].get("close", [])
+            previous_close = result.get("meta", {}).get("chartPreviousClose")
+            if previous_close is not None:
+                previous_close = float(previous_close)
+                if not math.isfinite(previous_close) or previous_close <= 0:
+                    previous_close = None
+            current_price = None
+            previous_date: date | None = None
+            for timestamp, raw_close in zip(timestamps, closes):
+                if raw_close is None:
+                    continue
+                close = float(raw_close)
+                if not math.isfinite(close) or close <= 0:
+                    continue
+                bar_time = datetime.fromtimestamp(timestamp, tz=JST)
+                if bar_time > as_of.astimezone(JST):
+                    continue
+                if bar_time.date() < target_date:
+                    if previous_date is None or bar_time.date() >= previous_date:
+                        previous_date = bar_time.date()
+                        previous_close = close
+                elif bar_time.date() == target_date:
+                    current_price = close
+            if previous_close is None or current_price is None:
+                return None
+            return (current_price / previous_close - 1.0) * 100.0
+        except (KeyError, IndexError, TypeError, ValueError, OverflowError):
+            logger.warning("Yahoo Financeの日経225日中値取得に失敗しました")
+            return None

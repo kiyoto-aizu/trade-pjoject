@@ -34,6 +34,14 @@ def make_settings(**overrides):
         RSI_ENTRY_THRESHOLD_CAUTION=60.0,
         MARKET_LIQUIDATION_HOUR=15,
         MARKET_LIQUIDATION_MINUTE=20,
+        MARKET_OPEN_HOUR=9,
+        MARKET_OPEN_MINUTE=0,
+        MARKET_CLOSE_HOUR=15,
+        MARKET_CLOSE_MINUTE=30,
+        TRADING_PROGRESS_REPORT_1_HOUR=11,
+        TRADING_PROGRESS_REPORT_1_MINUTE=30,
+        TRADING_PROGRESS_REPORT_2_HOUR=14,
+        TRADING_PROGRESS_REPORT_2_MINUTE=0,
         BOARD_FETCH_CONSECUTIVE_FAILURE_THRESHOLD=3,
         STATE_SAVE_CONSECUTIVE_FAILURE_THRESHOLD=3,
         LIQUIDATION_POSITIONS_FETCH_RETRIES=3,
@@ -96,6 +104,10 @@ def test_config_module_defaults_have_no_violations():
         ("RSI_ENTRY_THRESHOLD", [46, 55], [-1, 101]),
         ("MARKET_LIQUIDATION_HOUR", [0, 23], [-1, 24]),
         ("MARKET_LIQUIDATION_MINUTE", [0, 59], [-1, 60]),
+        ("TRADING_PROGRESS_REPORT_1_HOUR", [9, 11], [-1, 24]),
+        ("TRADING_PROGRESS_REPORT_1_MINUTE", [0, 59], [-1, 60]),
+        ("TRADING_PROGRESS_REPORT_2_HOUR", [12, 15], [-1, 24]),
+        ("TRADING_PROGRESS_REPORT_2_MINUTE", [0, 59], [-1, 60]),
         ("BOARD_FETCH_CONSECUTIVE_FAILURE_THRESHOLD", [1], [0, 1.5]),
         ("STATE_SAVE_CONSECUTIVE_FAILURE_THRESHOLD", [1], [0, 1.5]),
         ("LIQUIDATION_POSITIONS_FETCH_RETRIES", [1], [0, 1.5]),
@@ -136,6 +148,16 @@ def test_regime_relations():
     assert not find_config_violations(make_settings(thresholds=dict(vix_danger=17.01)))
     assert "MARKET_REGIME_NIKKEI_CHANGE_UPGRADE" in names(make_settings(thresholds=dict(nikkei_change_upgrade=0)))
     assert not find_config_violations(make_settings(thresholds=dict(nikkei_change_upgrade=0.01)))
+
+
+def test_progress_report_times_must_be_in_session_and_ordered():
+    assert "TRADING_PROGRESS_REPORT_1_HOUR" in names(
+        make_settings(TRADING_PROGRESS_REPORT_1_HOUR=8)
+    )
+    assert "TRADING_PROGRESS_REPORT_2_HOUR/MINUTE" in names(
+        make_settings(TRADING_PROGRESS_REPORT_2_HOUR=11, TRADING_PROGRESS_REPORT_2_MINUTE=30)
+    )
+    assert not find_config_violations(make_settings())
 
 
 @pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf"), True, False, "10", None])

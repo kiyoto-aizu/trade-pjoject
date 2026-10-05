@@ -285,3 +285,21 @@ class DecisionJournalRepository:
                 )
         finally:
             connection.close()
+
+    def load_records(
+        self,
+        decision_date: str,
+        stage: str,
+        execution_mode: str | None = None,
+    ) -> list[dict]:
+        """指定日の判断記録を発生順に返します。"""
+        query = (
+            "SELECT * FROM decision_records WHERE decision_date = ? AND stage = ?"
+        )
+        parameters: list[object] = [decision_date, stage]
+        if execution_mode is not None:
+            query += " AND execution_mode = ?"
+            parameters.append(execution_mode)
+        query += " ORDER BY first_occurred_at, id"
+        with self._connect() as connection:
+            return [dict(row) for row in connection.execute(query, parameters)]

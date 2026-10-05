@@ -13,6 +13,8 @@
 - 初回はフィルタ結果の全銘柄について確定日足と板を事前取得する。必要RSI履歴または板価格が1銘柄でも不足すれば`collect_preflight_market_data()`は失敗し、ループを開始しない。
 - 場中に候補の再フィルタや上位3銘柄への事前絞り込みはしない。全フィルタ銘柄を評価し、実保有枠`TARGET_POSITIONS`（既定3）を新規買い時に制御する。
 - `process_notification`は開始・終了・例外をログに記録し、例外は再送出する。ここでは`notify_lifecycle=False`のためライフサイクルSlack通知は行わない。設定により例外のLLM分析を試みるが、取引判定の代替にはしない。
+- 取引中間報告は取引日・取引時間内に起動した`TradingUseCase.run()`の既存ループから、既定11:30と14:00に各1回Slack dailyへ送る。時刻は`TRADING_PROGRESS_REPORT_1_HOUR/MINUTE`、`TRADING_PROGRESS_REPORT_2_HOUR/MINUTE`で変更し、起動時に取引時間内かつ第1報告<第2報告を検証する。起動時刻より前の報告枠は遡って送らない。
+- 中間報告は約定件数（liveは実約定照会未実装のため注文受付件数）・Paperの日次実現損益・保有銘柄とAPI返却の含み損益・開始時のMarketRegime・日経225当日値動き（前日終値比）・新規買い見送り/停止とATR損切りを含む。MarketRegimeは起動時評価を再利用し、判定ロジックと売買処理は変更しない。含み損益は保有一覧1回の取得値を使い、銘柄ごとの板取得は行わない。日経225は通知ごとにYahoo Financeの1分足を1回取得し、直近営業日の終値との比率を表示する。取得不能値は0と見なさず「取得不可」とする。文面生成は`domain.trading_progress_report.build_trading_progress_report()`の純粋関数で行う。
 - `15:20`以降に起動した場合は事前取得を行わず`run()`へ進み、持ち越し防止決済を実行する。`15:30`以降の遅延復帰は遅延決済経路となる。
 
 ## 2. 処理フロー詳細（flow.md ③〜⑨）
@@ -44,6 +46,7 @@
 
 ### ⑦〜⑨ ループ終了・決済・レポート
 - 1周ごとに`LOOP_INTERVAL`（60秒）休止し、`is_market_closed()`で15:30終了を判定する。
+- 取引ループは設定された中間報告時刻を跨いだ周回で通知する。約定がない場合も「動きなし」として送る。取引時間外・休場日は`run_trading.main()`の取引セッションガードによりループ自体を開始しない。
 - `ALLOW_OVERNIGHT_HOLDING=false`（既定）では15:20以降に全保有を成行決済し、ループを終了する。15:30以降の遅延復帰では`EOD_LATE_LIQUIDATION`として同様に決済する。
 - EOD経路は`CurrentPriceTime`がJSTの当日であること、`CurrentPriceStatus`が1または8であること、`CurrentPrice`が有限かつ正であることを`_fresh_liquidation_quote()`で検証する。検証できない場合は対象銘柄を未決済として記録・通知し、保守的に発注しない。この挙動は現状paper/live共通であり、ライブで鮮度検証失敗後も成行注文を試す設計にはまだなっていない。
 - 手動緊急停止もpaperでは`_fresh_liquidation_quote()`を使い、失敗銘柄は未決済のまま残してERROR記録と銘柄まとめ通知を1回行う。status 8は引け後の価格として許容する。liveの手動緊急停止は従来どおりfreshnessを要求せず、成行注文を試みる。モード判定は`TradingUseCase._is_paper_mode()`に集約する。liveのEOD鮮度失敗時の扱いは[本番EOD・約定照会タスク](../tasks/task-live-eod-liquidation-and-fill-reconciliation.md)で別途扱う。

@@ -116,6 +116,31 @@ def _collect(settings: Any) -> List[ConfigViolation]:
     check("MARKET_LIQUIDATION_HOUR", "0〜23の整数", lambda v: 0 <= v <= 23, integer=True)
     check("MARKET_LIQUIDATION_MINUTE", "0〜59の整数", lambda v: 0 <= v <= 59, integer=True)
 
+    progress_times = []
+    for index in (1, 2):
+        hour_name = f"TRADING_PROGRESS_REPORT_{index}_HOUR"
+        minute_name = f"TRADING_PROGRESS_REPORT_{index}_MINUTE"
+        check(hour_name, "0〜23の整数", lambda v: 0 <= v <= 23, integer=True)
+        check(minute_name, "0〜59の整数", lambda v: 0 <= v <= 59, integer=True)
+        if hour_name in valid and minute_name in valid:
+            progress_times.append((valid[hour_name] * 60 + valid[minute_name], hour_name))
+            market_open = (
+                getattr(settings, "MARKET_OPEN_HOUR", 9) * 60
+                + getattr(settings, "MARKET_OPEN_MINUTE", 0)
+            )
+            market_close = (
+                getattr(settings, "MARKET_CLOSE_HOUR", 15) * 60
+                + getattr(settings, "MARKET_CLOSE_MINUTE", 30)
+            )
+            if not market_open < progress_times[-1][0] < market_close:
+                fail(hour_name, valid[hour_name], "取引開始後かつ取引終了前")
+    if len(progress_times) == 2 and progress_times[0][0] >= progress_times[1][0]:
+        fail(
+            "TRADING_PROGRESS_REPORT_2_HOUR/MINUTE",
+            (progress_times[1][0] // 60, progress_times[1][0] % 60),
+            "第1報告時刻より後の時刻",
+        )
+
     for name in (
         "BOARD_FETCH_CONSECUTIVE_FAILURE_THRESHOLD",
         "STATE_SAVE_CONSECUTIVE_FAILURE_THRESHOLD",

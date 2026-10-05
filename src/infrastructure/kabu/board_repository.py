@@ -24,7 +24,15 @@ class BoardRepository:
             "trading_volume": response.get("TradingVolume"),
             "trading_value": response.get("TradingValue"),
             "response_keys": sorted(response.keys()),
+            "trading_volume_time": response.get("TradingVolumeTime"),
+            "vwap": response.get("VWAP"),
+            "raw_trading_volume": response.get("TradingVolume"),
+            "raw_trading_value": response.get("TradingValue"),
         }
+
+    def get_current_board_for_diagnostics(self, symbol: str) -> dict | None:
+        """診断記録用に、生返答の項目を含む板情報をそのまま返します。"""
+        return self.get_current_board_with_freshness(symbol)
 
     def get_current_board(self, symbol: str) -> dict | None:
         """既存呼び出し向けに現在値・出来高などの板情報を返します。"""

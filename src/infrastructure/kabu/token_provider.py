@@ -33,6 +33,11 @@ class TokenProvider:
                 self._fetch_locked()
             return self._token
 
+    def peek_token(self) -> str | None:
+        """保持中のトークンを返す。未取得でも新規発行はしない。"""
+        with self._lock:
+            return self._token
+
     def set_token(self, token: str | None) -> None:
         """起動時に取得済みのトークンを共有状態として登録する。"""
         with self._lock:

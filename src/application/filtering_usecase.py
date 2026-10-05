@@ -166,6 +166,7 @@ class FilteringUseCase:
                         (datetime.now() - board_started_at).total_seconds() * 1000, 3
                     )
                     record["error_type"] = type(exc).__name__
+                    self._attach_fetch_meta(record, symbol)
                     mark_skipped(record, "FILTER_BOARD_FETCH_FAILED", "FILTER_BOARD_MISSING")
                     logger.exception("板情報の取得に失敗しました: 銘柄=%s", symbol)
                     continue
@@ -174,10 +175,13 @@ class FilteringUseCase:
                     (datetime.now() - board_started_at).total_seconds() * 1000, 3
                 )
                 if not board:
+                    self._attach_fetch_meta(record, symbol)
+                    self._attach_board_diagnostics(record, {})
                     mark_skipped(record, "FILTER_BOARD_FETCH_FAILED", "FILTER_BOARD_MISSING")
                     logger.warning("フィルタリング評価対象外: 銘柄=%s 理由=板情報なし", symbol)
                     continue
                 record["board_current_price"] = board.get("current_price")
+                self._attach_fetch_meta(record, symbol)
                 today_value = board.get("trading_value")
                 volume = board.get("trading_volume")
                 if today_value is not None:
@@ -191,6 +195,7 @@ class FilteringUseCase:
                         if volume is not None and board.get("current_price") is None
                         else "FILTER_TURNOVER_MISSING"
                     )
+                    self._attach_board_diagnostics(record, board)
                     mark_skipped(record, missing_reason, "FILTER_TURNOVER_MISSING")
                     logger.warning("フィルタリング評価対象外: 銘柄=%s 理由=当日売買代金を計算できません", symbol)
                     continue
@@ -284,6 +289,7 @@ class FilteringUseCase:
             "selected_count": len(symbols),
             "reason_counts": reason_counts,
             "elapsed_ms": round((datetime.now() - run_started_at).total_seconds() * 1000, 3),
+            "board_missing_fetch_seq_distribution": self._missing_seq_distribution(diagnostics),
             "timed_out": timed_out,
             "stop_reason": "FILTER_TIME_LIMIT" if timed_out else None,
             "unprocessed_count": sum(record["status"] == "not_evaluated" for record in diagnostics),
@@ -318,6 +324,40 @@ class FilteringUseCase:
         if self.notifier:
             self._notify_completion(screening, symbols, scored, skipped_count, reason_counts)
         return result
+
+    def _attach_fetch_meta(self, record: dict, symbol: str) -> None:
+        """実取得順・登録解除からの取得回数を診断に付ける(キャッシュ非対応クライアントでは何もしない)。"""
+        getter = getattr(self.board_client, "get_fetch_meta", None)
+        if not callable(getter):
+            return
+        meta = getter(symbol)
+        if isinstance(meta, dict):
+            record.update(meta)
+
+    @staticmethod
+    def _attach_board_diagnostics(record: dict, board: dict) -> None:
+        """売買代金が欠損した時だけ、板API返答の生の項目を診断に残す。"""
+        keys = board.get("response_keys")
+        record["board_response_keys"] = sorted(keys) if keys is not None else None
+        record["board_trading_volume"] = board.get("raw_trading_volume", board.get("trading_volume"))
+        record["board_trading_value"] = board.get("raw_trading_value", board.get("trading_value"))
+        record["board_trading_volume_time"] = board.get("trading_volume_time")
+        record["board_current_price_time"] = board.get("current_price_time")
+        record["board_current_price_status"] = board.get("current_price_status")
+        record["board_vwap"] = board.get("vwap")
+
+    @staticmethod
+    def _missing_seq_distribution(diagnostics: list[dict]) -> dict[str, int]:
+        """板欠損の実取得順を10件刻みで集計する。"""
+        missing_reasons = {"FILTER_TURNOVER_MISSING", "FILTER_CURRENT_PRICE_MISSING", "FILTER_BOARD_FETCH_FAILED"}
+        buckets: dict[int, int] = {}
+        for record in diagnostics:
+            seq = record.get("board_fetch_seq")
+            if seq is None or record.get("reason_code") not in missing_reasons:
+                continue
+            start = (seq - 1) // 10 * 10 + 1
+            buckets[start] = buckets.get(start, 0) + 1
+        return {f"{start}-{start + 9}": count for start, count in sorted(buckets.items())}
 
     def _journal_filter_stage(self, screening, evaluated_count, skips, symbols, today) -> None:
         """日ごとの件数と、評価対象外の銘柄×日付×理由を記録する。失敗しても選定は継続する。"""

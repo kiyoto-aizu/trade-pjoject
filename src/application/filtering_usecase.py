@@ -510,11 +510,16 @@ class FilteringUseCase:
             except Exception:
                 logger.exception("フィルタリング診断記録の保存に失敗しました。選定結果は保存済みです。")
         if timed_out:
+            partial_count = sum(record["status"] == "partial" for record in diagnostics)
             logger.warning(
-                "価格帯別フィルタを時間切れで打ち切りました: band=%s evaluated=%d unprocessed=%d",
+                "価格帯別フィルタを時間切れで打ち切りました: band=%s evaluated=%d skipped=%d "
+                "partial=%d unprocessed=%d time_limit=%d",
                 price_band,
-                len(scored) + len(skips),
+                len(scored),
+                skipped_count,
+                partial_count,
                 summary["unprocessed_count"],
+                reason_counts.get("FILTER_TIME_LIMIT", 0),
             )
             raise FilteringDeadlineExceeded(f"{price_band or price_cap}円フィルタが時間切れで打ち切られました")
         self._journal_filter_stage(screening, len(scored), skips, symbols, today)

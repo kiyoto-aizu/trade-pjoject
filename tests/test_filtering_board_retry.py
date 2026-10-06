@@ -4,7 +4,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from src.application.filtering_usecase import BoardRetryPolicy, FilteringUseCase
+from src.application import filtering_usecase as filtering_usecase_module
+from src.application.filtering_usecase import BoardRetryPolicy, FilteringDeadlineExceeded, FilteringUseCase
 from src.config import config
 from src.infrastructure.kabu.registration_aware_board_cache import RegistrationAwareBoardCache
 
@@ -298,3 +299,35 @@ def test_retry_setting_defaults():
     assert config.FILTER_BOARD_RETRY_MARGIN_SECONDS >= 0
     assert config.FILTER_BOARD_429_MAX_RETRIES >= 0
     assert config.FILTER_BOARD_429_RETRY_WAIT_SECONDS >= 0
+
+
+def test_timeout_warning_reports_evaluated_partial_and_unprocessed_counts(monkeypatch, caplog):
+    times = iter((0.0, 0.6, 0.6))
+    monkeypatch.setattr(filtering_usecase_module, "monotonic", lambda: next(times))
+    diagnostics = []
+    usecase = FilteringUseCase(
+        _ScreeningRepo(["A", "B"]),
+        RegistrationAwareBoardCache(
+            _FakeApi({"A": [_board(value=1000.0, volume=1)], "B": [_board(value=500.0, volume=1)]}),
+            lambda: {},
+        ),
+        _VolumeStub(),
+        _ResultRepo(),
+        diagnostics_repository=SimpleNamespace(save=diagnostics.append),
+    )
+
+    with pytest.raises(FilteringDeadlineExceeded):
+        usecase.execute(target_date=date(2026, 10, 5), deadline_monotonic=0.5)
+
+    summary = diagnostics[0]["summary"]
+    assert summary["evaluated_count"] == 0
+    assert summary["unprocessed_count"] == 1
+    warning = next(
+        record.getMessage()
+        for record in caplog.records
+        if record.getMessage().startswith("価格帯別フィルタを時間切れで打ち切りました:")
+    )
+    assert "evaluated=0 skipped=0 partial=1 unprocessed=1 time_limit=2" in warning
+
+
+

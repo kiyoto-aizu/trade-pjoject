@@ -312,6 +312,10 @@ if len(set(SCREENING_ALTERNATE_PRICE_CAPS)) != len(SCREENING_ALTERNATE_PRICE_CAP
 FILTERING_PRICE_BAND_DEADLINE_TIME = time.fromisoformat(
     os.getenv("FILTERING_PRICE_BAND_DEADLINE_TIME", "09:33")
 )
+# 全価格帯をまとめて板取得する際の最大同時リクエスト数
+FILTER_BOARD_MAX_CONCURRENCY = _positive_int_env(
+    "FILTER_BOARD_MAX_CONCURRENCY", os.getenv("FILTER_BOARD_MAX_CONCURRENCY", "3")
+)
 
 
 def _non_negative_env(name: str, default: str, cast):
@@ -325,10 +329,14 @@ def _non_negative_env(name: str, default: str, cast):
     return value
 
 
-# 270円フィルタで板の売買代金・売買高が取れなかった銘柄を、結果保存前に再取得する(450/900円には適用しない)
+# 全価格帯で板の売買代金・売買高が取れなかった銘柄を、結果保存前に再取得する
 FILTER_BOARD_RETRY_ENABLED = os.getenv("FILTER_BOARD_RETRY_ENABLED", "true").strip().lower() in ("1", "true", "yes")
 FILTER_BOARD_RETRY_MAX_ROUNDS = _non_negative_env("FILTER_BOARD_RETRY_MAX_ROUNDS", "2", int)
 FILTER_BOARD_RETRY_WAIT_SECONDS = _non_negative_env("FILTER_BOARD_RETRY_WAIT_SECONDS", "10", float)
+# board APIが429を返した際の待機時間と追加再試行回数
+FILTER_BOARD_429_RETRY_WAIT_SECONDS = _non_negative_env("FILTER_BOARD_429_RETRY_WAIT_SECONDS", "1", float)
+# 429応答時に再試行する最大回数
+FILTER_BOARD_429_MAX_RETRIES = _non_negative_env("FILTER_BOARD_429_MAX_RETRIES", "2", int)
 # リトライの打ち切り時刻 = FILTERING_PRICE_BAND_DEADLINE_TIME - この秒数
 FILTER_BOARD_RETRY_MARGIN_SECONDS = _non_negative_env("FILTER_BOARD_RETRY_MARGIN_SECONDS", "30", float)
 

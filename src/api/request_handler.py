@@ -7,6 +7,7 @@ API通信の共通化・例外処理を一元管理します。
 import logging
 import threading
 import time
+from urllib.parse import urlsplit
 import requests
 
 from src.config import config
@@ -14,6 +15,8 @@ from src.config import config
 logger = logging.getLogger(__name__)
 _request_lock = threading.Lock()
 _last_request_at = None
+_rate_limit_metrics_lock = threading.Lock()
+_rate_limit_metrics = {}
 
 
 def _wait_for_request_slot() -> None:
@@ -37,6 +40,26 @@ def _status_code(error: requests.RequestException):
     return getattr(response, 'status_code', None) if response is not None else None
 
 
+def get_rate_limit_stats(url_contains: str | None = None) -> dict[str, int]:
+    """429応答と再試行結果をURLの一部で絞って返します。"""
+    totals = {"responses": 0, "retries": 0, "succeeded": 0, "failed": 0}
+    with _rate_limit_metrics_lock:
+        for path, metrics in _rate_limit_metrics.items():
+            if url_contains is None or url_contains in path:
+                for key in totals:
+                    totals[key] += metrics[key]
+    return totals
+
+
+def _record_rate_limit_metric(url: str, metric: str) -> None:
+    path = urlsplit(url).path
+    with _rate_limit_metrics_lock:
+        metrics = _rate_limit_metrics.setdefault(
+            path, {"responses": 0, "retries": 0, "succeeded": 0, "failed": 0}
+        )
+        metrics[metric] += 1
+
+
 def _log_request_error(url, error, error_label) -> None:
     response_text = None
     if hasattr(error, 'response') and getattr(error, 'response') is not None:
@@ -53,6 +76,37 @@ def _request_once(requests_func, url, timeout, **kwargs):
     return response.json()
 
 
+def _request_with_rate_limit_retry(requests_func, url, timeout, **kwargs):
+    retry_count = 0
+    is_board_request = "/board/" in urlsplit(url).path
+    while True:
+        _wait_for_request_slot()
+        try:
+            result = _request_once(requests_func, url, timeout, **kwargs)
+        except requests.RequestException as error:
+            if _status_code(error) != 429 or not is_board_request:
+                if retry_count:
+                    _record_rate_limit_metric(url, "failed")
+                raise
+            _record_rate_limit_metric(url, "responses")
+            if retry_count >= config.FILTER_BOARD_429_MAX_RETRIES:
+                _record_rate_limit_metric(url, "failed")
+                raise
+            retry_count += 1
+            _record_rate_limit_metric(url, "retries")
+            logger.warning(
+                "板APIが429を返しました。再試行します: 回数=%d/%d 待機=%.3f秒",
+                retry_count,
+                config.FILTER_BOARD_429_MAX_RETRIES,
+                config.FILTER_BOARD_429_RETRY_WAIT_SECONDS,
+            )
+            time.sleep(config.FILTER_BOARD_429_RETRY_WAIT_SECONDS)
+            continue
+        if retry_count:
+            _record_rate_limit_metric(url, "succeeded")
+        return result
+
+
 def _send_with_auth_retry(requests_func, url, timeout, error_label, **kwargs):
     """
     共通のHTTP送信処理。kabuステーションAPIが401を返した場合、共有トークン提供者で
@@ -60,8 +114,7 @@ def _send_with_auth_retry(requests_func, url, timeout, error_label, **kwargs):
     """
     headers = kwargs.get('headers')
     try:
-        _wait_for_request_slot()
-        return _request_once(requests_func, url, timeout, **kwargs)
+        return _request_with_rate_limit_retry(requests_func, url, timeout, **kwargs)
     except requests.RequestException as e:
         if _status_code(e) == 401 and headers and 'X-API-KEY' in headers and not _is_token_endpoint(url):
             from src.infrastructure.kabu.token_provider import get_token_provider
@@ -73,8 +126,7 @@ def _send_with_auth_retry(requests_func, url, timeout, error_label, **kwargs):
                 retry_headers['X-API-KEY'] = new_token
                 retry_kwargs = dict(kwargs, headers=retry_headers)
                 try:
-                    _wait_for_request_slot()
-                    result = _request_once(requests_func, url, timeout, **retry_kwargs)
+                    result = _request_with_rate_limit_retry(requests_func, url, timeout, **retry_kwargs)
                     provider.report_retry_succeeded()
                     return result
                 except requests.RequestException as retry_error:

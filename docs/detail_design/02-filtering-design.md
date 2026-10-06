@@ -15,8 +15,9 @@
 run_filtering.py起動
  → 取引日判定・market_workflow_lock取得
  → kabu APIトークン取得・登録銘柄全解除
- → 当日スクリーニング結果を読み、売買代金比で選定・保存
- → 価格帯別結果と診断を追加作成
+ → 270/450/900円帯の対象を読み、重複を除いて板を一括取得
+ → 270円帯を評価・保存
+ → 450/900円帯を順番に評価・診断を追加作成
  → 後続のrun_trading.pyが当日FilteringResultを読み込む
 ```
 
@@ -28,11 +29,13 @@ run_filtering.py起動
 ## 2. 処理フロー
 
 ```
-① 通常スクリーニング結果を読み込む。価格帯別実行では対応する価格帯結果を読む
-② 当日売買代金（板の`TradingValue`、未提供時は現在値×累積出来高）とYahoo平均売買代金を取得
-③ `calculate_volume_surge_ratio()`で比を計算し、上位10銘柄を選択
-④ `FilteringResultRepository`へ保存。`filtering_diagnostics`とdecision journalにも件数・除外理由を記録
-⑤ 通常結果をSlack dailyへ通知。価格帯別結果は別保存先で、締切を超えた場合は結果を保存せず中断
+① 通常・価格帯別のスクリーニング結果を先に読み、板取得対象を銘柄コードで重複除外
+② `RegistrationAwareBoardCache`から最大3並列で板を取得。HTTP開始間隔は共通処理の設定を守り、50件ごとの全解除は実行中の取得が終わるまで待つ
+③ 各帯を270円、450円、900円の順に評価する。売買代金欠損は各帯の締切設定に従い、最大2ラウンド再取得
+④ 当日売買代金（板の`TradingValue`、未提供時は現在値×累積出来高）とYahoo平均売買代金を取得
+⑤ `calculate_volume_surge_ratio()`で比を計算し、上位10銘柄を選択
+⑥ `FilteringResultRepository`へ保存。`filtering_diagnostics`とdecision journalにも件数・除外理由を記録
+⑦ 通常結果をSlack dailyへ通知。価格帯別結果は別保存先で、締切を超えた場合は結果を保存せず中断
 ```
 
 ---
@@ -83,10 +86,11 @@ kabuステーション`/board/{symbol}`から当日の`TradingValue`を取得す
 
 - `FilteringDiagnosticsRepository`は候補別のnumerator/取得元・board価格・平均売買代金・ratio・rank・採用有無・理由コード、集計のinput/evaluated/skipped/selected件数、reason counts、処理時間・締切状態を保存する。診断ファイルは通常運用で保存し、異常系の調査に使う。
 - `DecisionJournalRepository`は日付ごとの入力件数・評価件数・スキップ件数・採用件数と理由別件数を`filter_stage_summaries`に保存する。個別の除外理由も銘柄×日付×理由で集約する。
-- `infrastructure/kabu/registration_aware_board_cache.py`の`RegistrationAwareBoardCache`は同一実行内の板結果と例外を銘柄別に再利用する。kabu登録枠の上限に合わせて50件ごとに登録解除し、解除失敗後は新しい板取得をブロックする。取得回数・キャッシュヒット・時間・解除回数も集計する。
+- `infrastructure/kabu/registration_aware_board_cache.py`の`RegistrationAwareBoardCache`は同一実行内の板結果と例外を銘柄別に再利用し、同一銘柄への同時要求を1回にまとめる。最大並列数は`FILTER_BOARD_MAX_CONCURRENCY`（既定3）。kabu登録枠の上限に合わせて50件ごとに登録解除し、進行中の取得がすべて終わるまで解除しない。解除失敗後は新しい板取得をブロックする。欠損リトライ結果も銘柄・ラウンド単位で共有し、後続帯で同じリトライを繰り返さない。
 - `infrastructure/market_data/cached_volume_client.py`の`CachedVolumeClient`は同一実行内の重複した平均売買代金取得を再利用する。
 - 通常結果に加え、`SCREENING_ALTERNATE_PRICE_CAPS`（既定450/900円）ごとの結果を生成し、`FILTERING_PRICE_BAND_RESULT_ROOT/<上限>/`へ保存する。`FILTERING_PRICE_BAND_DEADLINE_TIME`（既定09:33）までに終わらない価格帯は中断し、未処理銘柄を診断に残す。通常の本番入力とは別の分析用系列である。
-- 上記価格帯別処理の実行制御は`application/price_band_filtering_usecase.py`の`PriceBandFilteringUseCase`が担当し、`run_filtering.py`は主フィルタ完了後に呼び出す。
+- 全帯の候補収集・先行板取得・順次評価は`application/price_band_filtering_usecase.py`の`PriceBandFilteringUseCase`が担当し、`run_filtering.py`は依存を組み立てて呼び出す。
+- `request_handler`はboard APIの429を設定回数・待機時間で再試行する。板取得時間、設定/実測並列数、429応答・再試行結果、帯域ごとの評価時間と欠損・時間切れ銘柄は既存の診断JSONへ記録する。
 - 同時刻帯の過去分足がないため、現行も絶対倍率による足切りはせず、候補内の相対順位で選ぶ。
 
 ### 配置整理の記録（2026-10-04）

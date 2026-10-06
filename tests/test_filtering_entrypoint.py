@@ -1,4 +1,6 @@
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import datetime
 import logging
@@ -56,6 +58,53 @@ def test_registration_aware_board_cache_deduplicates_and_clears_at_batch_limit()
     assert cache.cache_hit_count == 1
 
 
+def test_parallel_cache_coalesces_duplicates_and_waits_for_active_fetches_before_clear():
+    lock = threading.Lock()
+    both_started = threading.Event()
+    release_fetches = threading.Event()
+    clear_called = threading.Event()
+    active_requests = 0
+    requested = []
+    active_at_clear = []
+
+    class SlowBoardClient:
+        def get_current_board(self, symbol):
+            nonlocal active_requests
+            with lock:
+                requested.append(symbol)
+                active_requests += 1
+                if active_requests == 2:
+                    both_started.set()
+            assert release_fetches.wait(timeout=2)
+            with lock:
+                active_requests -= 1
+            return {"symbol": symbol}
+
+    def unregister():
+        with lock:
+            active_at_clear.append(active_requests)
+        clear_called.set()
+        return {}
+
+    cache = RegistrationAwareBoardCache(
+        SlowBoardClient(), unregister, batch_size=2, max_workers=2
+    )
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        batch = executor.submit(cache.fetch_current_boards, ["A", "A", "B"])
+        assert both_started.wait(timeout=2)
+        next_symbol = executor.submit(cache.get_current_board, "C")
+        assert not clear_called.wait(timeout=0.05)
+        release_fetches.set()
+        assert batch.result(timeout=2) == {"A": {"symbol": "A"}, "B": {"symbol": "B"}}
+        assert next_symbol.result(timeout=2) == {"symbol": "C"}
+
+    assert requested.count("A") == 1
+    assert requested.count("B") == 1
+    assert requested.count("C") == 1
+    assert active_at_clear == [0]
+    assert cache.max_concurrency_observed == 2
+
+
 def test_cached_volume_client_reuses_results_without_sharing_mutable_dicts():
     calls = []
 
@@ -101,12 +150,22 @@ def test_main_saves_270_filter_before_isolated_price_band_failures(monkeypatch, 
         def __init__(self, directory):
             self.directory = Path(directory)
 
+        def load_for_date(self, _day):
+            if self.directory == config.SCREENING_RESULT_DIRECTORY:
+                return SimpleNamespace(symbols=["common"])
+            if self.directory.name == "450":
+                return SimpleNamespace(symbols=["common", "450-a", "450-b"])
+            if self.directory.name == "900":
+                return SimpleNamespace(symbols=["common", "900-a"])
+            return SimpleNamespace(symbols=[])
+
         def save(self, result):
             saved_results[self.directory] = result.symbols
             events.append(("saved", self.directory.name, result.symbols))
 
     class FakeFilteringUseCase:
-        def __init__(self, _screening, board_client, _volume, result_repository, *_args, **_kwargs):
+        def __init__(self, screening_repository, board_client, _volume, result_repository, *_args, **_kwargs):
+            self.screening_repository = screening_repository
             self.board_client = board_client
             self.result_repository = result_repository
 
@@ -160,19 +219,21 @@ def test_main_saves_270_filter_before_isolated_price_band_failures(monkeypatch, 
 
     assert saved_results[config.FILTERING_RESULT_DIRECTORY] == ["common"]
     assert saved_results[config.FILTERING_PRICE_BAND_RESULT_ROOT / "900"] == ["common", "900-a"]
-    assert board_requests == ["common", "450-a", "450-b", "900-a"]
+    assert len(board_requests) == len(set(board_requests)) == 4
+    assert set(board_requests) == {"common", "450-a", "450-b", "900-a"}
     assert events.index(("primary_complete",)) < events.index(("alternate_failed", 450.0))
     assert events.index(("alternate_failed", 450.0)) < events.index(("alternate_complete", 900.0))
     assert token_requests == ["token"]
     assert len(unregister_calls) == 4
     messages = [record.getMessage() for record in caplog.records]
     assert "価格帯別フィルタに失敗しました: 上限=450円" in messages
-    assert (
-        f"価格帯別フィルタ完了: 上限=900円 | 採用=2件 | "
-        f"保存先={config.FILTERING_PRICE_BAND_RESULT_ROOT / '900'}"
-    ) in messages
-    summary = next(record for record in caplog.records if record.msg.startswith("価格帯別板取得サマリー:"))
-    assert summary.args[0:2] == (3, 4)
+    band_900_message = next(
+        message for message in messages if message.startswith("価格帯別フィルタ完了: 上限=900円")
+    )
+    assert "採用=2件 | 所要=" in band_900_message
+    assert f"保存先={config.FILTERING_PRICE_BAND_RESULT_ROOT / '900'}" in band_900_message
+    summary = next(record for record in caplog.records if record.msg.startswith("全価格帯板取得サマリー:"))
+    assert summary.args[0:2] == (4, 8)
     assert summary.args[4] == 2
 
 
@@ -189,8 +250,8 @@ def test_main_stops_price_bands_when_unregister_after_primary_fails(monkeypatch,
         yield True
 
     class FakeFilteringUseCase:
-        def __init__(self, *_args, **_kwargs):
-            pass
+        def __init__(self, screening_repository, *_args, **_kwargs):
+            self.screening_repository = screening_repository
 
         def execute(self, target_date=None, price_cap=None, **_kwargs):
             executions.append(price_cap)
@@ -211,7 +272,11 @@ def test_main_stops_price_bands_when_unregister_after_primary_fails(monkeypatch,
     monkeypatch.setattr(run_filtering, "unregister_all", unregister)
     monkeypatch.setattr(run_filtering, "BoardRepository", lambda _token: object())
     monkeypatch.setattr(run_filtering, "FilteringUseCase", FakeFilteringUseCase)
-    monkeypatch.setattr(run_filtering, "ScreeningResultRepository", lambda *_args: object())
+    monkeypatch.setattr(
+        run_filtering,
+        "ScreeningResultRepository",
+        lambda *_args: SimpleNamespace(load_for_date=lambda _day: SimpleNamespace(symbols=[])),
+    )
     monkeypatch.setattr(run_filtering, "FilteringResultRepository", lambda *_args: object())
     monkeypatch.setattr(run_filtering, "FilteringDiagnosticsRepository", lambda *_args: object())
     monkeypatch.setattr(run_filtering, "DecisionJournalRepository", lambda *_args, **_kwargs: object())
@@ -221,7 +286,7 @@ def test_main_stops_price_bands_when_unregister_after_primary_fails(monkeypatch,
     run_filtering.main()
 
     assert executions == [None]
-    assert "270円フィルタ保存後の銘柄登録解除に失敗したため、追加価格帯フィルタを中止します。" in [
+    assert "通常フィルタ後の登録解除に失敗したため、追加価格帯フィルタを中止します。" in [
         record.getMessage() for record in caplog.records
     ]
 
@@ -293,6 +358,11 @@ def test_price_band_deadline_preserves_primary_and_releases_lock_after_unregiste
         def __init__(self, directory):
             self.directory = Path(directory)
 
+        def load_for_date(self, _day):
+            if self.directory == config.SCREENING_RESULT_DIRECTORY:
+                return SimpleNamespace(symbols=["primary-270"])
+            return SimpleNamespace(symbols=[f"band-{self.directory.name}"])
+
         def save(self, result):
             saved_results[self.directory] = result.symbols
             events.append(("result_saved", self.directory))
@@ -306,7 +376,8 @@ def test_price_band_deadline_preserves_primary_and_releases_lock_after_unregiste
             events.append(("diagnostics_saved", self.directory))
 
     class FakeFilteringUseCase:
-        def __init__(self, _screening, _board, _volume, result_repository, *_args, **kwargs):
+        def __init__(self, screening_repository, _board, _volume, result_repository, *_args, **kwargs):
+            self.screening_repository = screening_repository
             self.result_repository = result_repository
             self.diagnostics_repository = kwargs.get("diagnostics_repository")
 
@@ -335,6 +406,11 @@ def test_price_band_deadline_preserves_primary_and_releases_lock_after_unregiste
     monkeypatch.setattr(run_filtering, "process_notification", process_context)
     monkeypatch.setattr(run_filtering, "get_api_token", lambda: "token")
     monkeypatch.setattr(run_filtering, "get_token_provider", lambda: SimpleNamespace(recovery_failed=False))
+    monkeypatch.setattr(
+        run_filtering,
+        "BoardRepository",
+        lambda _token: SimpleNamespace(get_current_board=lambda symbol: {"symbol": symbol}),
+    )
     monkeypatch.setattr(
         run_filtering,
         "unregister_all",

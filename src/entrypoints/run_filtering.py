@@ -88,6 +88,7 @@ def main() -> None:
                     BoardRepository(token),
                     lambda: unregister_all(token),
                     batch_size=config.SCREENING_BATCH_SIZE,
+                    max_workers=config.FILTER_BOARD_MAX_CONCURRENCY,
                 )
                 board_client = board_cache
                 notifier = notify_daily
@@ -121,24 +122,29 @@ def main() -> None:
                 ),
             )
             try:
-                usecase.execute(target_date=args.target_date, board_retry=_build_board_retry_policy(board_cache))
+                if board_cache is None:
+                    usecase.execute(target_date=args.target_date)
+                else:
+                    PriceBandFilteringUseCase(
+                        board_cache,
+                        volume_client,
+                        now=datetime.now,
+                        monotonic_clock=monotonic,
+                        perf_counter_clock=perf_counter,
+                        filtering_use_case_factory=FilteringUseCase,
+                        screening_repository_factory=ScreeningResultRepository,
+                        filtering_repository_factory=FilteringResultRepository,
+                        diagnostics_repository_factory=FilteringDiagnosticsRepository,
+                        logger=logging.getLogger(__name__),
+                    ).run(
+                        usecase,
+                        target_date=args.target_date,
+                        board_retry=_build_board_retry_policy(board_cache),
+                    )
             except Exception:
                 if board_cache is not None and not board_cache.clear_registrations():
                     logging.getLogger(__name__).error("フィルタ失敗後の銘柄登録解除にも失敗しました。")
                 raise
-            if board_cache is not None:
-                PriceBandFilteringUseCase(
-                    board_cache,
-                    volume_client,
-                    now=datetime.now,
-                    monotonic_clock=monotonic,
-                    perf_counter_clock=perf_counter,
-                    filtering_use_case_factory=FilteringUseCase,
-                    screening_repository_factory=ScreeningResultRepository,
-                    filtering_repository_factory=FilteringResultRepository,
-                    diagnostics_repository_factory=FilteringDiagnosticsRepository,
-                    logger=logging.getLogger(__name__),
-                ).run(target_date=args.target_date)
             if get_token_provider().recovery_failed:
                 # 1run1回: トークン再取得後も401が続いた(復旧失敗)場合のみ通知する
                 notify_daily("kabuステーションAPIの認証が回復しません（トークン再取得後も401が継続しました）。")

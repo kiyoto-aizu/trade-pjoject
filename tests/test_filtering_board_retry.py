@@ -1,4 +1,5 @@
 from datetime import date
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -44,13 +45,15 @@ class _FakeApi:
         self.scripts = {symbol: list(items) for symbol, items in scripts.items()}
         self.calls = []
         self.clock = clock
+        self.lock = threading.Lock()
 
     def get_current_board_for_diagnostics(self, symbol):
-        self.calls.append(symbol)
-        if self.clock is not None:
-            self.clock.now += 1
-        items = self.scripts[symbol]
-        item = items.pop(0) if len(items) > 1 else items[0]
+        with self.lock:
+            self.calls.append(symbol)
+            if self.clock is not None:
+                self.clock.now += 1
+            items = self.scripts[symbol]
+            item = items.pop(0) if len(items) > 1 else items[0]
         if isinstance(item, Exception):
             raise item
         return item
@@ -110,6 +113,10 @@ def test_retry_recovers_missing_board_and_scores_it():
     assert out.summary["retry_round_success_counts"] == {"1": 1}
     assert out.summary["retry_stopped_by_cutoff"] is False
     assert out.summary["reason_counts"] == {}
+    assert out.summary["board_api_metrics"]["fetch_count"] == 3
+    assert out.summary["board_api_metrics"]["retry_fetch_count"] == 1
+    assert out.summary["board_api_metrics"]["max_concurrency_configured"] == config.FILTER_BOARD_MAX_CONCURRENCY
+    assert out.summary["board_run_api_metrics"]["fetch_count"] == 3
     assert out.sleeps == [10.0]
 
 
@@ -140,7 +147,7 @@ def test_second_round_success_is_recorded():
 
 def test_only_still_missing_symbols_are_retried_in_later_rounds():
     out = _run({"A": [MISSING, _board(value=1000.0, volume=1)], "B": [MISSING]}, ["A", "B"])
-    assert out.api.calls == ["A", "B", "A", "B", "B"]
+    assert sorted(out.api.calls) == ["A", "A", "B", "B", "B"]
 
 
 def test_retry_refetches_even_when_cache_holds_the_missing_result():
@@ -154,6 +161,20 @@ def test_retry_refetches_even_when_cache_holds_the_missing_result():
     assert api.calls == ["A", "A"]
     assert cache.get_current_board("A")["trading_value"] == 1000.0
     assert api.calls == ["A", "A"]
+
+
+def test_same_retry_round_is_reused_across_price_bands_but_next_round_fetches_again():
+    api = _FakeApi({"A": [MISSING, MISSING, _board(value=1000.0, volume=1)]})
+    cache = RegistrationAwareBoardCache(api, lambda: {})
+    cache.get_current_board("A")
+
+    assert cache.refetch_current_board("A", retry_round=1)["trading_value"] is None
+    assert cache.refetch_current_board("A", retry_round=1)["trading_value"] is None
+    assert api.calls == ["A", "A"]
+
+    assert cache.refetch_current_board("A", retry_round=2)["trading_value"] == 1000.0
+    assert cache.refetch_current_board("A", retry_round=2)["trading_value"] == 1000.0
+    assert api.calls == ["A", "A", "A"]
 
 
 def test_failed_refetch_keeps_the_cached_missing_result():
@@ -170,7 +191,9 @@ def test_retry_stops_at_cutoff_and_result_is_still_saved():
     # 初回3件で時計=3。待機後=13。Aの取得後=14でBの手前の確認が締め切りに達する
     out = _run({s: [MISSING] for s in "ABC"}, list("ABC"), deadline=14.0)
 
-    assert out.api.calls == ["A", "B", "C", "A"]
+    assert set(out.api.calls) == {"A", "B", "C"}
+    assert all(out.api.calls.count(symbol) in (1, 2) for symbol in "ABC")
+    assert sum(out.api.calls.count(symbol) == 2 for symbol in "ABC") >= 1
     assert out.records["A"]["retry_attempted"] is True
     assert out.records["B"]["retry_attempted"] is False
     assert out.summary["retry_stopped_by_cutoff"] is True
@@ -269,6 +292,9 @@ def test_retry_settings_reject_invalid_values(raw, monkeypatch):
 
 
 def test_retry_setting_defaults():
+    assert config.FILTER_BOARD_MAX_CONCURRENCY >= 1
     assert config.FILTER_BOARD_RETRY_MAX_ROUNDS >= 0
     assert config.FILTER_BOARD_RETRY_WAIT_SECONDS >= 0
     assert config.FILTER_BOARD_RETRY_MARGIN_SECONDS >= 0
+    assert config.FILTER_BOARD_429_MAX_RETRIES >= 0
+    assert config.FILTER_BOARD_429_RETRY_WAIT_SECONDS >= 0

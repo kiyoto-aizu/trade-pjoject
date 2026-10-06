@@ -8,6 +8,10 @@ class BoardRepository:
     def __init__(self, token: str):
         self.token = token
 
+    @staticmethod
+    def get_rate_limit_stats() -> dict[str, int]:
+        return request_handler.get_rate_limit_stats("/board/")
+
     def get_current_board_with_freshness(self, symbol: str) -> dict | None:
         """現在値に加え、現値時刻とステータスを含む板情報を返します。"""
         response = request_handler.send_get(

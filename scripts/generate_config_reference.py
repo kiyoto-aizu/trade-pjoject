@@ -60,6 +60,13 @@ def _environment_calls(statement: ast.stmt):
             for name in _string_values(node.args[0]):
                 default = node.args[1] if len(node.args) > 1 else None
                 yield name, default, False
+        elif (
+            isinstance(function, ast.Name)
+            and function.id == "_non_negative_env"
+            and len(node.args) >= 2
+        ):
+            for name in _string_values(node.args[0]):
+                yield name, node.args[1], False
         elif isinstance(function, ast.Name) and function.id == "_load_required_env" and node.args:
             for name in _string_values(node.args[0]):
                 yield name, None, True

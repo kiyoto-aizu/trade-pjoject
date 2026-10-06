@@ -80,6 +80,9 @@ class FilteringUseCase:
         deadline_monotonic: float | None = None,
         price_band: str | None = None,
         board_retry: BoardRetryPolicy | None = None,
+        board_metrics_before: dict | None = None,
+        board_run_metrics_before: dict | None = None,
+        board_prefetch_summary: dict | None = None,
     ) -> FilteringResult:
         """
         フィルタリング処理を実行します。
@@ -95,6 +98,10 @@ class FilteringUseCase:
             FilteringResultオブジェクト
         """
         run_started_at = datetime.now()
+        metrics_getter = getattr(self.board_client, "get_metrics_snapshot", None)
+        metrics_before = board_metrics_before
+        if metrics_before is None and callable(metrics_getter):
+            metrics_before = metrics_getter()
         today = target_date or run_started_at.date()
         try:
             price_cap = config.get_screening_price_cap() if price_cap is None else price_cap
@@ -141,15 +148,15 @@ class FilteringUseCase:
                     "フィルタリング評価対象外: 銘柄=%s 理由=当日売買代金を計算できません", record["symbol"]
                 )
 
-            def attempt(record, symbol, round_no) -> bool:
+            def attempt(record, symbol, round_no, board_result) -> bool:
                 if not record["retry_attempted"]:
                     retry_stats["attempted"] += 1
                 record["retry_attempted"] = True
-                try:
-                    board = self.board_client.refetch_current_board(symbol)
-                except Exception as exc:
-                    record["retry_error_type"] = type(exc).__name__
+                if isinstance(board_result, Exception):
+                    record["retry_error_type"] = type(board_result).__name__
                     board = None
+                else:
+                    board = board_result
                 meta = getattr(self.board_client, "get_retry_meta", lambda _s: None)(symbol)
                 if isinstance(meta, dict):
                     record.update(meta)
@@ -224,14 +231,34 @@ class FilteringUseCase:
                         retry_stats["stopped_by_cutoff"] = True
                         break
                     sleeper(board_retry.wait_seconds)
+                    parallel_refetch = getattr(self.board_client, "refetch_current_boards", None)
+                    if callable(parallel_refetch):
+                        results = parallel_refetch(
+                            [symbol for _record, symbol in unresolved],
+                            max_workers=config.FILTER_BOARD_MAX_CONCURRENCY,
+                            should_start=lambda: clock() < board_retry.deadline_monotonic,
+                            retry_round=round_no,
+                        )
+                    else:
+                        results = {}
+                        for _record, symbol in unresolved:
+                            if clock() >= board_retry.deadline_monotonic:
+                                break
+                            try:
+                                results[symbol] = self.board_client.refetch_current_board(symbol)
+                            except Exception as exc:
+                                results[symbol] = exc
+                    if not results:
+                        retry_stats["stopped_by_cutoff"] = True
+                        break
                     retry_stats["rounds_run"] = round_no
                     still_missing = []
                     for position, (record, symbol) in enumerate(unresolved):
-                        if clock() >= board_retry.deadline_monotonic:
+                        if symbol not in results:
                             retry_stats["stopped_by_cutoff"] = True
                             still_missing.extend(unresolved[position:])
                             break
-                        if not attempt(record, symbol, round_no):
+                        if not attempt(record, symbol, round_no, results[symbol]):
                             still_missing.append((record, symbol))
                     unresolved = still_missing
                     if retry_stats["stopped_by_cutoff"]:
@@ -431,6 +458,31 @@ class FilteringUseCase:
             "stop_reason": "FILTER_TIME_LIMIT" if timed_out else None,
             "unprocessed_count": sum(record["status"] == "not_evaluated" for record in diagnostics),
         }
+        if callable(metrics_getter):
+            metrics_after = metrics_getter()
+            def calculate_metrics_delta(before):
+                delta = {}
+                for key, value in metrics_after.items():
+                    before_value = (before or {}).get(key)
+                    if isinstance(value, dict):
+                        delta[key] = {
+                            metric: count - (before_value or {}).get(metric, 0)
+                            for metric, count in value.items()
+                        }
+                    elif key in {"max_concurrency_configured", "max_concurrency_observed"}:
+                        delta[key] = value
+                    elif isinstance(value, (int, float)):
+                        delta[key] = value - (before_value or 0)
+                    else:
+                        delta[key] = value
+                return delta
+
+            summary["board_api_metrics"] = calculate_metrics_delta(metrics_before)
+            run_metrics_before = board_run_metrics_before or metrics_before
+            if run_metrics_before is not None:
+                summary["board_run_api_metrics"] = calculate_metrics_delta(run_metrics_before)
+        if board_prefetch_summary is not None:
+            summary["board_prefetch"] = board_prefetch_summary
         if retry_active:
             summary.update({
                 "retry_attempted_count": retry_stats["attempted"],

@@ -54,7 +54,13 @@
 | `FILTERING_PRICE_BAND_DEADLINE_TIME` | "09:33" | 任意 |  |
 | `FILTERING_PRICE_BAND_RESULT_ROOT` | str(_repo_root / 'data' / 'filtering_price_bands') | 任意 |  |
 | `FILTERING_RESULT_DIRECTORY` | str(_repo_root / 'data' / 'filtering') | 任意 |  |
-| `FILTER_BOARD_RETRY_ENABLED` | "true" | 任意 | 270円フィルタで板の売買代金・売買高が取れなかった銘柄を、結果保存前に再取得する(450/900円には適用しない) |
+| `FILTER_BOARD_429_MAX_RETRIES` | "2" | 任意 | 429応答時に再試行する最大回数 |
+| `FILTER_BOARD_429_RETRY_WAIT_SECONDS` | "1" | 任意 | board APIが429を返した際の待機時間と追加再試行回数 |
+| `FILTER_BOARD_MAX_CONCURRENCY` | "3" | 任意 | 全価格帯をまとめて板取得する際の最大同時リクエスト数 |
+| `FILTER_BOARD_RETRY_ENABLED` | "true" | 任意 | 全価格帯で板の売買代金・売買高が取れなかった銘柄を、結果保存前に再取得する |
+| `FILTER_BOARD_RETRY_MARGIN_SECONDS` | "30" | 任意 | リトライの打ち切り時刻 = FILTERING_PRICE_BAND_DEADLINE_TIME - この秒数 |
+| `FILTER_BOARD_RETRY_MAX_ROUNDS` | "2" | 任意 |  |
+| `FILTER_BOARD_RETRY_WAIT_SECONDS` | "10" | 任意 |  |
 | `FILTER_DECISION_OBSERVATION_DAYS` | "5" | 任意 |  |
 
 ## paper
@@ -142,4 +148,4 @@
 | `TRADING_PROGRESS_REPORT_2_HOUR` | "14" | 任意 |  |
 | `TRADING_PROGRESS_REPORT_2_MINUTE` | "0" | 任意 |  |
 
-説明欄が空の項目: 54件。
+説明欄が空の項目: 56件。

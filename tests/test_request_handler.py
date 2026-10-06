@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+import requests
+
 from src.api import request_handler
 from src.infrastructure.notification import slack_notify
 
@@ -29,3 +31,60 @@ def test_request_handler_applies_interval_between_get_and_post(monkeypatch):
     request_handler.send_post('https://example.test')
 
     assert sleeps == [0.4]
+
+
+def test_board_429_is_retried_and_success_is_recorded(monkeypatch):
+    responses = iter((429, 200))
+    calls = []
+    sleeps = []
+
+    def fake_get(url, **_kwargs):
+        calls.append(url)
+        status = next(responses)
+        if status == 429:
+            response = SimpleNamespace(status_code=429)
+            raise requests.HTTPError(response=response)
+        return SimpleNamespace(raise_for_status=lambda: None, json=lambda: {"CurrentPrice": 100})
+
+    monkeypatch.setattr(request_handler, "_wait_for_request_slot", lambda: None)
+    monkeypatch.setattr(request_handler.requests, "get", fake_get)
+    monkeypatch.setattr(request_handler.time, "sleep", sleeps.append)
+    monkeypatch.setattr(request_handler.config, "FILTER_BOARD_429_MAX_RETRIES", 1)
+    monkeypatch.setattr(request_handler.config, "FILTER_BOARD_429_RETRY_WAIT_SECONDS", 0.25)
+    before = request_handler.get_rate_limit_stats("/board/")
+
+    result = request_handler.send_get("http://localhost/kabusapi/board/7203@1")
+
+    after = request_handler.get_rate_limit_stats("/board/")
+    assert result == {"CurrentPrice": 100}
+    assert len(calls) == 2
+    assert sleeps == [0.25]
+    assert after["responses"] - before["responses"] == 1
+    assert after["retries"] - before["retries"] == 1
+    assert after["succeeded"] - before["succeeded"] == 1
+    assert after["failed"] - before["failed"] == 0
+
+
+def test_board_429_exhaustion_returns_none_and_non_board_429_is_not_retried(monkeypatch):
+    calls = []
+
+    def always_limited(url, **_kwargs):
+        calls.append(url)
+        raise requests.HTTPError(response=SimpleNamespace(status_code=429))
+
+    monkeypatch.setattr(request_handler, "_wait_for_request_slot", lambda: None)
+    monkeypatch.setattr(request_handler.requests, "get", always_limited)
+    monkeypatch.setattr(request_handler.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(request_handler.config, "FILTER_BOARD_429_MAX_RETRIES", 1)
+    before = request_handler.get_rate_limit_stats("/board/")
+
+    assert request_handler.send_get("http://localhost/kabusapi/board/7203@1") is None
+    board_after = request_handler.get_rate_limit_stats("/board/")
+    assert len(calls) == 2
+    assert board_after["responses"] - before["responses"] == 2
+    assert board_after["retries"] - before["retries"] == 1
+    assert board_after["failed"] - before["failed"] == 1
+
+    calls.clear()
+    assert request_handler.send_get("http://localhost/kabusapi/wallet/cash") is None
+    assert len(calls) == 1

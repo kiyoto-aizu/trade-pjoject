@@ -23,7 +23,7 @@ trade-pjoject/
 │   ├── filter_dynamic/
 │   ├── infrastructure/
 │   │   ├── analysis/  ├── backtest/  ├── calendar/
-│   │   ├── kabu/          # registration_aware_board_cache.py: 登録枠を考慮した板キャッシュ
+│   │   ├── kabu/          # registration_aware_board_cache.py: 登録枠・並列取得を管理する板キャッシュ
 │   │   ├── market_data/   # cached_volume_client.py: 出来高平均キャッシュ
 │   │   ├── notification/  ├── paper/  └── persistence/
 │   ├── sample/
@@ -217,6 +217,7 @@ class EvaluateSymbolUseCase:
 | `run_backtest.py` | 199行 | **例外（廃止予定）** | 旧エンジンのCLI。ADR-0007 Phase 6の旧エンジン廃止まで現状維持し、applicationへの移設は行わない。 |
 
 - 解消（2026-10-04）: `run_filtering.py`の板/出来高キャッシュをinfrastructureへ、価格帯別フィルタ実行制御を`PriceBandFilteringUseCase`へ移設した。`run_filtering_override.py`のentrypoint間importも解消し、両entrypointは`BoardRepository`・共通ロギング・`notify_daily`を直接利用する。
+- 更新（2026-10-06）: 通常・価格帯別の対象収集と逐次評価は`PriceBandFilteringUseCase`、並列板取得・同一銘柄の要求統合・登録解除待ちは`RegistrationAwareBoardCache`が担当する。判定条件は変更しない。
 
 `tests/`は現状平置きである。`tests/domain/`等への分割は将来の方針として検討する。
 

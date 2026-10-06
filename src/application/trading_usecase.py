@@ -7,6 +7,7 @@
 """
 import logging
 import json
+import hashlib
 import inspect
 import math
 import time
@@ -42,6 +43,7 @@ from src.infrastructure.persistence.storage import read_json, write_json
 from src.infrastructure.persistence.filter_decision_repository import FilterDecisionRepository
 from src.infrastructure.persistence.decision_journal_repository import STAGE_TRADING
 from src.infrastructure.analysis.daily_analyzer import create_daily_analyzer
+from src.application.shadow_position_tracker import ShadowPosition, resolve_reference
 
 logger = logging.getLogger(__name__)
 JST = timezone(timedelta(hours=9))
@@ -76,6 +78,7 @@ class TradingUseCase:
         filter_decision_repository: FilterDecisionRepository | None = None,
         kill_switch_baseline_path: Optional[Path] = None,
         decision_journal_repository=None,
+        enable_shadow_position_tracking: bool = False,
     ):
         """
         TradingUseCaseを初期化します。
@@ -114,6 +117,9 @@ class TradingUseCase:
         )
         # 判断記録は注入された場合のみ有効(記録専用で売買判定には使わない)
         self.decision_journal_repository = decision_journal_repository
+        self.enable_shadow_position_tracking = enable_shadow_position_tracking
+        self._shadow_positions: dict[str, ShadowPosition] = {}
+        self._shadow_pending_symbols: set[str] = set()
         self._account_snapshot: dict = {}
         self.market_regime_usecase = market_regime_usecase
         self.market_regime = MarketRegime.NORMAL
@@ -164,6 +170,294 @@ class TradingUseCase:
             )
         except Exception:
             logger.exception("判定イベントの保存に失敗しました: 種別=%s 銘柄=%s", event_type, symbol)
+
+    @staticmethod
+    def _shadow_position_key(symbol: str, order_id: str | None, timestamp: str, quantity: int) -> str:
+        identity = f"{symbol}|{order_id or ''}|{timestamp}|{quantity}"
+        return hashlib.sha256(identity.encode("utf-8")).hexdigest()[:20]
+
+    @staticmethod
+    def _shadow_execution_time(order_response: dict | None, fallback: datetime) -> tuple[datetime, bool]:
+        raw = (order_response or {}).get("ExecutionTime")
+        if raw:
+            try:
+                value = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+                if value.tzinfo is not None:
+                    value = value.astimezone(JST).replace(tzinfo=None)
+                return value, True
+            except (TypeError, ValueError, OverflowError):
+                pass
+        return fallback, False
+
+    def _record_shadow_event_safely(self, symbol: str, reason_code: str, occurred_at: datetime, values: dict) -> None:
+        if not self.enable_shadow_position_tracking:
+            return
+        repository = self.decision_journal_repository
+        if repository is None:
+            self._log_trade_reason_once(
+                logging.WARNING, "SHADOW_RECORD_UNAVAILABLE", symbol,
+                "判断記録リポジトリが未設定です",
+            )
+            return
+        try:
+            repository_mode = getattr(repository, "execution_mode", self._execution_mode)
+            if repository_mode != self._execution_mode:
+                raise ValueError(f"execution_mode mismatch: {repository_mode}")
+            repository.record(STAGE_TRADING, symbol, reason_code, occurred_at, values)
+            self._shadow_pending_symbols.add(symbol)
+        except Exception as exc:
+            self._log_trade_reason_once(
+                logging.WARNING, "SHADOW_RECORD_WRITE_FAILED", symbol,
+                f"理由={reason_code} | 例外={type(exc).__name__}: {exc}",
+            )
+
+    def _start_shadow_position(
+        self,
+        entry: OrderHistoryEntry,
+        order_response: dict | None,
+        volatility_assessment,
+        previous_close: float | None,
+    ) -> None:
+        if not self.enable_shadow_position_tracking:
+            return
+        timestamp = entry.timestamp
+        position_key = self._shadow_position_key(entry.symbol, entry.order_id, timestamp, entry.qty)
+        if position_key in self._shadow_positions:
+            return
+        response_price = (order_response or {}).get("Price")
+        try:
+            fill_price = float(response_price)
+            has_fill_price = math.isfinite(fill_price) and fill_price > 0
+        except (TypeError, ValueError, OverflowError):
+            fill_price = float(entry.price)
+            has_fill_price = False
+        if not has_fill_price:
+            fill_price = float(entry.price)
+        fill_time, has_fill_time = self._shadow_execution_time(
+            order_response, self._current_now or datetime.fromisoformat(timestamp)
+        )
+        reference, reference_kind = resolve_reference(
+            getattr(volatility_assessment, "atr", None), previous_close
+        )
+        position = ShadowPosition(
+            position_key=position_key,
+            symbol=entry.symbol,
+            buy_at=fill_time,
+            buy_price=fill_price,
+            buy_quantity=entry.qty,
+            reference_value=reference,
+            reference_kind=reference_kind,
+        )
+        if not has_fill_price:
+            position.data_quality.add("buy_price_is_order_reference")
+        if not has_fill_time:
+            position.data_quality.add("buy_time_is_order_acceptance_time")
+        if self._execution_mode == "live":
+            position.data_quality.add("live_buy_fill_not_confirmed")
+        self._shadow_positions[position_key] = position
+
+    def _observe_shadow_positions(
+        self,
+        symbol: str,
+        observed_at: datetime,
+        price: float | None,
+        volatility_assessment=None,
+        previous_close: float | None = None,
+        quality: str | None = None,
+    ) -> None:
+        if not self.enable_shadow_position_tracking:
+            return
+        try:
+            for position in list(self._shadow_positions.values()):
+                if position.symbol != symbol or position.settled_quantity >= position.buy_quantity:
+                    continue
+                if position.reference_value is None:
+                    position.reference_value, position.reference_kind = resolve_reference(
+                        getattr(volatility_assessment, "atr", None), previous_close
+                    )
+                    if position.reference_value is not None:
+                        position.data_quality.discard("reference_unavailable")
+                for row in position.observe(observed_at, price, quality):
+                    reason_code = f"SHADOW_POSITION_{position.position_key}_N{row['checkpoint_minutes']}"
+                    self._record_shadow_event_safely(symbol, reason_code, observed_at, row)
+        except Exception as exc:
+            self._log_trade_reason_once(
+                logging.WARNING, "SHADOW_TRACKING_FAILED", symbol,
+                f"観測記録をスキップ: 例外={type(exc).__name__}: {exc}",
+            )
+
+    def _settle_shadow_positions(
+        self,
+        symbol: str,
+        settled_at: datetime,
+        requested_price: float,
+        quantity: int,
+        settlement_reason: str,
+        order_response: dict | None,
+    ) -> None:
+        if not self.enable_shadow_position_tracking:
+            return
+        remaining = max(int(quantity), 0)
+        settled_at, has_fill_time = self._shadow_execution_time(order_response, settled_at)
+        response_price = (order_response or {}).get("Price")
+        try:
+            settled_price = float(response_price)
+            has_fill_price = math.isfinite(settled_price) and settled_price > 0
+        except (TypeError, ValueError, OverflowError):
+            settled_price = float(requested_price)
+            has_fill_price = False
+        if not has_fill_price:
+            settled_price = float(requested_price)
+        if not has_fill_time:
+            for position in self._shadow_positions.values():
+                if position.symbol == symbol and position.settled_quantity < position.buy_quantity:
+                    position.data_quality.add("settlement_time_is_order_acceptance_time")
+        if not has_fill_price:
+            for position in self._shadow_positions.values():
+                if position.symbol == symbol and position.settled_quantity < position.buy_quantity:
+                    position.data_quality.add("settlement_price_is_order_reference")
+        if self._execution_mode == "live":
+            for position in self._shadow_positions.values():
+                if position.symbol == symbol and position.settled_quantity < position.buy_quantity:
+                    position.data_quality.add("live_settlement_fill_not_confirmed")
+        for key, position in sorted(
+            list(self._shadow_positions.items()), key=lambda item: item[1].buy_at
+        ):
+            if position.symbol != symbol or remaining <= 0:
+                continue
+            open_quantity = position.buy_quantity - position.settled_quantity
+            if open_quantity <= 0:
+                continue
+            settled_quantity = min(remaining, open_quantity)
+            row = position.settle(
+                settled_at, settled_price, settled_quantity, settlement_reason
+            )
+            row["settlement_price_source"] = (
+                "order_response" if has_fill_price else "order_reference_price"
+            )
+            row["settlement_time_source"] = (
+                "order_response" if has_fill_time else "order_acceptance_time"
+            )
+            row["settlement_order_id"] = (order_response or {}).get("OrderId")
+            reason_code = f"SHADOW_POSITION_{position.position_key}_SETTLEMENT"
+            self._record_shadow_event_safely(symbol, reason_code, settled_at, row)
+            remaining -= settled_quantity
+            if position.settled_quantity >= position.buy_quantity:
+                self._shadow_positions.pop(key, None)
+
+    def _note_shadow_capacity_skip(self, symbol: str, occurred_at: datetime) -> None:
+        if not self.enable_shadow_position_tracking:
+            return
+        for position in self._shadow_positions.values():
+            if position.settled_quantity < position.buy_quantity:
+                try:
+                    position.add_blocked_candidate(symbol, occurred_at)
+                except Exception as exc:
+                    self._log_trade_reason_once(
+                        logging.WARNING, "SHADOW_TRACKING_FAILED", position.symbol,
+                        f"枠上限候補の紐づけをスキップ: 例外={type(exc).__name__}: {exc}",
+                    )
+
+    def _restore_shadow_positions(self, positions: list[dict], now: datetime) -> None:
+        if not self.enable_shadow_position_tracking:
+            return
+        lots_by_symbol: dict[str, list[dict]] = {}
+        ordered_history = sorted(self.order_history, key=lambda item: item.timestamp)
+        for entry in ordered_history:
+            if entry.result_code != 0 or entry.qty <= 0:
+                continue
+            symbol = str(entry.symbol)
+            if entry.side == config.OrderSide.BUY:
+                lots_by_symbol.setdefault(symbol, []).append({"entry": entry, "remaining": entry.qty})
+            elif entry.side == config.OrderSide.SELL:
+                remaining = entry.qty
+                for lot in lots_by_symbol.get(symbol, []):
+                    matched = min(remaining, lot["remaining"])
+                    lot["remaining"] -= matched
+                    remaining -= matched
+                    if remaining <= 0:
+                        break
+
+        open_by_symbol: dict[str, int] = {}
+        for position in positions:
+            if self._is_open_position(position):
+                symbol = str(position.get("Symbol", ""))
+                open_by_symbol[symbol] = open_by_symbol.get(symbol, 0) + int(position.get("HoldQty", 0) or 0)
+
+        existing_records = []
+        if self.decision_journal_repository is not None:
+            try:
+                existing_records = self.decision_journal_repository.load_records(
+                    now.date().isoformat(), STAGE_TRADING, self._execution_mode
+                )
+            except Exception as exc:
+                for symbol in open_by_symbol:
+                    self._log_trade_reason_once(
+                        logging.WARNING, "SHADOW_HISTORY_READ_FAILED", symbol,
+                        f"既存シャドウ記録の読込失敗: {type(exc).__name__}",
+                    )
+
+        details_by_key: dict[str, list[dict]] = {}
+        for record in existing_records:
+            try:
+                detail = json.loads(record.get("detail_json") or "{}")
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if detail.get("position_key"):
+                details_by_key.setdefault(detail["position_key"], []).append(detail)
+
+        for symbol, hold_quantity in open_by_symbol.items():
+            remaining_holding = hold_quantity
+            for lot in lots_by_symbol.get(symbol, []):
+                if remaining_holding <= 0 or lot["remaining"] <= 0:
+                    continue
+                entry = lot["entry"]
+                matched = min(remaining_holding, lot["remaining"])
+                key = self._shadow_position_key(symbol, entry.order_id, entry.timestamp, entry.qty)
+                reference, reference_kind = resolve_reference(entry.atr, None)
+                tracker = ShadowPosition(
+                    position_key=key, symbol=symbol,
+                    buy_at=datetime.fromisoformat(entry.timestamp),
+                    buy_price=float(entry.price), buy_quantity=entry.qty,
+                    reference_value=reference, reference_kind=reference_kind,
+                    history_incomplete=True,
+                    settled_quantity=entry.qty - matched,
+                )
+                tracker.data_quality.add("buy_price_from_order_history")
+                for detail in details_by_key.get(key, []):
+                    if detail.get("event_type") == "shadow_position_checkpoint":
+                        checkpoint = detail.get("checkpoint_minutes")
+                        if isinstance(checkpoint, int):
+                            tracker.completed_checkpoints.add(checkpoint)
+                        tracker.observation_count = max(
+                            tracker.observation_count, int(detail.get("observation_count") or 0)
+                        )
+                for record in existing_records:
+                    if record.get("reason_code") != "POSITION_LIMIT_REACHED":
+                        continue
+                    first_at = str(record.get("first_occurred_at", ""))
+                    last_at = str(record.get("last_occurred_at", ""))
+                    if not first_at or not last_at or last_at > now.isoformat(timespec="seconds"):
+                        continue
+                    if last_at < entry.timestamp:
+                        continue
+                    candidate = str(record.get("symbol", ""))
+                    tracker.capacity_blocked_candidates[candidate] = {
+                        "count": int(record.get("occurrence_count", 1)),
+                        "first_at": first_at,
+                        "last_at": last_at,
+                        "aggregated": True,
+                    }
+                    tracker.data_quality.add("capacity_skip_history_aggregated")
+                    if first_at < entry.timestamp:
+                        tracker.data_quality.add("capacity_skip_period_overlaps_buy_time")
+                self._shadow_positions[key] = tracker
+                remaining_holding -= matched
+            if remaining_holding > 0:
+                self._log_trade_reason_once(
+                    logging.WARNING, "SHADOW_POSITION_ORIGIN_UNKNOWN", symbol,
+                    f"保有数量={hold_quantity}のうち購入履歴と対応できない数量={remaining_holding}",
+                )
             return None
 
     def _log_trade_reason_once(
@@ -188,6 +482,8 @@ class TradingUseCase:
             self.decision_journal_repository.record(STAGE_TRADING, symbol, reason_code, occurred_at, values)
         except Exception:
             logger.exception("判断記録の保存に失敗しました: 理由=%s 銘柄=%s", reason_code, symbol)
+        if reason_code == "POSITION_LIMIT_REACHED":
+            self._note_shadow_capacity_skip(symbol, occurred_at)
 
     def _flush_decision_journal_safely(self) -> None:
         if self.decision_journal_repository is None:
@@ -196,6 +492,13 @@ class TradingUseCase:
             self.decision_journal_repository.flush()
         except Exception:
             logger.exception("判断記録の保存に失敗しました")
+            for symbol in self._shadow_pending_symbols:
+                self._log_trade_reason_once(
+                    logging.WARNING, "SHADOW_RECORD_FLUSH_FAILED", symbol,
+                    "シャドウ記録を含む判断記録のflushに失敗しました",
+                )
+        else:
+            self._shadow_pending_symbols.clear()
 
     def _remember_account_state(self, wallet_amount, positions) -> None:
         """判断記録に添える口座状態を、取得済みの値から控える(追加のAPI呼び出しはしない)。"""
@@ -877,6 +1180,7 @@ class TradingUseCase:
         order_response: Optional[dict],
         volatility_assessment=None,
         diagnostics: Optional[dict] = None,
+        shadow_previous_close: float | None = None,
     ) -> None:
         """
         実行した注文を履歴に記録します。
@@ -912,15 +1216,38 @@ class TradingUseCase:
             )
         )
         self._save_order_history()
+        entry = self.order_history[-1]
         # ADR-0002: 約定成立時に保有中最高値を初期化(買い)・クリア(売り)する。
         # 通常決済・ATR損切り・大引けの強制決済(_liquidate_all_positions)は
         # いずれもこのメソッドを経由するため、ここ1箇所で両方をカバーできる。
         if signal.side == config.OrderSide.BUY:
             self._holding_high_prices[signal.symbol] = signal.price
+            try:
+                self._start_shadow_position(
+                    entry, order_response, volatility_assessment, shadow_previous_close
+                )
+            except Exception as exc:
+                self._log_trade_reason_once(
+                    logging.WARNING, "SHADOW_TRACKING_FAILED", signal.symbol,
+                    f"BUY追跡開始をスキップ: 例外={type(exc).__name__}: {exc}",
+                )
         elif signal.side == config.OrderSide.SELL:
             self._holding_high_prices.pop(signal.symbol, None)
+            try:
+                self._settle_shadow_positions(
+                    signal.symbol,
+                    self._current_now or datetime.fromisoformat(entry.timestamp),
+                    signal.price,
+                    signal.qty,
+                    (diagnostics or {}).get("decision_reason") or "sell_order_accepted",
+                    order_response,
+                )
+            except Exception as exc:
+                self._log_trade_reason_once(
+                    logging.WARNING, "SHADOW_TRACKING_FAILED", signal.symbol,
+                    f"SELL追跡完了をスキップ: 例外={type(exc).__name__}: {exc}",
+                )
         side_label = "買い" if signal.side == config.OrderSide.BUY else "売り"
-        entry = self.order_history[-1]
         message_lines = [
             "【業務】取引運用",
             "【機能】注文執行",
@@ -1653,6 +1980,8 @@ class TradingUseCase:
         self._board_unavailable_symbols.clear()
         self._holding_high_prices.clear()
         self._logged_initial_judgment_symbols.clear()
+        self._shadow_positions.clear()
+        self._shadow_pending_symbols.clear()
         reset_empty_daily_warning_dedupe()
         now_provider = now_provider or datetime.now
         self._now_provider = now_provider
@@ -1697,6 +2026,16 @@ class TradingUseCase:
         self._initialize_paper_prices(preflight_market_data)
         initial_wallet_amount, initial_positions = self._load_account_state()
         self._record_account_snapshot_safely("start", initial_now, initial_positions)
+        try:
+            self._restore_shadow_positions(initial_positions, initial_now)
+        except Exception as exc:
+            for position in initial_positions:
+                if self._is_open_position(position):
+                    symbol = str(position.get("Symbol", ""))
+                    self._log_trade_reason_once(
+                        logging.WARNING, "SHADOW_HISTORY_RESTORE_FAILED", symbol,
+                        f"再起動時の履歴復元をスキップ: 例外={type(exc).__name__}: {exc}",
+                    )
         self._initialize_daily_starting_capital(
             today, initial_wallet_amount, initial_positions
         )
@@ -1775,6 +2114,9 @@ class TradingUseCase:
                         if not snapshot:
                             board_fetch_failed += 1
                         self._board_unavailable_symbols.add(symbol)
+                        self._observe_shadow_positions(
+                            symbol, now, None, quality="board_unavailable"
+                        )
                         self._mark_board_unavailable_safely(symbol, now)
                         self._log_rsi_unavailable(
                             symbol, now, closes, rsi, entry_threshold, None
@@ -1813,6 +2155,14 @@ class TradingUseCase:
                         config.ATR_CAUTION_RATIO,
                         config.ATR_DANGER_RATIO,
                     ) if daily_bars else None
+                    previous_close = (
+                        float(daily_bars[-1].close)
+                        if daily_bars and getattr(daily_bars[-1], "close", None) is not None
+                        else None
+                    )
+                    self._observe_shadow_positions(
+                        symbol, now, current_price, assessment, previous_close
+                    )
                     entry_price = None
                     held_high = None
                     trailing_stop_line = None
@@ -2296,6 +2646,7 @@ class TradingUseCase:
                                 "order_qty_before_atr": original_qty,
                                 "allocated_budget": budget_per_position if signal.side == config.OrderSide.BUY else None,
                             },
+                            shadow_previous_close=previous_close,
                         )
                         if decision_reason == "ATR損切り基準到達":
                             self._record_atr_stop_exit(

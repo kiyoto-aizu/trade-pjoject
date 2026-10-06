@@ -95,6 +95,7 @@ def create_trading_use_case(token: str) -> TradingUseCase:
             allowed_execution_modes=frozenset({"paper", "live"}),
         ),
         decision_journal_repository=_create_decision_journal_repository(),
+        enable_shadow_position_tracking=True,
         market_regime_usecase=MarketRegimeUseCase(
             market_data_client=YahooIndexClient(),
             thresholds=config.MARKET_REGIME_THRESHOLDS,

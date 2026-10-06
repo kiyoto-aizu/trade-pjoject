@@ -92,6 +92,7 @@
 | `LLM_ERROR_ANALYSIS_MODEL` | "gpt-4o-mini" | 任意 |  |
 | `LLM_ERROR_ANALYSIS_SKIP_EXCEPTION_TYPES` | "ConnectionError,Timeout,ConnectTimeout,ReadTimeout,JSONDecodeError" | 任意 | リトライで解決しうる想定内の例外はLLM分析の対象外とする（クラス名でMRO照合） |
 | `LLM_MODEL` | "gpt-4o-mini" | 任意 |  |
+| `LLM_TIMEOUT_SECONDS` | "120" | 任意 |  |
 
 ## ログ
 
@@ -148,4 +149,4 @@
 | `TRADING_PROGRESS_REPORT_2_HOUR` | "14" | 任意 |  |
 | `TRADING_PROGRESS_REPORT_2_MINUTE` | "0" | 任意 |  |
 
-説明欄が空の項目: 56件。
+説明欄が空の項目: 57件。

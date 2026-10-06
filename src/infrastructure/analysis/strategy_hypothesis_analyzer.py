@@ -22,7 +22,7 @@ SYSTEM_PROMPT = """あなたは日本株自動売買システムの「戦略仮�
 class OpenAIStrategyHypothesisAnalyzer:
     """既存LLM設定とChat Completions HTTP方式を使う戦略仮説アダプター。"""
 
-    def __init__(self, api_key: str, model: str, api_url: str, timeout: float = 45.0):
+    def __init__(self, api_key: str, model: str, api_url: str, timeout: float = config.LLM_TIMEOUT_SECONDS):
         self.api_key = api_key
         self.model = model
         self.api_url = api_url

@@ -47,7 +47,7 @@ def _build_period_review_prompt(period_label: str, period_summary: dict) -> str:
 class OpenAIDailyAnalyzer:
     """日次取引とバックテストの集計をLLMで評価するアダプター。"""
 
-    def __init__(self, api_key: str, model: str, api_url: str, timeout: float = 30.0):
+    def __init__(self, api_key: str, model: str, api_url: str, timeout: float = config.LLM_TIMEOUT_SECONDS):
         self.api_key = api_key
         self.model = model
         self.api_url = api_url

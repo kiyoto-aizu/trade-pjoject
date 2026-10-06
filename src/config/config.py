@@ -374,6 +374,7 @@ LLM_DAILY_ANALYSIS_ENABLED = os.getenv("LLM_DAILY_ANALYSIS_ENABLED", "false").st
 LLM_DIARY_ENABLED = os.getenv("LLM_DIARY_ENABLED", "false").strip().lower() in ("1", "true", "yes")
 LLM_API_KEY = os.getenv("OPENAI_API_KEY", os.getenv("LLM_API_KEY", ""))
 LLM_MODEL = os.getenv("LLM_MODEL", "gpt-4o-mini")
+LLM_TIMEOUT_SECONDS = float(os.getenv("LLM_TIMEOUT_SECONDS", "120"))
 LLM_API_URL = os.getenv("LLM_API_URL", "https://api.openai.com/v1/chat/completions")
 
 # 例外原因分析用LLM設定（明示的に有効化した場合のみ利用。同一原因のエラーはキャッシュを再利用し、クールダウン間隔でのみ再分析）

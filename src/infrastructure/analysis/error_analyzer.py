@@ -44,7 +44,7 @@ class OpenAIErrorAnalyzer:
     以降はクールダウン期間中キャッシュを再利用（発生回数だけカウント）することでクレジット消費を抑える。
     """
 
-    def __init__(self, api_key: str, model: str, api_url: str, cooldown_minutes: int, timeout: float = 30.0):
+    def __init__(self, api_key: str, model: str, api_url: str, cooldown_minutes: int, timeout: float = config.LLM_TIMEOUT_SECONDS):
         self.api_key = api_key
         self.model = model
         self.api_url = api_url

@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 class OpenAIAnomalyAnalyzer:
     """スクリーニング/フィルタリング結果の異常値をLLMで一次分析するアダプター。"""
 
-    def __init__(self, api_key: str, model: str, api_url: str, timeout: float = 30.0):
+    def __init__(self, api_key: str, model: str, api_url: str, timeout: float = config.LLM_TIMEOUT_SECONDS):
         self.api_key = api_key
         self.model = model
         self.api_url = api_url

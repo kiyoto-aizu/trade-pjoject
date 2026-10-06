@@ -57,7 +57,7 @@ def configure_logging() -> None:
     logging.root.addHandler(file_handler)
 
 
-def main() -> None:
+def _run_screening() -> None:
     """
     スクリーニング処理を実行します。
     
@@ -174,6 +174,29 @@ def main() -> None:
             if get_token_provider().recovery_failed:
                 # 1run1回: トークン再取得後も401が続いた(復旧失敗)場合のみ通知する
                 notify_result("kabuステーションAPIの認証が回復しません（トークン再取得後も401が継続しました）。")
+
+
+def _run_trend_check_after_close() -> None:
+    """取引終了後のトレンド答え合わせ。失敗してもスクリーニングや売買に影響させない(ログとSlack通知のみ)。"""
+    log = logging.getLogger(__name__)
+    try:
+        parser = argparse.ArgumentParser(add_help=False)
+        parser.add_argument("--date", type=date.fromisoformat)
+        known, _ = parser.parse_known_args()
+        if known.date is not None:
+            return
+        from src.entrypoints.run_trend_check import run_daily_safely
+
+        run_daily_safely(date.today())
+    except Exception:
+        log.exception("トレンド答え合わせの起動に失敗しました。")
+
+
+def main() -> None:
+    try:
+        _run_screening()
+    finally:
+        _run_trend_check_after_close()
 
 
 if __name__ == '__main__':

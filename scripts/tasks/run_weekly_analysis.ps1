@@ -19,7 +19,10 @@ $ErrorActionPreference = 'Continue'
 Push-Location $projectRoot
 try {
     & $python -m src.entrypoints.run_weekly_analysis 2>> $stderrLog
-    exit $LASTEXITCODE
+    $analysisExit = $LASTEXITCODE
+    # トレンド答え合わせの積み上げレポート。失敗しても既存分析の終了コードには影響させない
+    & $python -m src.entrypoints.run_trend_check --weekly 2>> $stderrLog
+    exit $analysisExit
 }
 finally {
     Pop-Location

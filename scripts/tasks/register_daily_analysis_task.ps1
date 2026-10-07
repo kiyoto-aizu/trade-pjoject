@@ -1,7 +1,7 @@
 [CmdletBinding(SupportsShouldProcess)]
 param(
     [string]$TaskName = 'trade-pjoject-daily-analysis',
-    [datetime]$At = [datetime]'16:10',
+    [datetime]$At = [datetime]'16:30',
     [switch]$Remove
 )
 

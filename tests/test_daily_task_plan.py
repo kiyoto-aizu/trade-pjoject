@@ -37,7 +37,7 @@ def test_plan_message_lists_tasks_and_marks_screening_for_next_business_day():
         "09:30 フィルタリング\n"
         "09:35-15:30 取引\n"
         "15:35 スクリーニング(翌営業日向け)\n"
-        "16:10 日次分析"
+        "16:30 日次分析"
     )
 
 

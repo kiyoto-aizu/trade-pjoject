@@ -159,7 +159,7 @@ OPERATING_CAPITAL = float(os.getenv("OPERATING_CAPITAL", "100000"))
 
 # 日次分析(確定日足更新・答え合わせ・分析通知)の開始時刻
 DAILY_ANALYSIS_START_TIME = time.fromisoformat(
-    os.getenv("DAILY_ANALYSIS_START_TIME", "16:10")
+    os.getenv("DAILY_ANALYSIS_START_TIME", "16:30")
 )
 
 # スクリーニング時の株価上限に掛ける安全マージン

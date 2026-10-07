@@ -46,7 +46,7 @@
 | バックテスト結果 | 出力 | `--output`指定時のJSON | 指定がない場合は標準出力 |
 | 結果通知 | 出力 | Slack `analysis` | 成績、期間、任意の分析 |
 
-主な出力フィールドは`cash`、`final_position`、`total_trades`、`total_pnl`、`win_rate`、`max_drawdown`、`profit_factor`、`signals`、`trade_history`、`daily_summary`、`execution_assumptions`、`volatility_adjustment`、`market_regime_adjustment`です。
+主な出力フィールドは`cash`、`final_position`、`total_trades`、`total_pnl`、`win_rate`、`max_drawdown`、`profit_factor`、`signals`、`trade_history`、`daily_summary`、`execution_assumptions`、`volatility_adjustment`、`market_regime_adjustment`です。`trade_history`は決済が成立した取引のみを含み、ATR診断情報`atr_diagnostic`も記録します。
 
 ## 4. 処理フロー
 
@@ -100,6 +100,7 @@ flowchart TD
 
 ### ボラティリティ連動（ATR）とMarketRegime連携
 
+- **既定の有効範囲**: `simulate_backtest`は`enable_volatility_adjustment=True`が既定で、ATR連動の数量調整・ATR損切りを有効にします。この関数には`market_regime_enabled`引数がありません。`simulate_timeseries_backtest`も`enable_volatility_adjustment=True`が既定で、加えて`market_regime_enabled=True`が既定です（レジーム連動を実際に適用するにはMarketRegime評価データが必要です）。
 - **数量調整**: `assess_volatility()`（ATR_PERIOD日のATR比率）でNORMAL/CAUTION/DANGERを判定し、`adjust_quantity_for_volatility()`でCAUTION時は`ATR_CAUTION_LOT_RATIO`（既定0.5）に基づき単元単位で減らし、DANGER時は`ATR_DANGER_ACTION`（既定`skip`）に従いスキップまたは最小単位にする。`volatility_stats`に集計を記録し出力に含める。
 - **ATR損切り・利確**: `is_atr_stop_loss_triggered()`で、`resolve_atr_exit_multiplier()`が選択した倍率に応じた決済ラインを判定。固定%損切り（`stop_loss_ratio`）とは独立して評価し、どちらか一方が成立すれば決済する。
   - ADR-0006: 保有中最高値がエントリー価格からATR×`ATR_PROFIT_LOCK_TRIGGER_ATR_MULTIPLE`(既定0.5)以上乖離している(含み益が一定以上乗っている)場合のみ、利確専用の`ATR_PROFIT_LOCK_{NORMAL,CAUTION,DANGER}_MULTIPLIER`(既定2.5/2.0/1.0、損切り用より広め)を使う。含み益がその水準に届いていない間は、従来通り`ATR_STOP_{NORMAL,CAUTION,DANGER}_MULTIPLIER`(1.5/1.0/0.7)のまま。

@@ -315,7 +315,7 @@ if any(value <= 0 for value in SCREENING_ALTERNATE_PRICE_CAPS):
 if len(set(SCREENING_ALTERNATE_PRICE_CAPS)) != len(SCREENING_ALTERNATE_PRICE_CAPS):
     raise ValueError("SCREENING_ALTERNATE_PRICE_CAPSに重複があります。")
 FILTERING_PRICE_BAND_DEADLINE_TIME = time.fromisoformat(
-    os.getenv("FILTERING_PRICE_BAND_DEADLINE_TIME", "09:33")
+    os.getenv("FILTERING_PRICE_BAND_DEADLINE_TIME", "09:34")
 )
 # 全価格帯をまとめて板取得する際の最大同時リクエスト数
 FILTER_BOARD_MAX_CONCURRENCY = _positive_int_env(

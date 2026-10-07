@@ -88,8 +88,8 @@ kabuステーション`/board/{symbol}`から当日の`TradingValue`を取得す
 - `DecisionJournalRepository`は日付ごとの入力件数・評価件数・スキップ件数・採用件数と理由別件数を`filter_stage_summaries`に保存する。個別の除外理由も銘柄×日付×理由で集約する。
 - `infrastructure/kabu/registration_aware_board_cache.py`の`RegistrationAwareBoardCache`は同一実行内の板結果と例外を銘柄別に再利用し、同一銘柄への同時要求を1回にまとめる。最大並列数は`FILTER_BOARD_MAX_CONCURRENCY`（既定3）。kabu登録枠の上限に合わせて50件ごとに登録解除し、進行中の取得がすべて終わるまで解除しない。解除失敗後は新しい板取得をブロックする。欠損リトライ結果も銘柄・ラウンド単位で共有し、後続帯で同じリトライを繰り返さない。
 - `infrastructure/market_data/cached_volume_client.py`の`CachedVolumeClient`は同一実行内の重複した平均売買代金取得を再利用する。
-- 通常結果に加え、`SCREENING_ALTERNATE_PRICE_CAPS`（既定450/900円）ごとの結果を生成し、`FILTERING_PRICE_BAND_RESULT_ROOT/<上限>/`へ保存する。`FILTERING_PRICE_BAND_DEADLINE_TIME`（既定09:33）までに終わらない価格帯は中断し、未処理銘柄を診断に残す。通常の本番入力とは別の分析用系列である。
-- 全帯の候補収集・先行板取得・順次評価は`application/price_band_filtering_usecase.py`の`PriceBandFilteringUseCase`が担当し、`run_filtering.py`は依存を組み立てて呼び出す。
+- 通常結果に加え、`SCREENING_ALTERNATE_PRICE_CAPS`（既定450/900円）ごとの結果を生成し、`FILTERING_PRICE_BAND_RESULT_ROOT/<上限>/`へ保存する。`FILTERING_PRICE_BAND_DEADLINE_TIME`（既定09:34）までに終わらない価格帯は中断し、未処理銘柄を診断に残す。通常の本番入力とは別の分析用系列である。
+- 帯ごとに「板取得→評価→欠損リトライ→結果保存」を270→450→900円の順に完結させる（`application/price_band_filtering_usecase.py`の`PriceBandFilteringUseCase`が担当し、`run_filtering.py`は依存を組み立てて呼び出す）。前の帯で取得済みの銘柄はキャッシュを使い再取得しない。後の帯が締め切りに間に合わなくても先の帯の結果は保存済み。板取得1件ごとの開始/完了時刻・所要時間・登録数・帯は診断JSONの`board_fetches`、帯ごとの取得時間の合計・中央値・最大はサマリーの`board_fetch_stats`に記録する。
 - `request_handler`はboard APIの429を設定回数・待機時間で再試行する。板取得時間、設定/実測並列数、429応答・再試行結果、帯域ごとの評価時間と欠損・時間切れ銘柄は既存の診断JSONへ記録する。
 - 同時刻帯の過去分足がないため、現行も絶対倍率による足切りはせず、候補内の相対順位で選ぶ。
 

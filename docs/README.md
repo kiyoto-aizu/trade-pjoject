@@ -12,8 +12,8 @@
 | [`adr/`](./adr/) | 設計上の決定記録 |
 | [`tasks/`](./tasks/) | 未完了・完了の改修タスク |
 | [`reviews/`](./reviews/) | コード・戦略のレビュー記録と検証結果 |
-| [`prompts/`](./prompts/) | 実装依頼に使うプロンプト |
-| [`archive/`](./archive/) | 現行仕様ではない過去資料 |
+| [`prompts/`](./prompts/) | 現在は未配置。新しい実装依頼プロンプトの置き場 |
+| [`archive/`](./archive/) | 現行仕様ではない過去資料・置き換え済みプロンプト |
 
 ### architecture資料
 

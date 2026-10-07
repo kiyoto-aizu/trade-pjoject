@@ -483,6 +483,11 @@ class FilteringUseCase:
                 summary["board_run_api_metrics"] = calculate_metrics_delta(run_metrics_before)
         if board_prefetch_summary is not None:
             summary["board_prefetch"] = board_prefetch_summary
+        band_label = price_band or (board_prefetch_summary or {}).get("band")
+        fetch_log_getter = getattr(self.board_client, "get_fetch_log", None)
+        board_fetches = fetch_log_getter(band_label) if callable(fetch_log_getter) and band_label else []
+        if board_fetches:
+            summary["board_fetch_stats"] = self._board_fetch_stats(board_fetches)
         if retry_active:
             summary.update({
                 "retry_attempted_count": retry_stats["attempted"],
@@ -505,6 +510,7 @@ class FilteringUseCase:
                     "price_cap": price_cap,
                     "result_saved": not timed_out,
                     "summary": summary,
+                    "board_fetches": board_fetches,
                     "candidates": diagnostics,
                 })
             except Exception:
@@ -526,6 +532,26 @@ class FilteringUseCase:
         if self.notifier:
             self._notify_completion(screening, symbols, scored, skipped_count, reason_counts)
         return result
+
+    @staticmethod
+    def _board_fetch_stats(fetches: list[dict]) -> dict:
+        """帯ごとの板取得所要時間(初回取得のみ)の件数・合計・中央値・最大。"""
+        durations = sorted(item["elapsed_ms"] for item in fetches if item.get("kind") == "initial")
+        retry_durations = [item["elapsed_ms"] for item in fetches if item.get("kind") == "retry"]
+        count = len(durations)
+        if count:
+            middle = count // 2
+            median = durations[middle] if count % 2 else (durations[middle - 1] + durations[middle]) / 2
+        else:
+            median = None
+        return {
+            "fetch_count": count,
+            "total_ms": round(sum(durations), 3),
+            "median_ms": None if median is None else round(median, 3),
+            "max_ms": durations[-1] if durations else None,
+            "retry_fetch_count": len(retry_durations),
+            "retry_total_ms": round(sum(retry_durations), 3),
+        }
 
     def _load_average(self, symbol, today, board, record):
         if hasattr(self.volume_client, "get_average_turnover_details"):

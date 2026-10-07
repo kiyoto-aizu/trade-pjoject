@@ -1,4 +1,5 @@
 from concurrent.futures import Future, ThreadPoolExecutor
+from datetime import datetime
 from threading import Condition
 from time import perf_counter
 
@@ -35,6 +36,26 @@ class RegistrationAwareBoardCache:
         self._retry_meta: dict[str, dict] = {}
         self._first_fetch_at: dict[str, float] = {}
         self._last_fetch_at: float | None = None
+        # 遅さの原因調査用。板取得1件ごとの時刻・所要時間・登録数を、取得中の価格帯ラベル付きで残す
+        self.current_band: str | None = None
+        self._fetch_log: list[dict] = []
+
+    def get_fetch_log(self, band: str | None = None) -> list[dict]:
+        with self._condition:
+            return [dict(entry) for entry in self._fetch_log if band is None or entry["band"] == band]
+
+    def _append_fetch_log(self, key, *, force, started_wall, elapsed_ms, registered_count, ok) -> None:
+        self._fetch_log.append({
+            "symbol": key,
+            "band": self.current_band,
+            "kind": "retry" if force else "initial",
+            "started_at": started_wall.isoformat(timespec="milliseconds"),
+            "completed_at": datetime.now().isoformat(timespec="milliseconds"),
+            "elapsed_ms": round(elapsed_ms, 3),
+            # このリクエストを含む、直近の登録解除以降の登録数
+            "registered_count": registered_count,
+            "ok": ok,
+        })
 
     @property
     def requests_since_clear(self) -> int:
@@ -144,6 +165,7 @@ class RegistrationAwareBoardCache:
                 if force:
                     self.retry_fetch_count += 1
                 started = perf_counter()
+                started_wall = datetime.now()
                 self._active_requests += 1
                 self.max_concurrency_observed = max(self.max_concurrency_observed, self._active_requests)
                 fetch_sequence = self.fetch_count
@@ -192,6 +214,10 @@ class RegistrationAwareBoardCache:
                     self._cache[key] = ("error", exc)
                     self._fetch_meta[key]["board_fetch_elapsed_ms"] = round(elapsed_ms, 3)
                 self.fetch_duration_ms += elapsed_ms
+                self._append_fetch_log(
+                    key, force=force, started_wall=started_wall, elapsed_ms=elapsed_ms,
+                    registered_count=request_count_before + 1, ok=False,
+                )
                 self._finish_request(key, future, exception=exc)
             raise
 
@@ -208,6 +234,10 @@ class RegistrationAwareBoardCache:
                 self._cache[key] = ("result", board)
                 self._fetch_meta[key]["board_fetch_elapsed_ms"] = round(elapsed_ms, 3)
             self.fetch_duration_ms += elapsed_ms
+            self._append_fetch_log(
+                key, force=force, started_wall=started_wall, elapsed_ms=elapsed_ms,
+                registered_count=request_count_before + 1, ok=bool(board),
+            )
             self._finish_request(key, future, result=board)
         return board
 
@@ -220,8 +250,10 @@ class RegistrationAwareBoardCache:
             future.set_result(result)
         self._condition.notify_all()
 
-    def fetch_current_boards(self, symbols, max_workers: int | None = None) -> dict[str, object]:
-        return self._fetch_many(symbols, force=False, max_workers=max_workers)
+    def fetch_current_boards(
+        self, symbols, max_workers: int | None = None, should_start=None
+    ) -> dict[str, object]:
+        return self._fetch_many(symbols, force=False, max_workers=max_workers, should_start=should_start)
 
     def refetch_current_boards(
         self, symbols, max_workers: int | None = None, should_start=None, retry_round=None

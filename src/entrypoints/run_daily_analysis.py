@@ -28,8 +28,10 @@ from src.infrastructure.persistence.trend_check_repository import TrendCheckRepo
 from src.application.trend_check_usecase import (
     DEFAULT_DATABASE_FILE,
     TrendCheckPaths,
+    load_selected_symbols,
     symbols_for_date,
 )
+from src.domain.no_trade_reason import NO_CANDIDATE, OTHER
 from src.infrastructure.logging_config import configure_logging
 from src.entrypoints.run_trend_check import run_daily_safely
 from src.entrypoints.update_daily_bar_cache import latest_confirmed_trading_day, update_cache
@@ -97,6 +99,15 @@ def _load_daily_report(paths: TrendCheckPaths, trade_date: date) -> dict | None:
     return data
 
 
+def resolve_no_trade_reason(report: dict | None, paths: TrendCheckPaths, trade_date: date) -> dict | None:
+    """売買0件の理由。レポートがない日は、当日のフィルタ結果の有無から候補なしを判別する。"""
+    if report is not None:
+        return report.get("no_trade_reason")
+    if not load_selected_symbols(paths, trade_date.isoformat()):
+        return {"reason": NO_CANDIDATE, "detail": "当日のフィルタ結果なし"}
+    return {"reason": OTHER, "detail": "日次レポートなし"}
+
+
 def run_daily_analysis(
     trade_date: date,
     *,
@@ -141,6 +152,7 @@ def run_daily_analysis(
             paths,
             cache_update_ok=cache_update_ok,
         )
+        no_trade_reason = resolve_no_trade_reason(report, paths, trade_date)
         analyzer = create_daily_analyzer()
         analysis_input = {
             "date": (report or {}).get("date", trade_date.isoformat()),
@@ -151,6 +163,12 @@ def run_daily_analysis(
             "positions": (report or {}).get("positions", []),
             "market_conditions": (report or {}).get("market_conditions", {}),
             "log_errors": (report or {}).get("log_errors", {}),
+            "no_trade_reason": (
+                None
+                if (report or {}).get("order_count")
+                else no_trade_reason or {"reason": "未記録"}
+            ),
+            "trading_evaluation": (report or {}).get("trading_evaluation"),
             "skip_counts": {
                 "ATR危険度見送り": len((report or {}).get("atr_danger_skips") or []),
                 "市場危険度見送り": len((report or {}).get("market_regime_danger_skips") or []),
@@ -169,6 +187,7 @@ def run_daily_analysis(
             analysis=analysis,
             price_band_trend=price_band_trend,
             check_ok=check_ok,
+            no_trade_reason=no_trade_reason,
         )
         message = format_result_notification(
             "分析運用",

@@ -11,6 +11,7 @@ from src.application.price_band_trend_check import (
     price_band_monthly_lines,
     price_band_rate_line,
 )
+from src.domain.no_trade_reason import describe_no_trade_reason
 from src.domain.trend_check import JUDGED_LABELS, LABEL_TREND
 from src.infrastructure.persistence.trend_check_repository import TrendCheckRepository
 
@@ -331,12 +332,15 @@ def daily_notification_lines(
     analysis: str | None,
     price_band_trend: dict | None = None,
     check_ok: bool = True,
+    no_trade_reason: dict | None = None,
 ) -> list[str]:
     lines = [
         "A. ペーパートレード実績",
         *daily_paper_lines(report),
-        "B. 戦略の答え合わせ",
     ]
+    if report is None or not int(report.get("order_count") or 0):
+        lines.append(f"売買0件の理由: {describe_no_trade_reason(no_trade_reason)}")
+    lines.append("B. 戦略の答え合わせ")
     if not cache_update_ok:
         lines.append("判定不能(日足更新失敗)")
     else:

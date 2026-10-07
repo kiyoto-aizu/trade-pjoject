@@ -45,6 +45,7 @@ from src.infrastructure.notification.slack_notify import (
 from src.infrastructure.calendar.japanese_calendar import is_trading_session
 from src.infrastructure.persistence.storage import read_json, write_json
 from src.infrastructure.persistence.filter_decision_repository import FilterDecisionRepository
+from src.domain.no_trade_reason import classify_no_trade_reason
 from src.infrastructure.persistence.decision_journal_repository import STAGE_TRADING
 from src.infrastructure.analysis.daily_analyzer import create_daily_analyzer
 from src.application.shadow_position_tracker import ShadowPosition, resolve_reference
@@ -136,6 +137,10 @@ class TradingUseCase:
         self._missing_holding_warning_symbols: set[str] = set()
         self._logged_trade_reasons: set[tuple[str, str]] = set()
         self._board_unavailable_symbols: set[str] = set()
+        # 売買0件の理由を分類するための記録(売買判定には使わない)
+        self._monitored_symbol_count = 0
+        self._buy_evaluated_symbols: set[str] = set()
+        self._buy_signal_symbols: set[str] = set()
         self._sell_condition_observations: dict[str, str] = {}
         self._liquidation_results: list[dict] = []
         # ADR-0002: ATRトレーリングストップ用の保有中最高値(銘柄ごと、メモリ保持・当日限り)
@@ -1564,6 +1569,40 @@ class TradingUseCase:
             outcome, pnl, label = item["outcome"], item["hypothetical_pnl_before_cost"], "複数営業日基準"
         return f"{item['symbol']}: {outcome} ({pnl:+.0f}円概算) [{label}]"
 
+    def _classify_no_trade_reason(
+        self,
+        today: str,
+        order_count: int,
+        atr_danger_skips: list,
+        market_regime_danger_skips: list,
+        market_regime_caution_rsi_filters: list,
+    ) -> dict | None:
+        """約定0件の日の理由を1つ選ぶ。記録専用で、失敗しても日次レポートは出す。"""
+        if order_count > 0:
+            return None
+        codes: list[str] = []
+        if self.decision_journal_repository is not None:
+            try:
+                records = self.decision_journal_repository.load_records(
+                    today, STAGE_TRADING, self._execution_mode
+                )
+                codes = [str(record.get("reason_code")) for record in records]
+            except Exception:
+                logger.exception("売買0件の理由判別用の判断記録を読めませんでした")
+        return classify_no_trade_reason(
+            order_count=order_count,
+            kill_switch_triggered=self.kill_switch_triggered,
+            emergency_stop_triggered=self.emergency_stop_triggered,
+            candidate_count=self._monitored_symbol_count,
+            evaluated_count=len(self._buy_evaluated_symbols),
+            buy_signal_count=len(self._buy_signal_symbols),
+            journal_reason_codes=codes,
+            market_regime_skip_count=(
+                len(market_regime_danger_skips) + len(market_regime_caution_rsi_filters)
+            ),
+            atr_danger_skip_count=len(atr_danger_skips),
+        )
+
     def _send_end_of_day_report(self) -> None:
         """市場終了時に本日の取引レポートを送信します。"""
         self._load_order_history()
@@ -1653,6 +1692,10 @@ class TradingUseCase:
             ),
             "failure_reason": getattr(market_assessment, "failure_reason", None),
         }
+        no_trade_reason = self._classify_no_trade_reason(
+            today, len(daily_orders), atr_danger_skips,
+            market_regime_danger_skips, market_regime_caution_rsi_filters,
+        )
         daily_summary = {
             "date": today,
             "trading_mode": config.TRADING_MODE_LABEL,
@@ -1694,6 +1737,12 @@ class TradingUseCase:
             "market_regime_caution_rsi_filters": market_regime_caution_rsi_filters,
             "adx_trend_reliefs": adx_trend_reliefs,
             "liquidation_results": self._liquidation_results,
+            "trading_evaluation": {
+                "candidate_count": self._monitored_symbol_count,
+                "evaluated_count": len(self._buy_evaluated_symbols),
+                "buy_signal_count": len(self._buy_signal_symbols),
+            },
+            "no_trade_reason": no_trade_reason,
         }
         report_text = "\n".join(lines)
         report_data = {
@@ -1999,6 +2048,8 @@ class TradingUseCase:
         self._missing_holding_warning_symbols.clear()
         self._logged_trade_reasons.clear()
         self._board_unavailable_symbols.clear()
+        self._buy_evaluated_symbols.clear()
+        self._buy_signal_symbols.clear()
         self._holding_high_prices.clear()
         self._logged_initial_judgment_symbols.clear()
         self._shadow_positions.clear()
@@ -2029,6 +2080,7 @@ class TradingUseCase:
             logger.info("上位銘柄リストが空です。取引を行いません。")
             return
 
+        self._monitored_symbol_count = len(symbols)
         if initial_now is None:
             initial_now = now_provider()
             self._current_now = initial_now
@@ -2198,6 +2250,9 @@ class TradingUseCase:
                         entry_threshold,
                         config.RSI_EXIT_THRESHOLD,
                     )
+                    self._buy_evaluated_symbols.add(symbol)
+                    if signal is not None and signal.side == config.OrderSide.BUY:
+                        self._buy_signal_symbols.add(symbol)
                     held_position = None
                     if signal is not None and signal.side == config.OrderSide.BUY:
                         _, current_positions = self._load_account_state()

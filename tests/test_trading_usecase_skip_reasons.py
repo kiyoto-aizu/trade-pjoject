@@ -504,3 +504,34 @@ def test_trading_loop_gap_past_market_close_does_not_leave_a_position(
     assert order_sender.get_positions('test') == []
     assert use_case.order_history[-1].decision_reason == 'EOD_LATE_LIQUIDATION'
     assert any('EOD_LATE_LIQUIDATION' in record.message for record in caplog.records)
+
+def _run_and_load_report(use_case, symbols_path, now_provider, sleep, tmp_path):
+    use_case.run(symbols_path, now_provider=now_provider, sleep=sleep)
+    return json.loads((tmp_path / 'reports' / '2026-09-25.json').read_text(encoding='utf-8'))
+
+
+def test_daily_report_records_condition_not_met_when_no_buy_signal(monkeypatch, tmp_path):
+    use_case, sender, _, symbols_path, now_provider, sleep = _build_loop(
+        monkeypatch, tmp_path, price_limit=PriceLimit(80.0, 110.0)
+    )
+
+    report = _run_and_load_report(use_case, symbols_path, now_provider, sleep, tmp_path)
+
+    assert sender.orders == []
+    assert report['no_trade_reason']['reason'] == '買い条件に届かず'
+    assert report['trading_evaluation'] == {
+        'candidate_count': 1, 'evaluated_count': 1, 'buy_signal_count': 0,
+    }
+
+
+def test_daily_report_has_no_reason_when_orders_were_filled(monkeypatch, tmp_path):
+    use_case, sender, _, symbols_path, now_provider, sleep = _build_loop(
+        monkeypatch, tmp_path, order_sender=_OrderSender({'Result': 0, 'OrderId': 'x'})
+    )
+
+    report = _run_and_load_report(use_case, symbols_path, now_provider, sleep, tmp_path)
+
+    assert sender.orders
+    assert report['order_count'] >= 1
+    assert report['no_trade_reason'] is None
+    assert report['trading_evaluation']['buy_signal_count'] == 1

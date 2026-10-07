@@ -1,3 +1,5 @@
+from datetime import date
+
 from src.application.analysis_notification import (
     daily_conclusion,
     daily_notification_lines,
@@ -95,6 +97,7 @@ def test_daily_notification_sample_for_2026_10_07():
     message = _daily_message(
         _report_1007(), _trend(), _price_band_trend(),
         analysis="所見: 売買なしの日。欠測帯の原因確認が優先。",
+        no_trade_reason={"reason": "買い条件に届かず", "detail": "評価10銘柄で買いシグナルなし"},
     )
 
     assert message == "\n".join([
@@ -107,6 +110,7 @@ def test_daily_notification_sample_for_2026_10_07():
         "損益 実現 +0円・評価 +0円 / 約定 0件 / 保有 0銘柄",
         "市場状態: NORMAL（日経 -0.35%）",
         "見送り 0件 / エラー 0件",
+        "売買0件の理由: 買い条件に届かず",
         "B. 戦略の答え合わせ",
         "判定基準: v1",
         "買った銘柄 0件: 判定可能な件数なし (判定不能 0件)",
@@ -208,3 +212,38 @@ def test_monthly_next_check_is_none_without_problems():
 
     assert period_conclusion(summary, "月次") == "月次分析が完了しました。今月は約定2件、損益+300円。"
     assert lines[lines.index("D. 次回確認") + 1:] == ["なし"]
+
+
+def test_no_trade_reason_line_only_on_zero_trade_days_and_marks_unrecorded():
+    unrecorded = daily_notification_lines(_report_1007(), None, cache_update_ok=True, analysis=None)
+    traded = daily_notification_lines(
+        _report_1007(order_count=1), None, cache_update_ok=True, analysis=None,
+        no_trade_reason={"reason": "その他"},
+    )
+    missing_report = daily_notification_lines(
+        None, None, cache_update_ok=True, analysis=None,
+        no_trade_reason={"reason": "候補なし", "detail": "当日のフィルタ結果なし"},
+    )
+
+    assert "売買0件の理由: 未記録" in unrecorded
+    assert not any(line.startswith("売買0件の理由") for line in traded)
+    assert "売買0件の理由: 候補なし" in missing_report
+
+
+def test_resolve_no_trade_reason_uses_report_or_filtering_result(monkeypatch):
+    from src.entrypoints import run_daily_analysis
+
+    paths = object()
+    recorded = {"reason": "枠・資金不足", "detail": "POSITION_LIMIT_REACHED"}
+    assert run_daily_analysis.resolve_no_trade_reason(
+        _report_1007(no_trade_reason=recorded), paths, date(2026, 10, 7)
+    ) == recorded
+    assert run_daily_analysis.resolve_no_trade_reason(
+        _report_1007(order_count=1), paths, date(2026, 10, 7)
+    ) is None
+
+    monkeypatch.setattr(run_daily_analysis, "load_selected_symbols", lambda *_: [])
+    assert run_daily_analysis.resolve_no_trade_reason(None, paths, date(2026, 10, 7))["reason"] == "候補なし"
+    monkeypatch.setattr(run_daily_analysis, "load_selected_symbols", lambda *_: ["7203"])
+    assert run_daily_analysis.resolve_no_trade_reason(None, paths, date(2026, 10, 7))["reason"] == "その他"
+

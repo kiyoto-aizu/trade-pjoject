@@ -1,11 +1,16 @@
-# trade-pjoject 詳細設計書 ②フィルタ機能
+# 詳細設計書 02 フィルタリング機能
+
+> 状態: 現行    最終更新: 2026-10-04
+> 起動: `run_filtering.py`    関連: [01 スクリーニング](./01-screening-design.md)、[03 取引ループ](./03-trading-loop-design.md)
 
 対象: ①の通常スクリーニング結果と価格帯別結果を入力とし、当日のトレードループ開始前に出来高・売買代金比で候補を絞る機能。
 担当ユースケース: `application/filtering_usecase.py`
 
----
+## 1. 概要
 
-## 1. 実行方式・タイミング
+当日の通常・価格帯別スクリーニング結果を読み、板情報とYahoo Financeの日足から売買代金比を評価します。通常結果と価格帯別結果を保存し、通常結果は取引ループへ渡します。発注・取引判断は本機能の対象外です。
+
+## 2. 実行方式
 
 - **独立起動**: `run_filtering.py`は専用プロセスとして市場ワークフローロックを取得し、取引日確認・トークン取得・銘柄登録解除を行ってからフィルタUseCaseを呼び出す。トークンは`run_trading.py`と共有せず各プロセスで取得する。
 - **実行予定: 平日09:30**（`src/config/task_schedule.py`）。寄り付き直後を避ける。
@@ -24,9 +29,22 @@ run_filtering.py起動
 - 通常スクリーニングは`/ranking`を使用しないため、ランキングデータクリア時間の制約は適用されない。
 - ②と③は別プロセスで、フィルタ結果ファイルを介して受け渡す。取引側は当日付の結果を確認してから起動する。
 
----
+`src/config/task_schedule.py`は平日09:30にフィルタリング、09:35に取引を予定します。予定表がプロセスを起動するわけではなく、実際の起動はOSスケジューラ等が行います。
 
-## 2. 処理フロー
+## 3. 入出力
+
+通常候補は取引日の`data/filtering/`へ保存し、価格帯別結果・診断は検証用系列に分けて保存します。
+
+| 項目 | 方向 | 場所・形式 | 備考 |
+|---|---|---|---|
+| スクリーニング結果 | 入力 | `data/screening/`、価格帯別結果ディレクトリ | 01設計書参照 |
+| 板・売買代金 | 入力 | kabu STATION API | 現在値×累積出来高を代替に使う場合あり |
+| 平均売買代金 | 入力 | Yahoo Finance | 通常経路は直近最大20本 |
+| 通常フィルタ結果 | 出力 | `data/filtering/YYYY-MM-DD.json` | 取引ループが読む |
+| 価格帯別結果・診断 | 出力 | `FILTERING_PRICE_BAND_RESULT_ROOT/`、`data/filtering_diagnostics/` | 検証用 |
+| 判断記録・完了通知 | 出力 | 判定イベントDB、Slack `daily` | 段件数・理由・結果 |
+
+## 4. 処理フロー
 
 ```
 ① 通常・価格帯別のスクリーニング結果を先に読み、板取得対象を銘柄コードで重複除外
@@ -71,7 +89,9 @@ flowchart TD
 
 ---
 
-## 3. 売買代金比の算出について（重要な制約）
+## 5. 判断ルール・仕様
+
+### 売買代金比の算出について（重要な制約）
 
 kabuステーション`/board/{symbol}`から当日の`TradingValue`を取得する。値がなければ`CurrentPrice × TradingVolume`で代替する。過去の日足売買代金は`YahooFinanceClient.get_average_turnover_details()`から取得する。
 
@@ -87,7 +107,7 @@ kabuステーション`/board/{symbol}`から当日の`TradingValue`を取得す
 
 ---
 
-## 4. レイヤー別設計
+## 6. レイヤー別の構成
 
 ### application/filtering_usecase.py
 - `FilteringUseCase.execute() -> FilteringResult`
@@ -135,7 +155,7 @@ kabuステーション`/board/{symbol}`から当日の`TradingValue`を取得す
 
 ---
 
-## 5. 異常系設計
+## 7. 異常系・失敗時の動き
 
 | ケース | 対応 |
 |---|---|
@@ -147,7 +167,13 @@ kabuステーション`/board/{symbol}`から当日の`TradingValue`を取得す
 
 ---
 
-## 6. すり合わせ済み事項（2026-08-15）
+## 8. 設定項目
+
+設定項目は[config-reference.md](../reference/config-reference.md)を参照。
+
+## 9. 決定事項と変更履歴
+
+### 2026-08-15 すり合わせ済み事項
 
 - フィルタ指標: 当日売買代金 ÷ 過去日足平均売買代金（平均出来高ベースから置き換え済み、2026-10-04）
 - 平均売買代金の取得元: Yahoo Finance（`infrastructure/market_data/yahoo_finance_client.py`）
@@ -158,12 +184,6 @@ kabuステーション`/board/{symbol}`から当日の`TradingValue`を取得す
 - 対象銘柄数: 10件固定（有効な候補が10件未満の場合は取得できた分だけ）
 - 最小急増率の足切り: `filter_by_min_surge_ratio()`を設ける初期案は現行コードに実装せず、絶対倍率でなく相対順位を使用する形へ置き換え済み（2026-10-04）
 
-## 7. 実行スケジュール
+## 10. 未決・既知の課題
 
-`src/config/task_schedule.py`は平日09:30にフィルタリング、09:35に取引を予定する。これは予定表であり、実際のプロセス起動はOSスケジューラ等が行う。`run_filtering.py`と`run_trading.py`は別プロセスで、後者は当日結果を読み込む。フィルタ実行自体も取引日確認を行う。
-
-## 8. 関連設計書
-
-- `01-screening-design.md`（①前日スクリーニング、本機能の入力元）
-- `03-trading-loop-design.md`（③トレードループ、本機能の出力先）
-- 設定項目は[config-reference.md](../reference/config-reference.md)を参照。
+- 平均売買代金に対象日が含まれる場合も現状は除外しない。対象日の混入有無は診断に記録する。

@@ -183,7 +183,125 @@ def test_timeout_without_saved_filter_result_is_stored_as_missing(tmp_path):
     assert band["missing_days"] == 1
     assert band["missing_reasons"] == {"FILTER_TIME_LIMIT": 1}
     assert band["trend_rate"] is None
+    assert "900円 欠測(時間切れ)" in price_band_rate_line(result)
 
+
+def test_empty_result_without_previous_screening_is_counted_as_missing(tmp_path):
+    paths = _paths(tmp_path)
+    trade_date = "2026-10-05"
+    diagnostics = (
+        paths.filtering_dir.parent
+        / "filtering_price_bands"
+        / "450"
+        / "diagnostics"
+    )
+    diagnostics.mkdir(parents=True)
+    (diagnostics / f"{trade_date}_093000.json").write_text(
+        json.dumps(
+            {
+                "date": trade_date,
+                "result_saved": True,
+                "summary": {"input_count": 0, "selected_count": 0},
+            }
+        ),
+        encoding="utf-8",
+    )
+    _write_selection(paths, 450, trade_date, [])
+    status_directory = (
+        paths.daily_cache_dir.parent.parent
+        / "analysis"
+        / "price_band_trend_check"
+        / "status"
+        / "450"
+    )
+    status_directory.mkdir(parents=True)
+    (status_directory / f"{trade_date}.json").write_text(
+        json.dumps(
+            {
+                "trade_date": trade_date,
+                "price_band": 450,
+                "version": "v1",
+                "state": "empty_selection",
+                "reason": "NO_SELECTED_SYMBOLS",
+                "selected_count": 0,
+                "undecidable_count": 0,
+                "undecidable_reasons": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    loaded = load_price_band_trends(
+        date.fromisoformat(trade_date),
+        date.fromisoformat(trade_date),
+        paths,
+    )
+    assert loaded["bands"]["450"]["missing_reasons"] == {
+        "PREVIOUS_SCREENING_NOT_AVAILABLE": 1
+    }
+
+    result = run_price_band_checks(
+        date.fromisoformat(trade_date),
+        paths,
+        cache_update_ok=True,
+        source_database=tmp_path / "no_standard_results.sqlite3",
+    )
+
+    band = result["bands"]["450"]
+    assert band["missing_days"] == 1
+    assert band["missing_reasons"] == {"PREVIOUS_SCREENING_NOT_AVAILABLE": 1}
+    assert band["empty_days"] == 0
+    assert band["trend_rate"] is None
+    assert "450円 欠測(前日スクリーニングなし)" in price_band_rate_line(result)
+
+
+def test_ten_selected_symbols_are_the_price_band_rate_denominator(tmp_path):
+    paths = _paths(tmp_path)
+    trade_date = "2026-10-06"
+    symbols = [f"S{i:02}" for i in range(10)]
+    for symbol in symbols:
+        _write_daily_history(paths, symbol, trade_date)
+    _write_selection(paths, 450, trade_date, symbols)
+
+    result = run_price_band_checks(
+        date.fromisoformat(trade_date),
+        paths,
+        cache_update_ok=True,
+        source_database=tmp_path / "no_standard_results.sqlite3",
+    )
+
+    band = result["bands"]["450"]
+    assert band["selected_count"] == 10
+    assert band["rate_denominator"] == 10
+    assert band["trend_rate"] == 1.0
+    assert band["missing_days"] == 0
+    assert "450円 10/10件 (100.0%)" in price_band_rate_line(result)
+
+
+def test_partial_selection_uses_selected_count_and_reports_excluded_symbol(tmp_path):
+    paths = _paths(tmp_path)
+    trade_date = "2026-10-06"
+    symbols = ["AAA", "BBB", "NO_HISTORY"]
+    for symbol in symbols[:2]:
+        _write_daily_history(paths, symbol, trade_date)
+    _write_selection(paths, 450, trade_date, symbols)
+
+    result = run_price_band_checks(
+        date.fromisoformat(trade_date),
+        paths,
+        cache_update_ok=True,
+        source_database=tmp_path / "no_standard_results.sqlite3",
+    )
+
+    band = result["bands"]["450"]
+    assert band["selected_count"] == 3
+    assert band["judged_count"] == 2
+    assert band["rate_denominator"] == 3
+    assert band["trend_rate"] == 2 / 3
+    assert band["evaluation_excluded_count"] == 1
+    assert band["reference"] is True
+    assert "450円 2/3件 (66.7%)・選定3件(10件未満)・参考値" in price_band_rate_line(result)
+    assert "評価対象外1件" in price_band_rate_line(result)
 
 def test_price_band_cache_symbols_are_deduplicated(tmp_path):
     paths = _paths(tmp_path)

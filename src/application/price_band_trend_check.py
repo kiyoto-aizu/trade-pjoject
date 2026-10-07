@@ -4,7 +4,7 @@ import json
 import math
 from collections import Counter
 from dataclasses import replace
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 from src.application.trend_check_usecase import (
@@ -18,6 +18,7 @@ from src.application.trend_check_usecase import (
 )
 from src.config import config
 from src.domain.trend_check import JUDGED_LABELS
+from src.infrastructure.calendar.japanese_calendar import is_trading_day
 from src.infrastructure.persistence.storage import write_json
 from src.infrastructure.persistence.trend_check_repository import TrendCheckRepository
 
@@ -96,17 +97,50 @@ def _result_dates(paths: TrendCheckPaths, price_band: int, through: str) -> set[
     return dates
 
 
-def _missing_reason(paths: TrendCheckPaths, price_band: int, trade_date: str) -> str:
+def _previous_screening_file(price_band: int, trade_date: str) -> Path:
+    previous_day = date.fromisoformat(trade_date) - timedelta(days=1)
+    while not is_trading_day(previous_day):
+        previous_day -= timedelta(days=1)
+    return (
+        config.SCREENING_PRICE_BAND_RESULT_ROOT
+        / str(price_band)
+        / f"{previous_day.isoformat()}.json"
+    )
+
+
+def _latest_diagnostic(
+    paths: TrendCheckPaths, price_band: int, trade_date: str
+) -> dict | None:
     band_paths = _filtering_paths(paths, price_band)
     diagnostics = sorted(band_paths.diagnostics_dir.glob(f"{trade_date}_*.json"))
     for diagnostic_path in reversed(diagnostics):
         diagnostic = _read_json(diagnostic_path)
-        if diagnostic is None:
-            continue
-        summary = diagnostic.get("summary") or {}
-        if summary.get("stop_reason") == "FILTER_TIME_LIMIT":
-            return "FILTER_TIME_LIMIT"
+        if diagnostic is not None:
+            return diagnostic
+    return None
+
+
+def _missing_reason(paths: TrendCheckPaths, price_band: int, trade_date: str) -> str:
+    diagnostic = _latest_diagnostic(paths, price_band, trade_date)
+    summary = (diagnostic or {}).get("summary") or {}
+    if summary.get("stop_reason") == "FILTER_TIME_LIMIT":
+        return "FILTER_TIME_LIMIT"
+    if price_band != 270 and not _previous_screening_file(
+        price_band, trade_date
+    ).exists():
+        return "PREVIOUS_SCREENING_NOT_AVAILABLE"
     return "FILTERING_RESULT_NOT_SAVED"
+
+
+def _empty_selection_is_missing_screening(
+    paths: TrendCheckPaths, price_band: int, trade_date: str
+) -> bool:
+    diagnostic = _latest_diagnostic(paths, price_band, trade_date)
+    summary = (diagnostic or {}).get("summary") or {}
+    return (
+        summary.get("input_count") == 0
+        and not _previous_screening_file(price_band, trade_date).exists()
+    )
 
 
 def price_band_symbols_for_update(
@@ -194,6 +228,25 @@ def _evaluate_price_band_day(
         return status
 
     if not selected:
+        if price_band != 270 and _empty_selection_is_missing_screening(
+            paths, price_band, trade_date
+        ):
+            reason = "PREVIOUS_SCREENING_NOT_AVAILABLE"
+            repository = TrendCheckRepository(_database_path(paths, price_band))
+            ensure_builtin_versions(repository, trade_date)
+            _store_missing_result(repository, trade_date)
+            status = {
+                "trade_date": trade_date,
+                "price_band": price_band,
+                "version": VERSION,
+                "state": "selection_missing",
+                "reason": reason,
+                "selected_count": None,
+                "undecidable_count": 0,
+                "undecidable_reasons": {},
+            }
+            _write_status(paths, price_band, trade_date, status)
+            return status
         repository = TrendCheckRepository(_database_path(paths, price_band))
         ensure_builtin_versions(repository, trade_date)
         _store_missing_result(repository, trade_date)
@@ -305,11 +358,14 @@ def run_price_band_checks(
         dates.add(through)
         for day in sorted(dates):
             existing = _read_status(paths, price_band, day)
-            if day != through and existing and existing.get("state") in {
-                "evaluated",
-                "empty_selection",
-            }:
-                continue
+            if day != through and existing:
+                if existing.get("state") == "evaluated":
+                    continue
+                if existing.get("state") == "empty_selection":
+                    if price_band == 270 or not _empty_selection_is_missing_screening(
+                        paths, price_band, day
+                    ):
+                        continue
             _evaluate_price_band_day(
                 paths,
                 price_band,
@@ -325,6 +381,19 @@ def _status_files(paths: TrendCheckPaths, price_band: int, start: str, end: str)
         if start <= path.stem <= end:
             status = _read_json(path)
             if status is not None:
+                if (
+                    price_band != 270
+                    and status.get("state") == "empty_selection"
+                    and _empty_selection_is_missing_screening(
+                        paths, price_band, path.stem
+                    )
+                ):
+                    status = {
+                        **status,
+                        "state": "selection_missing",
+                        "reason": "PREVIOUS_SCREENING_NOT_AVAILABLE",
+                        "selected_count": None,
+                    }
                 statuses[path.stem] = status
     return statuses
 
@@ -363,6 +432,7 @@ def load_price_band_trends(
         selected_count = sum(int(item["selected_count"]) for item in selected_summaries)
         judged_count = sum(int(item["selected_judged"]) for item in selected_summaries)
         trend_count = sum(int(item["selected_trend"]) for item in selected_summaries)
+        rate_denominator = judged_count if price_band == 270 else selected_count
         overall_judged += judged_count
         undecidable_reasons = Counter(
             row.get("undecidable_reason") or "UNSPECIFIED"
@@ -392,8 +462,9 @@ def load_price_band_trends(
             "price_band": price_band,
             "selected_count": selected_count,
             "judged_count": judged_count,
+            "rate_denominator": rate_denominator,
             "trend_count": trend_count,
-            "trend_rate": trend_count / judged_count if judged_count else None,
+            "trend_rate": trend_count / rate_denominator if rate_denominator else None,
             "average_move_pct": (
                 sum(trend_moves) / len(trend_moves) if trend_moves else None
             ),
@@ -413,6 +484,9 @@ def load_price_band_trends(
                 for day, status in statuses.items()
                 if day in valid_days
             ),
+            "evaluation_excluded_count": sum(
+                1 for row in selected_rows if row["label"] not in JUDGED_LABELS
+            ),
             "undecidable_reasons": dict(undecidable_reasons),
         }
 
@@ -421,7 +495,11 @@ def load_price_band_trends(
             item["estimate"] = (
                 item["trend_rate"] * item["average_move_pct"] * item["slot_count"]
             )
-        item["reference"] = item["judged_count"] < 10 or overall_judged < 30
+        item["reference"] = (
+            item["judged_count"] < 10
+            or (item["price_band"] != 270 and item["selected_count"] < 10)
+            or overall_judged < 30
+        )
 
     return {
         "start_date": start_text,
@@ -431,10 +509,37 @@ def load_price_band_trends(
     }
 
 
-def _rate_text(item: dict) -> str:
+def _missing_reason_label(reason: str) -> str:
+    return {
+        "PREVIOUS_SCREENING_NOT_AVAILABLE": "前日スクリーニングなし",
+        "FILTER_TIME_LIMIT": "時間切れ",
+        "FILTERING_RESULT_NOT_SAVED": "フィルタ結果未保存",
+        "DAILY_CACHE_UPDATE_FAILED": "日足更新失敗",
+    }.get(reason, reason)
+
+
+def _missing_text(item: dict, *, include_counts: bool) -> str:
+    if not item["missing_reasons"]:
+        return ""
+    reasons = [
+        (
+            f"{_missing_reason_label(reason)}{count}日"
+            if include_counts
+            else _missing_reason_label(reason)
+        )
+        for reason, count in sorted(item["missing_reasons"].items())
+    ]
+    return f"欠測({'・'.join(reasons)})"
+
+
+def _rate_text(item: dict, *, include_missing: bool = False) -> str:
     if item["trend_rate"] is None:
         if item["missing_days"]:
-            value = "欠測"
+            value = (
+                "欠測"
+                if item["price_band"] == 270
+                else _missing_text(item, include_counts=False)
+            )
         elif item["selected_count"] == 0 and item["empty_days"]:
             value = "選定なし"
         elif item["selected_count"] == 0:
@@ -443,10 +548,29 @@ def _rate_text(item: dict) -> str:
             value = "判定不能"
     else:
         value = (
-            f"{item['trend_count']}/{item['judged_count']}件 "
+            f"{item['trend_count']}/{item['rate_denominator']}件 "
             f"({item['trend_rate']:.1%})"
         )
-    return f"{value}・参考値" if item["reference"] else value
+    if item["price_band"] != 270 and 0 < item["selected_count"] < 10:
+        value = f"{value}・選定{item['selected_count']}件(10件未満)"
+    if item["reference"] and item["trend_rate"] is not None:
+        value = f"{value}・参考値"
+    elif item["price_band"] == 270 and item["reference"]:
+        value = f"{value}・参考値"
+    if (
+        include_missing
+        and item["price_band"] != 270
+        and item["trend_rate"] is not None
+        and item["missing_days"]
+    ):
+        value = f"{value}・{_missing_text(item, include_counts=False)}"
+    if (
+        include_missing
+        and item["price_band"] != 270
+        and item["evaluation_excluded_count"]
+    ):
+        value = f"{value}・評価対象外{item['evaluation_excluded_count']}件"
+    return value
 
 
 def price_band_rate_line(result: dict | None) -> str:
@@ -454,7 +578,7 @@ def price_band_rate_line(result: dict | None) -> str:
         rates = " / ".join(f"{band}円 判定不能" for band in PRICE_BANDS)
     else:
         rates = " / ".join(
-            f"{band}円 {_rate_text(result['bands'][str(band)])}"
+            f"{band}円 {_rate_text(result['bands'][str(band)], include_missing=True)}"
             for band in PRICE_BANDS
         )
     return f"価格帯別（選定10銘柄）: {rates}"
@@ -488,11 +612,18 @@ def price_band_monthly_lines(result: dict | None) -> list[str]:
             f"{buyable}|{estimate}|"
         )
         if item["missing_reasons"]:
-            reasons = ", ".join(
-                f"{reason} {count}日"
-                for reason, count in sorted(item["missing_reasons"].items())
+            if band == 270:
+                reasons = ", ".join(
+                    f"{reason} {count}日"
+                    for reason, count in sorted(item["missing_reasons"].items())
+                )
+                lines.append(f"- {band}円 欠測: {reasons}")
+            else:
+                lines.append(f"- {band}円 {_missing_text(item, include_counts=True)}")
+        if band != 270 and item["evaluation_excluded_count"]:
+            lines.append(
+                f"- {band}円 評価対象外: {item['evaluation_excluded_count']}件"
             )
-            lines.append(f"- {band}円 欠測: {reasons}")
         if item["undecidable_reasons"]:
             reasons = ", ".join(
                 f"{reason} {count}件"

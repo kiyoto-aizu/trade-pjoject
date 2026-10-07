@@ -40,7 +40,7 @@
 | 日次タスク確認 | `run_daily_task_check.py` | なし | なし | 設計書なし |
 | 日次タスク計画 | `run_daily_task_plan.py` | なし | なし | 設計書なし |
 | フィルタリング | `run_filtering.py` | [02 フィルタリング](./detail_design/02-filtering-design.md) | 4章 | 現行 |
-| フィルタリング上書き | `run_filtering_override.py` | なし | なし | 設計書なし |
+| フィルタリング上書き | `run_filtering_override.py` | [02 フィルタリング](./detail_design/02-filtering-design.md) 5章 | 4章（共通処理） | 現行 |
 | 市場レジーム分析 | `run_market_regime.py` | なし | なし | 設計書なし |
 | 市場ボラティリティ分析 | `run_market_volatility_analysis.py` | なし | なし | 設計書なし |
 | 分足バックフィル | `run_minute_backfill.py` | [04 分足バックフィル](./detail_design/04-minute-bar-backfill-design.md) | 4章 | 一部未反映 |

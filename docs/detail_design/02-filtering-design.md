@@ -105,6 +105,20 @@ kabuステーション`/board/{symbol}`から当日の`TradingValue`を取得す
   `infrastructure/market_data/yahoo_finance_client.py`側で銘柄コード変換を吸収する
 - Yahoo Finance側の取得に失敗した銘柄は、基準値が不明なためスコアリング対象から除外する（推測値で補わない）
 
+### フィルタリング上書きCLI（`run_filtering_override.py`）
+
+祝日等で通常の前営業日計算が正しいスクリーニング結果を指さない場合に、参照スクリーニング日だけを指定して、当日のライブ板・出来高で通常の`FilteringUseCase`を手動実行します。バックテストや過去日の板再生ではありません。
+
+| 項目 | 現行動作 |
+|---|---|
+| 入力 | 必須CLI引数`--screening-date YYYY-MM-DD`で指定した日付のスクリーニング結果。板・出来高・終値等は実行時のライブデータ |
+| 日付の扱い | `FixedDateScreeningRepository`が`load_for_date()`への要求を指定日の`ScreeningResultRepository.load_for_date()`へ置き換える。`FilteringUseCase.execute(target_date=None)`で実行し、フィルタ結果の日付は実行日になる |
+| 市場処理ガード | `market_workflow_lock()`を取得し、取得できなければ警告して終了。取得後に`process_notification(..., notify_lifecycle=False)`内で実行 |
+| 前処理 | APIトークンを取得し、`unregister_all(token)`で既存登録銘柄を解除。トークンなし、全解除失敗はいずれも`SystemExit` |
+| 通常フィルタとの関係 | 通常の`run_filtering.py`とは別entrypoint。結果計算は同じ`FilteringUseCase`を利用し、銘柄登録には`BoardRepository`を使う |
+| 出力 | 通常設定の`data/filtering/`へ実行日付の`FilteringResult`を保存し、完了通知は`notify_daily`を使用 |
+| 例外 | `process_notification()`が例外を記録し再送出する。ライフサイクル通知は無効のため、このコンテキストから開始・異常終了通知は出さない |
+
 ---
 
 ## 6. レイヤー別の構成

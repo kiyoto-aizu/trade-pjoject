@@ -4,6 +4,7 @@ from datetime import date, timedelta
 from src.application.price_band_trend_check import (
     PRICE_BANDS,
     load_price_band_trends,
+    price_band_has_reference,
     price_band_monthly_lines,
     price_band_rate_line,
     price_band_symbols_for_update,
@@ -121,7 +122,9 @@ def test_price_band_checks_use_only_selected_symbols_and_save_separate_results(t
         rows = repository.load_rows("v1", trade_date, trade_date)
         assert [row["symbol"] for row in rows] == sorted(selections[price_band])
 
-    assert "270円 1/1件 (100.0%)・参考値" in price_band_rate_line(result)
+    assert "270円 1/1件 (100.0%)" in price_band_rate_line(result)
+    assert "参考値" not in price_band_rate_line(result)
+    assert price_band_has_reference(result) is True
     monthly_lines = price_band_monthly_lines(result)
     assert any("買える枠" in line for line in monthly_lines)
     assert any("注文上限内" in line for line in monthly_lines)
@@ -183,7 +186,7 @@ def test_timeout_without_saved_filter_result_is_stored_as_missing(tmp_path):
     assert band["missing_days"] == 1
     assert band["missing_reasons"] == {"FILTER_TIME_LIMIT": 1}
     assert band["trend_rate"] is None
-    assert "900円 欠測(時間切れ)" in price_band_rate_line(result)
+    assert "900円 欠測(フィルタ時間切れ)" in price_band_rate_line(result)
 
 
 def test_empty_result_without_previous_screening_is_counted_as_missing(tmp_path):
@@ -300,7 +303,7 @@ def test_partial_selection_uses_selected_count_and_reports_excluded_symbol(tmp_p
     assert band["trend_rate"] == 2 / 3
     assert band["evaluation_excluded_count"] == 1
     assert band["reference"] is True
-    assert "450円 2/3件 (66.7%)・選定3件(10件未満)・参考値" in price_band_rate_line(result)
+    assert "450円 2/3件 (66.7%)・選定3件(10件未満)" in price_band_rate_line(result)
     assert "評価対象外1件" in price_band_rate_line(result)
 
 def test_price_band_cache_symbols_are_deduplicated(tmp_path):

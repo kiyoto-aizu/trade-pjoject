@@ -1,0 +1,210 @@
+from src.application.analysis_notification import (
+    daily_conclusion,
+    daily_notification_lines,
+    period_conclusion,
+    period_notification_lines,
+)
+from src.infrastructure.notification.slack_notify import format_result_notification
+
+
+def _band(price_band, **overrides):
+    item = {
+        "price_band": price_band,
+        "selected_count": 0,
+        "judged_count": 0,
+        "rate_denominator": 0,
+        "trend_count": 0,
+        "trend_rate": None,
+        "reference": False,
+        "missing_days": 0,
+        "missing_reasons": {},
+        "empty_days": 0,
+        "evaluation_excluded_count": 0,
+        "undecidable_reasons": {},
+        "average_move_pct": None,
+        "slot_count": 1,
+        "buyable_count": 0,
+        "buyable_rate": None,
+        "estimate": None,
+    }
+    item.update(overrides)
+    return item
+
+
+def _price_band_trend():
+    return {
+        "bands": {
+            "270": _band(
+                270, selected_count=12, judged_count=12, rate_denominator=12,
+                trend_count=5, trend_rate=5 / 12, reference=True,
+            ),
+            "450": _band(450, missing_days=1, missing_reasons={"FILTER_TIME_LIMIT": 1}),
+            "900": _band(900, missing_days=1, missing_reasons={"FILTER_TIME_LIMIT": 1}),
+        }
+    }
+
+
+def _stat(trend, n):
+    return {"trend": trend, "n": n}
+
+
+def _trend(undecidable_selected=0, undecidable_candidate=0):
+    return {
+        "version": "v1",
+        "rows": [],
+        "summaries": [],
+        "aggregate": {
+            "bought": {"bought_count": 0, "stat": _stat(0, 0)},
+            "pooled_selected": _stat(6, 10),
+            "pooled_candidate": _stat(40, 100),
+            "undecidable_selected": undecidable_selected,
+            "undecidable_candidate": undecidable_candidate,
+            "universe_sources": [],
+            "daily": [],
+        },
+    }
+
+
+def _report_1007(**overrides):
+    report = {
+        "date": "2026-10-07",
+        "order_count": 0,
+        "realized_profit_loss": 0,
+        "unrealized_profit_loss": 0,
+        "positions": [],
+        "market_conditions": {"regime": "NORMAL", "nikkei_change_percent": -0.35},
+        "log_errors": {"count": 0, "summaries": []},
+        "atr_danger_skips": [],
+        "market_regime_danger_skips": [],
+        "market_regime_caution_rsi_filters": [],
+    }
+    report.update(overrides)
+    return report
+
+
+def _daily_message(report, trend, price_band_trend, analysis=None, **kwargs):
+    lines = daily_notification_lines(
+        report, trend, cache_update_ok=True, analysis=analysis,
+        price_band_trend=price_band_trend, **kwargs,
+    )
+    summary = daily_conclusion(report, cache_update_ok=True, price_band_trend=price_band_trend)
+    return format_result_notification("分析運用", "日次分析", summary, lines)
+
+
+def test_daily_notification_sample_for_2026_10_07():
+    message = _daily_message(
+        _report_1007(), _trend(), _price_band_trend(),
+        analysis="所見: 売買なしの日。欠測帯の原因確認が優先。",
+    )
+
+    assert message == "\n".join([
+        "【業務】分析運用",
+        "【機能】日次分析",
+        "【概要】",
+        "日足更新・答え合わせ・日次レビューが完了しました。今日は売買なし。450円・900円帯は欠測です。",
+        "【詳細】",
+        "A. ペーパートレード実績",
+        "損益 実現 +0円・評価 +0円 / 約定 0件 / 保有 0銘柄",
+        "市場状態: NORMAL（日経 -0.35%）",
+        "見送り 0件 / エラー 0件",
+        "B. 戦略の答え合わせ",
+        "判定基準: v1",
+        "買った銘柄 0件: 判定可能な件数なし (判定不能 0件)",
+        "選定銘柄: 6/10件 (60.0%) (判定不能 0件)",
+        "候補全体: 40/100件 (40.0%) (判定不能 0件)",
+        "価格帯別（選定10銘柄）: 270円 5/12件 (41.7%) / 450円 欠測(フィルタ時間切れ) / 900円 欠測(フィルタ時間切れ)",
+        "※参考値: 10件未満、または総数30件未満の帯の割合は参考値です。",
+        "D. 次回確認",
+        "450円帯の欠測: フィルタ時間切れ",
+        "900円帯の欠測: フィルタ時間切れ",
+        "LLM日次評価（参考）:",
+        "所見: 売買なしの日。欠測帯の原因確認が優先。",
+    ])
+
+
+def test_daily_next_check_is_none_when_nothing_to_check():
+    bands = {"bands": {"270": _band(270), "450": _band(450), "900": _band(900)}}
+    lines = daily_notification_lines(
+        _report_1007(), _trend(), cache_update_ok=True, analysis=None, price_band_trend=bands
+    )
+
+    assert lines[lines.index("D. 次回確認") + 1:] == ["なし"]
+    assert "参考値" not in "\n".join(lines)
+
+
+def test_daily_skip_summary_distinguishes_zero_from_unrecorded():
+    zero = daily_notification_lines(_report_1007(), None, cache_update_ok=True, analysis=None)
+    legacy = _report_1007()
+    del legacy["market_regime_danger_skips"]
+    unrecorded = daily_notification_lines(legacy, None, cache_update_ok=True, analysis=None)
+    with_skips = daily_notification_lines(
+        _report_1007(atr_danger_skips=[{}, {}], market_regime_danger_skips=[{}]),
+        None, cache_update_ok=True, analysis=None,
+    )
+
+    assert "見送り 0件 / エラー 0件" in zero
+    assert "見送り 未記録 / エラー 0件" in unrecorded
+    assert "見送り 3件（ATR危険度見送り 2・市場危険度見送り 1） / エラー 0件" in with_skips
+
+
+def test_daily_conclusion_with_trades_shows_profit_and_count():
+    report = _report_1007(order_count=2, realized_profit_loss=1200, unrealized_profit_loss=-300)
+
+    assert daily_conclusion(report, cache_update_ok=True) == (
+        "日足更新・答え合わせ・日次レビューが完了しました。"
+        "今日は約定2件、損益 実現+1200円・評価-300円。"
+    )
+
+
+def test_daily_next_check_reports_undecidable_only_when_present():
+    lines = daily_notification_lines(
+        _report_1007(), _trend(undecidable_selected=1, undecidable_candidate=3),
+        cache_update_ok=True, analysis=None,
+    )
+
+    assert lines[-1] == "判定不能 選定1件/候補3件（原因を確認）"
+
+
+def _period_summary():
+    return {
+        "daily": {
+            "report_count": 5,
+            "total_profit_loss": 300,
+            "order_count": 2,
+            "operational_summary": {
+                "market_assessment_status_counts": {},
+                "log_error_count": 0,
+                "emergency_stop_days": 0,
+            },
+            "reports": [],
+        },
+        "backtest": {"exact_period_run_available": False, "total_pnl": None, "total_trades": None},
+        "price_band_trend_check": _price_band_trend(),
+    }
+
+
+def test_period_notification_uses_same_rules_as_daily():
+    summary = _period_summary()
+
+    lines = period_notification_lines(summary, _trend(), "週次", None)
+
+    assert period_conclusion(summary, "週次") == (
+        "週次分析が完了しました。今週は約定2件、損益+300円。450円・900円帯は欠測です。"
+    )
+    assert sum(line.startswith("※参考値") for line in lines) == 1
+    assert "参考値" not in "".join(line for line in lines if not line.startswith("※参考値"))
+    assert lines.index("C. バックテスト（別枠）") < lines.index("D. 次回確認")
+    assert lines[lines.index("D. 次回確認") + 1:] == [
+        "450円帯の欠測: フィルタ時間切れ",
+        "900円帯の欠測: フィルタ時間切れ",
+    ]
+
+
+def test_monthly_next_check_is_none_without_problems():
+    summary = _period_summary()
+    summary["price_band_trend_check"] = None
+
+    lines = period_notification_lines(summary, _trend(), "月次", None)
+
+    assert period_conclusion(summary, "月次") == "月次分析が完了しました。今月は約定2件、損益+300円。"
+    assert lines[lines.index("D. 次回確認") + 1:] == ["なし"]

@@ -512,9 +512,10 @@ def load_price_band_trends(
 def _missing_reason_label(reason: str) -> str:
     return {
         "PREVIOUS_SCREENING_NOT_AVAILABLE": "前日スクリーニングなし",
-        "FILTER_TIME_LIMIT": "時間切れ",
+        "FILTER_TIME_LIMIT": "フィルタ時間切れ",
         "FILTERING_RESULT_NOT_SAVED": "フィルタ結果未保存",
         "DAILY_CACHE_UPDATE_FAILED": "日足更新失敗",
+        "UNSPECIFIED": "理由記録なし",
     }.get(reason, reason)
 
 
@@ -535,11 +536,7 @@ def _missing_text(item: dict, *, include_counts: bool) -> str:
 def _rate_text(item: dict, *, include_missing: bool = False) -> str:
     if item["trend_rate"] is None:
         if item["missing_days"]:
-            value = (
-                "欠測"
-                if item["price_band"] == 270
-                else _missing_text(item, include_counts=False)
-            )
+            value = _missing_text(item, include_counts=False)
         elif item["selected_count"] == 0 and item["empty_days"]:
             value = "選定なし"
         elif item["selected_count"] == 0:
@@ -553,10 +550,6 @@ def _rate_text(item: dict, *, include_missing: bool = False) -> str:
         )
     if item["price_band"] != 270 and 0 < item["selected_count"] < 10:
         value = f"{value}・選定{item['selected_count']}件(10件未満)"
-    if item["reference"] and item["trend_rate"] is not None:
-        value = f"{value}・参考値"
-    elif item["price_band"] == 270 and item["reference"]:
-        value = f"{value}・参考値"
     if (
         include_missing
         and item["price_band"] != 270
@@ -571,6 +564,32 @@ def _rate_text(item: dict, *, include_missing: bool = False) -> str:
     ):
         value = f"{value}・評価対象外{item['evaluation_excluded_count']}件"
     return value
+
+
+def price_band_has_reference(result: dict | None) -> bool:
+    """参考値の注記が必要な帯があるか。件数不足の帯のうち、割合を表示するもの(270円帯は常に)が対象。"""
+    if result is None:
+        return False
+    return any(
+        item["reference"]
+        and (item["trend_rate"] is not None or item["price_band"] == 270)
+        for item in result["bands"].values()
+    )
+
+
+def price_band_missing_bands(result: dict | None) -> list[tuple[int, str]]:
+    """欠測のある帯と、短い理由(複数ならまとめて)を返す。"""
+    if result is None:
+        return []
+    found = []
+    for band in PRICE_BANDS:
+        item = result["bands"][str(band)]
+        if item["missing_reasons"]:
+            reasons = "・".join(
+                _missing_reason_label(reason) for reason in sorted(item["missing_reasons"])
+            )
+            found.append((band, reasons))
+    return found
 
 
 def price_band_rate_line(result: dict | None) -> str:

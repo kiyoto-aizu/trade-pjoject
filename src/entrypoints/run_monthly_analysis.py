@@ -17,7 +17,11 @@ from src.infrastructure.notification.slack_notify import format_result_notificat
 from src.infrastructure.persistence.storage import write_json
 from src.infrastructure.persistence.filter_decision_repository import FilterDecisionRepository
 from src.infrastructure.logging_config import configure_logging
-from src.application.analysis_notification import load_trend_check, period_notification_lines
+from src.application.analysis_notification import (
+    load_trend_check,
+    period_conclusion,
+    period_notification_lines,
+)
 from src.application.price_band_trend_check import load_price_band_trends
 from src.application.trend_check_usecase import DEFAULT_DATABASE_FILE
 from src.infrastructure.persistence.trend_check_repository import TrendCheckRepository
@@ -120,7 +124,7 @@ def main() -> None:
             f"詳細: {output_path}",
         ]
         message = format_result_notification(
-            "分析運用", "月次総合分析", "月次分析が完了しました。", lines
+            "分析運用", "月次総合分析", period_conclusion(summary, "月次"), lines
         )
         notify_analysis(message)
 

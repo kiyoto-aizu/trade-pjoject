@@ -13,7 +13,11 @@ from src.infrastructure.analysis.summary_loader import (
     summarize_daily_reports,
 )
 from src.infrastructure.persistence.filter_decision_repository import FilterDecisionRepository
-from src.application.analysis_notification import load_trend_check, period_notification_lines
+from src.application.analysis_notification import (
+    load_trend_check,
+    period_conclusion,
+    period_notification_lines,
+)
 from src.application.price_band_trend_check import load_price_band_trends
 from src.application.trend_check_usecase import DEFAULT_DATABASE_FILE
 from src.infrastructure.persistence.trend_check_repository import TrendCheckRepository
@@ -111,7 +115,7 @@ def main() -> None:
             f"詳細: {output_path}",
         ]
         message = format_result_notification(
-            "分析運用", "週次分析", "週次分析が完了しました。", lines
+            "分析運用", "週次分析", period_conclusion(summary, "週次"), lines
         )
         notify_analysis(message)
 

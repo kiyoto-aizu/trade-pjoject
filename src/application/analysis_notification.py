@@ -6,6 +6,8 @@ from datetime import date
 
 from src.application.trend_check_report import aggregate
 from src.application.price_band_trend_check import (
+    price_band_has_reference,
+    price_band_missing_bands,
     price_band_monthly_lines,
     price_band_rate_line,
 )
@@ -13,13 +15,22 @@ from src.domain.trend_check import JUDGED_LABELS, LABEL_TREND
 from src.infrastructure.persistence.trend_check_repository import TrendCheckRepository
 
 WEEKDAYS_JA = ("月", "火", "水", "木", "金", "土", "日")
+REFERENCE_NOTE = "※参考値: 10件未満、または総数30件未満の帯の割合は参考値です。"
+SKIP_FIELDS = {
+    "ATR危険度見送り": "atr_danger_skips",
+    "市場危険度見送り": "market_regime_danger_skips",
+    "注意レジームRSI見送り": "market_regime_caution_rsi_filters",
+}
 
 
 def _percent(trend: int, judged: int) -> str:
     if not judged:
         return "判定可能な件数なし"
-    suffix = " ※参考値" if judged < 10 else ""
-    return f"{trend}/{judged}件 ({trend / judged:.1%}){suffix}"
+    return f"{trend}/{judged}件 ({trend / judged:.1%})"
+
+
+def _is_reference(judged: int) -> bool:
+    return 0 < judged < 10
 
 
 def load_trend_check(
@@ -84,22 +95,50 @@ def trend_check_lines(result: dict | None, *, include_progression: bool = False)
     return lines
 
 
+def trend_check_has_reference(result: dict | None, *, include_progression: bool = False) -> bool:
+    """trend_check_linesで表示した割合に、件数不足(10件未満)のものがあるか。"""
+    if result is None:
+        return False
+    agg = result["aggregate"]
+    judged = [
+        agg["bought"]["stat"]["n"],
+        agg["pooled_selected"]["n"],
+        agg["pooled_candidate"]["n"],
+    ]
+    if include_progression:
+        for item in agg["daily"]:
+            judged.append(item["selected_judged"])
+            judged.append(_summary_candidate_judged(result, item["date"]))
+    return any(_is_reference(int(value)) for value in judged)
+
+
 def _summary_candidate_judged(result: dict, day: str) -> int:
     summary = next((item for item in result["summaries"] if item["trade_date"] == day), None)
     return int(summary["candidate_judged"]) if summary else 0
 
 
 def _skip_counts(report: dict) -> dict[str, int]:
-    fields = {
-        "ATR危険度見送り": "atr_danger_skips",
-        "市場危険度見送り": "market_regime_danger_skips",
-        "注意レジームRSI見送り": "market_regime_caution_rsi_filters",
-    }
     return {
         label: len(report.get(field) or [])
-        for label, field in fields.items()
+        for label, field in SKIP_FIELDS.items()
         if report.get(field)
     }
+
+
+def _skip_summary(report: dict) -> str:
+    """0件と未記録(古いレポートで項目自体がない)を区別して表示する。"""
+    if any(field not in report for field in SKIP_FIELDS.values()):
+        return "見送り 未記録"
+    skips = _skip_counts(report)
+    if not skips:
+        return "見送り 0件"
+    detail = "・".join(f"{key} {value}" for key, value in skips.items())
+    return f"見送り {sum(skips.values())}件（{detail}）"
+
+
+def _nikkei_text(market: dict) -> str:
+    change = market.get("nikkei_change_percent")
+    return f"日経 {change:+.2f}%" if isinstance(change, (int, float)) else "日経 不明"
 
 
 def daily_paper_lines(report: dict | None) -> list[str]:
@@ -108,16 +147,18 @@ def daily_paper_lines(report: dict | None) -> list[str]:
     market = report.get("market_conditions") or {}
     positions = report.get("positions") or []
     errors = report.get("log_errors") or {}
-    error_summary = " / ".join(str(item) for item in (errors.get("summaries") or [])[:2]) or "なし"
-    skips = _skip_counts(report)
+    error_count = int(errors.get("count") or 0)
+    error_text = f"エラー {error_count}件"
+    if error_count:
+        summaries = " / ".join(str(item) for item in (errors.get("summaries") or [])[:2])
+        error_text += f"（{summaries}）" if summaries else ""
+    regime = market.get("regime") or market.get("assessment_status") or "不明"
     return [
-        f"損益: 実現 {float(report.get('realized_profit_loss') or 0):+.0f}円 / "
-        f"評価 {float(report.get('unrealized_profit_loss') or 0):+.0f}円",
-        f"約定件数: {int(report.get('order_count') or 0)}件",
-        f"市場状態: {market.get('regime') or market.get('assessment_status') or '不明'}",
-        "見送り内訳: " + (", ".join(f"{key} {value}件" for key, value in skips.items()) if skips else "記録なし"),
-        f"エラー・データ抜け: エラー {int(errors.get('count') or 0)}件 ({error_summary})",
-        f"保有: {len(positions)}銘柄",
+        f"損益 実現 {float(report.get('realized_profit_loss') or 0):+.0f}円・"
+        f"評価 {float(report.get('unrealized_profit_loss') or 0):+.0f}円 / "
+        f"約定 {int(report.get('order_count') or 0)}件 / 保有 {len(positions)}銘柄",
+        f"市場状態: {regime}（{_nikkei_text(market)}）",
+        f"{_skip_summary(report)} / {error_text}",
     ]
 
 
@@ -200,15 +241,86 @@ def period_notification_lines(summary: dict, trend: dict | None, kind: str, anal
                 ))
         else:
             lines.append("判定できなかった日: なし")
+    if trend_check_has_reference(trend, include_progression=kind == "週次") or price_band_has_reference(
+        price_band_trend
+    ):
+        lines.append(REFERENCE_NOTE)
     lines.extend([
         "C. バックテスト（別枠）",
         backtest_line,
         "D. 次回確認",
-        "判定不能件数とデータ取得状況を次回の集計で確認してください。",
+        *next_check_lines(trend, price_band_trend),
     ])
     if analysis:
         lines.extend(["LLM評価（参考）:", analysis])
     return lines
+
+
+def next_check_lines(
+    trend: dict | None,
+    price_band_trend: dict | None,
+    *,
+    cache_update_ok: bool = True,
+    check_ok: bool = True,
+) -> list[str]:
+    """実際に確認が必要な点だけを返す。何もなければ「なし」。"""
+    items: list[str] = []
+    if not cache_update_ok:
+        items.append("日足更新が完了していません（答え合わせは判定不能）")
+    elif not check_ok:
+        items.append("答え合わせ処理でエラーが発生しました（ログを確認）")
+    elif trend is not None:
+        agg = trend["aggregate"]
+        selected, candidate = agg["undecidable_selected"], agg["undecidable_candidate"]
+        if selected or candidate:
+            items.append(f"判定不能 選定{selected}件/候補{candidate}件（原因を確認）")
+    for band, reason in price_band_missing_bands(price_band_trend):
+        items.append(f"{band}円帯の欠測: {reason}")
+    return items or ["なし"]
+
+
+def _missing_band_sentence(price_band_trend: dict | None) -> str:
+    bands = [band for band, _ in price_band_missing_bands(price_band_trend)]
+    return "・".join(f"{band}円" for band in bands) + "帯は欠測です。" if bands else ""
+
+
+def daily_conclusion(
+    report: dict | None,
+    *,
+    cache_update_ok: bool,
+    price_band_trend: dict | None = None,
+) -> str:
+    """日次分析の【概要】。結論を1〜2行で示す。"""
+    head = (
+        "日足更新・答え合わせ・日次レビューが完了しました。"
+        if cache_update_ok
+        else "日足更新が完了せず、答え合わせは判定不能です。"
+    )
+    if report is None:
+        trade = "日次レポートなし。"
+    elif not int(report.get("order_count") or 0):
+        trade = "今日は売買なし。"
+    else:
+        trade = (
+            f"今日は約定{int(report.get('order_count') or 0)}件、"
+            f"損益 実現{float(report.get('realized_profit_loss') or 0):+.0f}円・"
+            f"評価{float(report.get('unrealized_profit_loss') or 0):+.0f}円。"
+        )
+    return head + trade + _missing_band_sentence(price_band_trend)
+
+
+def period_conclusion(summary: dict, kind: str) -> str:
+    """週次・月次分析の【概要】。固有の集計内容は変えず、結論だけを先頭に示す。"""
+    daily = summary["daily"]
+    span = "今週" if kind == "週次" else "今月"
+    if not daily["report_count"]:
+        trade = f"{span}は日次レポートなし。"
+    else:
+        trade = f"{span}は約定{daily['order_count']}件、損益{daily['total_profit_loss']:+.0f}円。"
+    return (
+        f"{kind}分析が完了しました。" + trade
+        + _missing_band_sentence(summary.get("price_band_trend_check"))
+    )
 
 
 def daily_notification_lines(
@@ -218,6 +330,7 @@ def daily_notification_lines(
     cache_update_ok: bool,
     analysis: str | None,
     price_band_trend: dict | None = None,
+    check_ok: bool = True,
 ) -> list[str]:
     lines = [
         "A. ペーパートレード実績",
@@ -229,8 +342,12 @@ def daily_notification_lines(
     else:
         lines.extend(trend_check_lines(trend))
     lines.append(price_band_rate_line(price_band_trend))
+    if (cache_update_ok and trend_check_has_reference(trend)) or price_band_has_reference(price_band_trend):
+        lines.append(REFERENCE_NOTE)
     lines.append("D. 次回確認")
-    lines.append("日足更新状況と判定不能銘柄を次回の分析で確認してください。")
+    lines.extend(
+        next_check_lines(trend, price_band_trend, cache_update_ok=cache_update_ok, check_ok=check_ok)
+    )
     if analysis:
         lines.extend(["LLM日次評価（参考）:", analysis])
     return lines

@@ -9,7 +9,11 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Callable
 
-from src.application.analysis_notification import daily_notification_lines, load_trend_check
+from src.application.analysis_notification import (
+    daily_conclusion,
+    daily_notification_lines,
+    load_trend_check,
+)
 from src.application.price_band_trend_check import (
     price_band_symbols_for_update,
     run_price_band_checks,
@@ -164,13 +168,16 @@ def run_daily_analysis(
             cache_update_ok=cache_update_ok,
             analysis=analysis,
             price_band_trend=price_band_trend,
+            check_ok=check_ok,
         )
-        if cache_update_ok and not check_ok:
-            lines.append("答え合わせ処理: エラー（ログを確認してください）")
         message = format_result_notification(
             "分析運用",
             "日次分析",
-            "引け後の日足更新・答え合わせ・日次レビューが完了しました。",
+            daily_conclusion(
+                report,
+                cache_update_ok=cache_update_ok,
+                price_band_trend=price_band_trend,
+            ),
             lines,
         )
         notify_analysis(message)

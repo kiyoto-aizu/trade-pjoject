@@ -120,7 +120,7 @@ def test_emergency_stop_retries_and_succeeds_after_transient_positions_failure(m
     assert not any("強制決済" in m and "取得に失敗" in m for m in messages)
 
 
-def test_fetch_positions_for_liquidation_distinguishes_failure_from_empty(tmp_path):
+def test_fetch_positions_for_liquidation_distinguishes_failure_from_empty(monkeypatch, tmp_path):
     class EmptyPositionsClient:
         def get_positions(self, token):
             return []
@@ -132,5 +132,10 @@ def test_fetch_positions_for_liquidation_distinguishes_failure_from_empty(tmp_pa
         def get_positions(self, token):
             return None
 
+    sleep_calls = []
+    monkeypatch.setattr(trading_usecase_module.time, "sleep", sleep_calls.append)
     use_case = _use_case(tmp_path, lambda message: None, FailingPositionsClient())
     assert use_case._fetch_positions_for_liquidation() is None
+    assert sleep_calls == [
+        config.LIQUIDATION_POSITIONS_FETCH_RETRY_BACKOFF_SECONDS
+    ] * (config.LIQUIDATION_POSITIONS_FETCH_RETRIES - 1)

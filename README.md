@@ -446,16 +446,26 @@ python -m src.entrypoints.run_weekly_analysis --week-start 2026-09-07 --force
 
 ## テスト
 
-```
-pytest -q
-```
-
-個別に実行する場合：
+変更中は、変更した機能に対応するテストファイルを実行します。たとえば売買処理の変更なら：
 
 ```
-pytest tests/test_trading_bot.py -v
-pytest tests/test_design_alignment.py -v
+.\.venv\Scripts\python.exe -m pytest -q tests/test_trading_bot.py
 ```
+
+変更をまとめる前に全件を実行し、遅いテストも確認します：
+
+```
+.\.venv\Scripts\python.exe -m pytest -q --durations=20
+```
+
+特定のテストだけを実行する場合：
+
+```
+.\.venv\Scripts\python.exe -m pytest -q tests/test_design_alignment.py -k filtering
+```
+
+対象ファイルが分からない場合は、まず `--durations=20` で時間のかかるテストを確認します。全件実行は変更のまとまりごとやマージ前に行い、日々の小さな修正では関連テストを優先します。
+テスト中は任意の異常検知LLM呼び出しを無効化し、LLM専用テストだけが明示的に有効化します。
 
 ## 注意事項
 

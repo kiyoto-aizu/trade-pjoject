@@ -29,6 +29,12 @@ def _isolate_runtime_paths(monkeypatch, tmp_path_factory):
 
 
 @pytest.fixture(autouse=True)
+def _disable_optional_anomaly_llm(monkeypatch):
+    """通常のテストから外部LLMを呼ばない。LLM専用テストは個別に有効化する。"""
+    monkeypatch.setattr(config, "LLM_ANOMALY_ANALYSIS_ENABLED", False)
+
+
+@pytest.fixture(autouse=True)
 def _production_state_guard(request):
     guard = RuntimeStateGuard(
         PRODUCTION_REPORTS_DIRECTORY,

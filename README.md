@@ -107,7 +107,8 @@ data/
 ├── reports/
 │   ├── daily/             日次レポート
 │   ├── monthly/           月次レポート
-│   └── weekly/            週次レポート
+│   ├── weekly/            週次レポート
+│   └── diagnose_unsold/   保有銘柄の売却状況の診断結果
 ├── regulation/           規制銘柄履歴
 ├── screening/            日別スクリーニング候補
 ├── state/                判定イベントDB・分析状態
@@ -126,6 +127,7 @@ data/
 | `data/notes/operations/`、`diary/` | 手動の運用メモ、生成日記 | 日々の作業・検証記録と日記作成に使います。 |
 | `data/regulation/` | `historical_regulations.csv` | 過去日スクリーニング時に、その日時点で除外すべき規制銘柄を判定するために使います。 |
 | `data/reports/daily/`、`weekly/`、`monthly/` | 取引日報、週次・月次の集計結果 | LINE通知の記録を残し、定期分析と日記作成の集計元として使います。 |
+| `data/reports/diagnose_unsold/` | 保有銘柄の売却状況の診断結果 | 売却されない原因を調査したMarkdown/JSONレポートを保存します。 |
 | `data/screening/` | 日付別のランキング候補 | 翌営業日のフィルタリングの入力と、過去条件を用いた検証の候補集合として使います。 |
 | `data/state/` | 判定イベントSQLite、LLMエラー状態 | 取引・バックテストの判定記録と分析状態を保持します。 |
 | `data/trading/` | 注文履歴、ペーパートレード口座状態、非常停止フラグ | 重複注文を防ぎ、口座状態と安全停止状態を再起動後も保持します。 |

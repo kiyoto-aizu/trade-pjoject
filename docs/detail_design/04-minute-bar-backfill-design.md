@@ -1,6 +1,6 @@
 # 詳細設計書 04 分足バックフィル
 
-> 状態: 一部未反映    最終更新: 2026-10-07
+> 状態: 一部未反映    最終更新: 2026-10-08
 > 起動: `run_minute_backfill.py`    関連: [05 バックテスト](./05-backtest-design.md)、[分足データの用途](../../data/minute_bars_parquet/用途_Parquet形式の分足データ.md)
 
 ## 1. 概要
@@ -16,7 +16,7 @@
 | 土曜07:30 | `scripts/tasks/run_minute_backfill.ps1` | バックテスト（08:00）より前 |
 | 手動 | `run_minute_backfill.py` | 引数で対象日数・入出力ディレクトリを指定可能 |
 
-図中の起動曜日・時刻と保存方式については第4章の「要確認」を参照してください。
+リポジトリ内の予定は土曜07:30ですが、エントリポイントの想定運用コメントは毎週月曜です。実際のOSタスク登録状況は確認できていません。
 
 ## 3. 入出力
 
@@ -32,41 +32,33 @@
 
 ## 4. 処理フロー
 
-銘柄を重複なく集め、Yahooの分足を日付で分けて保存します。取得できない銘柄はスキップし、その他の銘柄の処理を続けます。
+銘柄を重複なく集め、Yahooの分足を日付別Parquetへ保存します。取得できない銘柄は0本として記録し、次の銘柄へ進みます。
 
 ```mermaid
 flowchart TD
-    Start(["タスク起動: 毎週月・木 07:30<br/>run_minute_backfill.py"]) --> A1["collect_recent_symbols()<br/>直近7日間のFilteringResultから銘柄抽出"]
-    A1 --> A2{"対象銘柄が<br/>存在するか？"}
-    A2 -->|No| A2a["ログ出力して終了"]
-    A2a --> End(["終了"])
-
-    A2 -->|Yes| B1["銘柄ごとにループ開始"]
-    B1 --> B2["get_yahoo_intraday_bars()<br/>Yahoo chart APIから1分足(range=7d)取得"]
-    B2 --> B3{"取得成功？"}
-    B3 -->|No| B3a["スキップして次の銘柄へ"]
-    B3 -->|Yes| C1["各MinuteBarの日付(time[:10])を判定"]
-
-    C1 --> C2["MinuteBarRepository.append_bar()"]
-    C2 --> C3{"既存にyahoo由来あり<br/>かつ新規がpoll？"}
-    C3 -->|Yes| C3a["上書きスキップ（精度維持）"]
-    C3 -->|No| C3b["新しい足で上書き・ソートしてJSON保存"]
-
-    B3a --> NextSymbol{"全銘柄処理済み？"}
-    C3a --> NextSymbol
-    C3b --> NextSymbol
-    NextSymbol -->|No| B2
-    NextSymbol -->|Yes| D1["結果サマリをSlack analysisチャンネルへ通知"]
-    D1 --> End2(["終了"])
-
-    style A2a fill:#f8d7da,stroke:#c0392b
-    style B3a fill:#fff3cd,stroke:#d4a017
-    style C3a fill:#e2e3e5,stroke:#6c757d
+    Start["run_minute_backfill.py起動"] --> Args["--days・入力先・出力先を決定"]
+    Args --> Collect["通常と価格帯別の直近フィルタ結果から銘柄を重複排除"]
+    Collect --> HasSymbols{"対象銘柄あり?"}
+    HasSymbols -->|No| NoWork["ログ出力して終了"]
+    HasSymbols -->|Yes| Fetch["銘柄ごとにYahoo chart APIで1分足取得"]
+    Fetch --> HasBars{"分足あり?"}
+    HasBars -->|No| Empty["警告を記録し0本として次へ"]
+    HasBars -->|Yes| EachBar["各バーの日付でParquetパーティションを決定"]
+    EachBar --> Append["ParquetMinuteBarRepository.append_bar"]
+    Append --> Priority{"既存yahooかつ新規poll?"}
+    Priority -->|Yes| Keep["既存バーを保持"]
+    Priority -->|No| Write["同時刻バーを置換し時刻順にParquet保存"]
+    Empty --> More{"未処理銘柄あり?"}
+    Keep --> More
+    Write --> More
+    More -->|Yes| Fetch
+    More -->|No| Summary["取得本数・対象数・所要時間を集計"]
+    Summary --> Notify["Slack analysisへ完了通知"]
+    Notify --> End["終了"]
+    NoWork --> End
 ```
 
-> 要確認: この図は退避した既存図をそのまま保持しています。図中は毎週月・木07:30とありますが、現行`task_schedule.py`は土曜07:30を予定し、`minute_bar_backfill_usecase.py`の冒頭コメントは毎週月曜と記載しています。実際のOSタスクスケジューラ登録状況はこのリポジトリの予定表から確認できません。
->
-> 要確認: 図中の保存形式はJSON、保存先API名は`MinuteBarRepository`ですが、現行コードは`ParquetMinuteBarRepository`でParquetへ保存します。図のノード・矢印・ラベルは依頼に従い変更していません。
+この図は現行のentrypoint・usecase・Parquet repositoryの動作を表します。予定表上の土曜07:30と起動コメント上の月曜が一致せず、OSスケジューラ登録状況も確認できません。
 
 ## 5. 判断ルール・仕様
 
@@ -96,7 +88,7 @@ flowchart TD
 |---|---|---|---|---|
 | 対象銘柄がない | 収集した銘柄数 | ログを出して終了 | なし | 要確認 |
 | Yahoo分足が空 | 取得結果が空 | 当該銘柄を0本で記録し、次の銘柄へ進む | 警告ログ | 要確認 |
-| Parquet保存に`pyarrow`がない | 遅延import | `RuntimeError`を送出する | `process_notification()`の通常設定では個別結果通知のみ | 要確認 |
+| Parquet保存に`pyarrow`がない | 遅延import | `RuntimeError`を送出する | `process_notification()`が例外を記録し再送出 | 要確認 |
 | Parquet置換が再試行上限後も失敗 | `PermissionError`が継続 | 例外を送出し、以降の処理を中断 | `process_notification()`が例外を記録し再送出 | 要確認 |
 
 ## 8. 設定項目
@@ -107,9 +99,10 @@ flowchart TD
 
 | 日付 | 決定 | 理由 |
 |---|---|---|
-| 2026-10-07 | 現行コードに合わせ、Parquet保存を設計として記載する。既存図は変更せず、内容差を要確認にする | 旧図の内容を保持しながら、コードで確認した現行保存方式を区別する |
+| 2026-10-08 | 現行の銘柄収集・Yahoo取得・Parquet保存フローを設計図へ反映する | 旧図のJSON保存表記と取得経路が現行コードと異なるため |
 
 ## 10. 未決・既知の課題
 
-- OSタスクの登録状況と、予定表（土曜）・エントリポイントコメント（月曜）・既存図（月・木）のどれを運用時刻の正とするかは要確認。
-- 既存図のJSON保存表記と`MinuteBarRepository`の名称は現行Parquet実装と異なる。図の更新要否は要確認。
+- OSタスクの登録状況と、予定表（土曜07:30）・エントリポイントコメント（月曜）・旧図（月・木07:30）のどれが運用時刻の正かは要確認。
+- `collect_recent_symbols()`は`today - days`以降の日付を含むため、`--days=7`のとき日付境界上は8つの暦日ラベルを対象にします。一方Yahoo APIの`range=7d`は直近7日程度です。対象期間の数え方を一致させるかは要確認。
+- `get_yahoo_intraday_bars()`はAPI取得結果をそのまま保存処理へ渡し、バックフィルusecase/repositoryに`latest_confirmed_trading_day()`による確定日フィルタはありません。引け前実行時に当日未確定バーが保存されない保証は要確認。

@@ -21,7 +21,7 @@
 - 中間報告は約定件数（liveは実約定照会未実装のため注文受付件数）・Paperの日次実現損益・保有銘柄とAPI返却の含み損益・開始時のMarketRegime・日経225当日値動き（前日終値比）・新規買い見送り/停止とATR損切りを含む。MarketRegimeは起動時評価を再利用し、判定ロジックと売買処理は変更しない。含み損益は保有一覧1回の取得値を使い、銘柄ごとの板取得は行わない。日経225は通知ごとにYahoo Financeの1分足を1回取得し、直近営業日の終値との比率を表示する。取得不能値は0と見なさず「取得不可」とする。文面生成は`domain.trading_progress_report.build_trading_progress_report()`の純粋関数で行う。
 - `15:20`以降に起動した場合は事前取得を行わず`run()`へ進み、持ち越し防止決済を実行する。`15:30`以降の遅延復帰は遅延決済経路となる。
 
-## 2. 処理フロー詳細（flow.md ③〜⑨）
+## 2. 処理フロー詳細
 
 ### ③ 日足・板情報の取得
 - **担当**: `get_yahoo_daily_bars()` / `get_yahoo_daily_closes()` と`BoardRepository.get_current_board()`。

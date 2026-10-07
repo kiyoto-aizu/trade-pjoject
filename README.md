@@ -439,6 +439,8 @@ python -m src.entrypoints.run_weekly_analysis --week-start 2026-09-07 --force
 
 - [コーディング規約](docs/architecture/coding-guidelines.md)
 - [全体フロー](docs/architecture/flow.md)
+- [実行スケジュール](docs/architecture/schedule.md)
+- [Slack通知](docs/architecture/notifications.md)
 - [スクリーニング詳細設計](docs/detail_design/01-screening-design.md)
 - [フィルタリング詳細設計](docs/detail_design/02-filtering-design.md)
 - [取引ループ詳細設計](docs/detail_design/03-trading-loop-design.md)

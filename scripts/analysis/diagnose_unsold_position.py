@@ -10,7 +10,7 @@
 読み取り専用の約束:
     - 状態ファイル・注文履歴・ログ・分足・日足キャッシュは読み込むだけ。判断記録DBは mode=ro で開く
     - kabuステーションAPI(/token・板)は呼ばない(取引プロセスのトークンを無効化しないため)
-    - 書き込むのは --output-dir(既定 reports/)の diagnose_unsold_{symbol}_{date}.md / .json のみ
+    - 書き込むのは --output-dir(既定 data/reports/diagnose_unsold/)の diagnose_unsold_{symbol}_{date}.md / .json のみ
 売却条件の判定は src.domain の関数・定数を再利用する(二重実装しない)。
 """
 from __future__ import annotations
@@ -896,7 +896,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="保有銘柄が売却されない原因を切り分ける(読み取り専用)")
     parser.add_argument("--symbol", required=True, help="銘柄コード(例: 8944)")
     parser.add_argument("--date", type=date.fromisoformat, default=None, help="対象日 YYYY-MM-DD(省略時は今日)")
-    parser.add_argument("--output-dir", type=Path, default=PROJECT_ROOT / "reports", help="レポートの出力先(既定: reports/)")
+    parser.add_argument(
+        "--output-dir", type=Path, default=PROJECT_ROOT / "data" / "reports" / "diagnose_unsold",
+        help="レポートの出力先(既定: data/reports/diagnose_unsold/)",
+    )
     args = parser.parse_args(argv)
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):

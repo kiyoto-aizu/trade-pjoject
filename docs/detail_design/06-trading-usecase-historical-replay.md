@@ -63,7 +63,7 @@ flowchart TD
 | クライアント | 契約・動作 |
 |---|---|
 | `HistoricalClock` | `now()`は現在時刻を返し、`advance()`が次の分足時刻へ進める。対象日の分足時刻は昇順。空配列は拒否。時計と`MinuteBar.time`はJSTのオフセットなし日時として扱う。最後の要素到達後はその値を返し続け、市場終了時刻以降の最終時刻で`is_market_closed()`に終了させる。 |
-| `HistoricalBoardClient` | `token`は使わず、`MinuteBar.time <= clock.now()`を満たす最新バーの価格を返す。未来バーは参照せず、対象時刻以前のバーがなければ`None`。日足終値・スリッページは返さず、約定スリッページは`PaperOrderClient`に任せる。 |
+| `HistoricalBoardClient` | `token`は使わず、`MinuteBar.time <= clock.now()`を満たす最新バーの`price`を`{"current_price": price}`として返す。`get_current_board_with_freshness()`はこれに`current_price_time`（JSTのISO形式）と`current_price_status: 1`を加える。未来バーは参照せず、対象時刻以前のバーがなければ`None`。日足終値・スリッページは返さず、約定スリッページは`PaperOrderClient`に任せる。 |
 | `HistoricalMarketDataClient` | 株式・指数とも`bar.date < clock.current_date()`の確定足だけを返す。`get_yahoo_daily_bars()`は日付を除いた`DailyBar(high, low, close)`へ変換し、`get_yahoo_daily_closes()`は同じ順序で終値を返す。`MarketRegimeUseCase`が使う`get_daily_ohlc("^N225")` / `get_daily_ohlc("^VIX")`も同じ日付境界を適用する。レジーム判定時は日ごとに履歴データを切ったクライアントを使い、最新期間の判定を複数日に使い回さない。 |
 | `HistoricalFilteringResultRepository` | `load_latest()`を`load_for_date(clock.current_date())`へ委譲する。結果がない場合または`result.date`が時計の日付と一致しない場合、`TradingUseCase.run()`は取引を開始しない。 |
 | `PaperOrderClient` | 価格取得後・注文直前に`set_price()`する同一インスタンスを`order_sender`へ注入する。独自の`WalletClient`/`PositionsClient`/`OrderSender`は追加しない。 |

@@ -449,6 +449,14 @@ python -m src.entrypoints.run_weekly_analysis --week-start 2026-09-07 --force
 - [分足バックフィル詳細設計](docs/detail_design/04-minute-bar-backfill-design.md)
 - [バックテスト詳細設計](docs/detail_design/05-backtest-design.md)
 - [ヒストリカル再生詳細設計](docs/detail_design/06-trading-usecase-historical-replay.md)
+- [LLM連携詳細設計](docs/detail_design/07-llm-integration-design.md)
+- [日次分析・日足更新詳細設計](docs/detail_design/08-daily-analysis-design.md)
+- [週次・月次分析詳細設計](docs/detail_design/09-weekly-monthly-analysis-design.md)
+- [市場分析詳細設計](docs/detail_design/10-market-analysis-design.md)
+- [日次日記詳細設計](docs/detail_design/11-daily-diary-design.md)
+- [戦略レビュー詳細設計](docs/detail_design/12-strategy-review-design.md)
+- [通知詳細設計](docs/detail_design/13-notification-design.md)
+- [診断・保守詳細設計](docs/detail_design/14-diagnostics-and-maintenance-design.md)
 - [kabuステーションAPI仕様書](references/kabu_STATION_API.yaml)
 
 ## テスト

@@ -30,30 +30,30 @@
 |---|---|---|---|---|
 | バックテストv2複数日検証 | `backtest_v2_multi_day_check.py` | [06 ヒストリカル再生](./detail_design/06-trading-usecase-historical-replay.md) | 4章 | 一部未反映 |
 | バックテストv2単日検証 | `backtest_v2_single_day_check.py` | [06 ヒストリカル再生](./detail_design/06-trading-usecase-historical-replay.md) | 4章 | 一部未反映 |
-| 板売買代金診断 | `diagnose_board_turnover.py` | なし | なし | 設計書なし |
-| 分足売買代金欠損診断 | `diagnose_missing_turnover_by_minute_bars.py` | なし | なし | 設計書なし |
-| ADX分析 | `run_adx_analysis.py` | なし | なし | 設計書なし |
-| ATR比率分析 | `run_atr_ratio_analysis.py` | なし | なし | 設計書なし |
+| 板売買代金診断 | `diagnose_board_turnover.py` | [14 診断・保守](./detail_design/14-diagnostics-and-maintenance-design.md) | 4章 | 現行 |
+| 分足売買代金欠損診断 | `diagnose_missing_turnover_by_minute_bars.py` | [14 診断・保守](./detail_design/14-diagnostics-and-maintenance-design.md) | 4章 | 現行 |
+| ADX分析 | `run_adx_analysis.py` | [10 市場分析](./detail_design/10-market-analysis-design.md) | 4章 | 現行 |
+| ATR比率分析 | `run_atr_ratio_analysis.py` | [10 市場分析](./detail_design/10-market-analysis-design.md) | 4章 | 現行 |
 | バックテスト | `run_backtest.py` | [05 バックテスト](./detail_design/05-backtest-design.md) | 4章 | 現行 |
-| 日次分析 | `run_daily_analysis.py` | [03b 価格帯別トレンド答え合わせ](./detail_design/03b-price-band-trend-check.md)（価格帯別の一部） | 4章 | 一部未反映 |
-| 日次日記 | `run_daily_diary.py` | なし | なし | 設計書なし |
-| 日次タスク確認 | `run_daily_task_check.py` | なし | なし | 設計書なし |
-| 日次タスク計画 | `run_daily_task_plan.py` | なし | なし | 設計書なし |
+| 日次分析 | `run_daily_analysis.py` | [08 日次分析](./detail_design/08-daily-analysis-design.md)、[03b 価格帯別トレンド答え合わせ](./detail_design/03b-price-band-trend-check.md) | 4章 | 現行 |
+| 日次日記 | `run_daily_diary.py` | [11 日次日記](./detail_design/11-daily-diary-design.md) | 4章 | 現行 |
+| 日次タスク確認 | `run_daily_task_check.py` | [14 診断・保守](./detail_design/14-diagnostics-and-maintenance-design.md) | 4章 | 現行 |
+| 日次タスク計画 | `run_daily_task_plan.py` | [14 診断・保守](./detail_design/14-diagnostics-and-maintenance-design.md) | 4章 | 現行 |
 | フィルタリング | `run_filtering.py` | [02 フィルタリング](./detail_design/02-filtering-design.md) | 4章 | 現行 |
 | フィルタリング上書き | `run_filtering_override.py` | [02 フィルタリング](./detail_design/02-filtering-design.md) 5章 | 4章（共通処理） | 現行 |
-| 市場レジーム分析 | `run_market_regime.py` | なし | なし | 設計書なし |
-| 市場ボラティリティ分析 | `run_market_volatility_analysis.py` | なし | なし | 設計書なし |
+| 市場レジーム分析 | `run_market_regime.py` | [10 市場分析](./detail_design/10-market-analysis-design.md) | 4章 | 現行 |
+| 市場ボラティリティ分析 | `run_market_volatility_analysis.py` | [10 市場分析](./detail_design/10-market-analysis-design.md) | 4章 | 現行 |
 | 分足バックフィル | `run_minute_backfill.py` | [04 分足バックフィル](./detail_design/04-minute-bar-backfill-design.md) | 4章 | 一部未反映 |
-| 月次分析 | `run_monthly_analysis.py` | なし | なし | 設計書なし |
+| 月次分析 | `run_monthly_analysis.py` | [09 週次・月次分析](./detail_design/09-weekly-monthly-analysis-design.md) | 4章 | 現行 |
 | スクリーニング | `run_screening.py` | [01 スクリーニング](./detail_design/01-screening-design.md) | 4章 | 現行 |
-| 戦略レビュー | `run_strategy_review.py` | なし | なし | 設計書なし |
+| 戦略レビュー | `run_strategy_review.py` | [12 戦略レビュー](./detail_design/12-strategy-review-design.md) | 4章 | 現行 |
 | 取引ループ | `run_trading.py` | [03 取引ループ](./detail_design/03-trading-loop-design.md) | 4章 | 現行 |
-| トレンドチェック | `run_trend_check.py` | なし | なし | 設計書なし |
-| VIX分析 | `run_vix_analysis.py` | なし | なし | 設計書なし |
-| 週次分析 | `run_weekly_analysis.py` | なし | なし | 設計書なし |
-| 日足キャッシュ更新 | `update_daily_bar_cache.py` | なし | なし | 設計書なし |
-| Slack通知の出し分け・開始通知の傾向文 | 複数entrypoints | なし（architecture資料のみ） | なし | 詳細設計書なし |
-| LLM連携（07相当・欠番） | 日次・週次・月次分析、戦略レビュー等から利用 | なし | なし | 設計書なし |
+| トレンドチェック | `run_trend_check.py` | [08 日次分析](./detail_design/08-daily-analysis-design.md) | 4章 | 現行 |
+| VIX分析 | `run_vix_analysis.py` | [10 市場分析](./detail_design/10-market-analysis-design.md) | 4章 | 現行 |
+| 週次分析 | `run_weekly_analysis.py` | [09 週次・月次分析](./detail_design/09-weekly-monthly-analysis-design.md) | 4章 | 現行 |
+| 日足キャッシュ更新 | `update_daily_bar_cache.py` | [08 日次分析](./detail_design/08-daily-analysis-design.md) | 4章 | 現行 |
+| Slack通知の出し分け・開始通知の傾向文 | 複数entrypoints | [13 通知](./detail_design/13-notification-design.md) | 4・5章 | 現行 |
+| LLM連携 | 日次・週次・月次分析、バックテスト、日記、戦略レビュー、通知例外分析 | [07 LLM連携](./detail_design/07-llm-integration-design.md) | 4章 | 現行 |
 
 ## 運用ルール
 

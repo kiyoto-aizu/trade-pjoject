@@ -1,20 +1,49 @@
-# trade-pjoject 詳細設計書 ①スクリーニング機能
+# 詳細設計書 01 スクリーニング機能
+
+> 状態: 現行    最終更新: 2026-10-04
+> 起動: `run_screening.py`    関連: [ADR-0001](../adr/0001-price-first-universe-selection.md)、[ADR-0002](../adr/0002-atr-trailing-stop-take-profit.md)
 
 対象: 前日に、翌営業日のトレード対象候補を **30〜50銘柄** に絞り込む機能。
 担当ユースケース: `application/screening_usecase.py`（[coding-guidelines.md](../architecture/coding-guidelines.md)記載の構成に対応）
 
 ---
 
-## 1. 実行タイミング
+## 1. 概要
+
+前営業日に、上場銘柄マスタとYahoo日足から翌営業日の売買候補を生成し、価格上限・規制・取引所条件で絞り込みます。通常候補に加えて価格帯別の検証用候補も保存します。発注判断と取引は本機能の対象外です。
+
+## 2. 実行方式
 
 - `src/config/task_schedule.py`の予定は平日15:35。翌営業日向けの上場銘柄マスタとYahoo日足によるランキングを作る。
 - 現行の通常経路はkabuステーション`GET /ranking`ではなく、`HistoricalRankingRepository`が対象日の上場銘柄ごとに日足データを読み、売買代金・値上がり率を算出する。したがって、旧記載の7:53頃の`/ranking`データクリア制約は通常経路には適用されない。
 - `run_screening.py`は市場・規制APIの照会結果を`ScreeningApiCheckRepository`で日付単位に記録・再利用する。通常実行の出力は`SCREENING_RESULT_DIRECTORY`、追加価格帯は別ディレクトリに保存する。
 - 価格上限を優先したユニバース選定への移行は[ADR-0001](../adr/0001-price-first-universe-selection.md)を参照（設計書内で決定内容を重複記載しない）。
 
----
+| 時刻 | 起動主体 | 前後の機能 |
+|---|---|---|
+| 平日15:35 | `scripts/tasks/run_screening.ps1` | 次の取引日のフィルタリングに候補を渡す |
 
-## 2. 処理フロー
+## 3. 入出力
+
+ランキング候補と市場・規制照会結果から、日付単位の通常候補・価格帯別候補を作成します。完了状況と代表候補をSlack `daily`へ通知します。
+
+| 項目 | 方向 | 場所・形式 | 備考 |
+|---|---|---|---|
+| 上場銘柄マスタ・Yahoo日足 | 入力 | `data/universe/listed_securities.csv`、Yahoo Finance | ランキング生成 |
+| 市場・規制API結果 | 入力 | kabu STATION API、`SCREENING_API_CHECK_DIRECTORY` | 日付単位に記録・再利用 |
+| 通常スクリーニング結果 | 出力 | `data/screening/YYYY-MM-DD.json` | 翌営業日のフィルタリングが読む |
+| 価格帯別結果 | 出力 | `SCREENING_PRICE_BAND_RESULT_ROOT/<価格上限>/` | 検証・分析用 |
+| 完了通知 | 出力 | Slack `daily` | 件数、除外内訳、代表銘柄 |
+
+通知は監視も兼ねて1〜2行に収め、銘柄コードの羅列はしません。
+
+| 通知内容 | 仕様 |
+|---|---|
+| 件数・除外内訳 | 最終件数、候補件数、価格上限・価格不明・規制・地方取引所による除外数 |
+| 上位銘柄 | 3〜5件程度。ランキング順位が高い側の種別と実際の値を表示 |
+| 通知失敗 | 絞り込み・永続化に影響させない |
+
+## 4. 処理フロー
 
 ```
 ① 対象日付の上場銘柄と日足からランキングを生成
@@ -28,7 +57,7 @@
   → `SCREENING_BATCH_SIZE`単位で銘柄登録・照会・解除
 ④ 統合順位から候補を選び、監査情報とともに永続化
   → `ScreeningResultRepository`、監査行は`ScreeningAuditEntry`
-⑤ Slack dailyへ完了件数・除外内訳・代表銘柄を通知（3.5節参照）
+⑤ Slack dailyへ完了件数・除外内訳・代表銘柄を通知（3章参照）
 ⑥ 通常の価格上限とは別に、`SCREENING_ALTERNATE_PRICE_CAPS`（既定450円・900円）の価格帯別結果を作成
   → `SCREENING_PRICE_BAND_RESULT_ROOT/<価格上限>/`
   → 追加価格帯は規制・市場情報が未確認でも候補を残す検証用経路（`keep_unconfirmed=True`）
@@ -72,13 +101,21 @@ flowchart TD
 
 ---
 
-## 3. レイヤー別設計
+> 要確認: この図は移設前の内容を保持しており、kabu `/ranking`を使う旧経路を示しています。現行の通常経路は上場銘柄マスタとYahoo日足を使うため、図の更新要否を確認してください。
+
+## 5. 判断ルール・仕様
+
+`merge_ranking_candidates()`は売買代金・値上がり率の順位を合算し、価格上限と規制・取引所条件を適用して候補を絞ります。価格上限の先行適用と重み係数などの設計判断は[ADR-0001](../adr/0001-price-first-universe-selection.md)を参照してください。
+
+流動性フィルタ（売買代金下限による追加絞り込み）は初回リリースでは導入しません。`Type=4:売買代金`ランキング自体が一定の流動性を担保するため、まずはこれで運用し、実績が溜まってから下限値の要否・具体的な閾値を再検討します。
+
+## 6. レイヤー別の構成
 
 ### application/screening_usecase.py
 - `ScreeningUseCase.execute() -> ScreeningResult`
 - 責務: ①〜⑤の呼び出し順序を制御する司令塔。ロジックは持たない。
 - 依存: `RankingRepository`, `RegulationRepository`, `PrimaryExchangeRepository`, `screening_rules`（domain）, `ScreeningResultRepository`, `Notifier`
-- **通知用サマリの組み立てもここで行う**（`ExclusionResult`の除外件数、`limit_candidates`前の統合済みランキングから上位数銘柄のrank/valueを抜き出して`Notifier`に渡す）。永続化する`ScreeningResult`自体には持たせない（3.5節参照）
+- **通知用サマリの組み立てもここで行う**（`ExclusionResult`の除外件数、`limit_candidates`前の統合済みランキングから上位数銘柄のrank/valueを抜き出して`Notifier`に渡す）。永続化する`ScreeningResult`自体には持たせない（3章参照）
 - **（実装差分）`execute(target_date: date | None = None)`**: バックテスト用に過去日付を指定してランキング・規制情報を取得し直す「リプレイ」に対応する。`target_date=None`（通常運用）の場合は従来通り当日実行を前提とした呼び出しを行い、指定時のみ`RankingRepository`・`RegulationRepository`に`target_date`を追加で渡す
 - **（実装差分）`batch_started` / `batch_finished`フック**: `②規制・除外条件の確認`はkabuステーションAPIの銘柄登録枠を消費するため、`config.SCREENING_BATCH_SIZE`件ずつのバッチに分割して処理する。各バッチの前後で`batch_started(batch, batch_number)` / `batch_finished(batch, batch_number)`を呼び出し、`entrypoints/run_screening.py`側でkabuステーションAPIへの銘柄登録(`register_symbols`)・解除(`unregister_all`)に接続する。フックが失敗（`False`を返す）した場合はそのバッチで処理を中断する
 
@@ -142,31 +179,7 @@ flowchart TD
 - 保存先: 日付付きファイル（例: `data/screening/2026-08-15.json`）
 - 用途: ②のフィルタ機能が翌朝この結果を読み込んで使用する
 
-### 3.5 通知内容の設計（Slack dailyチャンネル）
-
-**方針**: 監視も兼ねる。1〜2行に収め、銘柄コードの羅列はしない。
-
-```
-スクリーニング完了: 42銘柄（候補70件中、価格上限5件・価格不明1件・規制3件・地方取引所2件を除外）
-上位: 285A(値上がり率+18.2%) / 593A(売買代金12.4億) / 1234(値上がり率+15.1%)
-```
-
-- **1行目: 件数 + 除外内訳**
-  - 最終件数（`limit_candidates`後の件数、`ScreeningResult.symbols`の件数と一致）
-  - `候補◯件中` = `merge_ranking_candidates()`直後（除外・丸め込み前）の件数
-  - **（2026-09-17更新）**`価格上限◯件` = `PriceFilterResult.excluded_by_price_count`、`価格不明◯件` = `PriceFilterResult.excluded_missing_price_count`
-  - `規制◯件` = `ExclusionResult.excluded_by_regulation_count`
-  - `地方取引所◯件` = `ExclusionResult.excluded_by_exchange_count`
-  - 用途: 除外件数が普段と桁違いに多い/少ない日に気づける（監視目的）
-- **2行目: 上位銘柄（3〜5件程度、代表値付き）**
-  - 各銘柄について、売買代金ランキング・値上がり率ランキングのうち**より高順位だった方**の種別と実際の値を添える
-  - 銘柄コードだけの羅列を避け、「なぜ選ばれたか」が一目でわかるようにする
-- 候補が多い日は上位行を優先し、残りは1行目の件数のみで足りるものとする
-- 通知失敗は本処理（絞り込み・永続化）に影響させない（§4の異常系表に準ずる）
-
----
-
-## 4. 異常系設計
+## 7. 異常系・失敗時の動き
 
 | ケース | 対応 |
 |---|---|
@@ -176,9 +189,13 @@ flowchart TD
 | 絞り込み後の候補が30件未満 | 警告ログを出し、処理は継続（発注可否は②③側の責務。①は「候補を出す」までが責務） |
 | 前日実行が失敗し当日候補が存在しない | ②のフィルタ機能側でも「候補ファイルが存在しない場合は処理をスキップし通知する」ガードを持つ（②の設計書側に記載） |
 
----
+## 8. 設定項目
 
-## 5. すり合わせ済み事項（2026-08-15）
+設定の一覧は[config-reference.md](../reference/config-reference.md)を参照してください。
+
+## 9. 決定事項と変更履歴
+
+### 2026-08-15 すり合わせ済み事項
 
 - ランキング種別: 売買代金 + 値上がり率（当初のkabu `/ranking` Type=4/1方式は上場銘柄マスタ+日足による自前計算へ置き換え済み、2026-10-04）
 - 流動性フィルタ: 初回リリースでは導入しない（実績を見てから再検討）
@@ -186,17 +203,17 @@ flowchart TD
 - 銘柄統合ロジック: 順位合算方式（両ランキングの合計順位が小さい順）
 - 除外する対象外市場: `PrimaryExchange` が `3(名証)` `5(福証)` `6(札証)` の地方取引所単独上場銘柄のみ（東証はすべて対象内）
 - 株価上限: **（2026-09-17更新）**当初は「銘柄選定では設けない」としていたが、1単元も買えない極端な高額銘柄を候補に残す無駄を避けるため、`config.get_screening_price_cap()`による動的な価格上限フィルタ（①’）を追加した。発注額上限・注文数量による制御（取引ユースケース側）は引き続き併用する
-- 通知内容: 監視も兼ねる方針で確定。1行目「最終件数＋候補件数＋除外内訳（高額/規制/地方取引所）」、2行目「上位3〜5銘柄＋代表値（順位で勝った方のランキング種別と値）」の2行構成（3.5節参照）
+- 通知内容: 監視も兼ねる方針で確定。1行目「最終件数＋候補件数＋除外内訳（高額/規制/地方取引所）」、2行目「上位3〜5銘柄＋代表値（順位で勝った方のランキング種別と値）」の2行構成（3章参照）
 - 永続化モデル(`ScreeningResult`)は変更しない。通知用の詳細情報（順位・値・除外内訳）は`ScreeningUseCase`内で都度組み立てて`Notifier`に渡す
 - **（2026-09-04追記）実装レビューを踏まえ、監査目的で`ScreeningResult.audit_entries`（`ScreeningAuditEntry`のリスト）を例外的に追加した。上記の「永続化モデルは変更しない」方針からの逸脱だが、後から採用判定の根拠を追えるようにするための意図的な差分として本節に記録する**
 - **（2026-09-17追記）実装レビューを踏まえ、以下2点をドキュメント化した（コードは既存、設計書側が追いついていなかった差分）**
-  - `ScreeningUseCase.execute(target_date=None)`: バックテスト用の過去日付リプレイ対応（3節参照）
-  - `batch_started`/`batch_finished`フック: ②の規制情報取得を銘柄登録枠の制約に合わせてバッチ処理するための仕組み（3節参照）
+  - `ScreeningUseCase.execute(target_date=None)`: バックテスト用の過去日付リプレイ対応（6章参照）
+  - `batch_started`/`batch_finished`フック: ②の規制情報取得を銘柄登録枠の制約に合わせてバッチ処理するための仕組み（6章参照）
 
 - **（2026-10-04追記）通常経路はkabu `/ranking`取得から上場銘柄マスタ+Yahoo日足による価格上限先行選定へ置き換え済み**。過去の`/ranking`前提は履歴として保持し、実装はADR-0001・本節の現行フローを参照。
 - **（2026-10-04追記）通常価格上限とは別に、`SCREENING_ALTERNATE_PRICE_CAPS`で価格帯別検証結果を保存する。市場・規制API結果は`SCREENING_API_CHECK_DIRECTORY`に対象日単位で保存・再利用する。**
 
-## 6. 実行スケジュール
+### 実行スケジュール
 
 `src/config/task_schedule.py`は取引日カレンダーに応じた予定表を返し、スクリーニングを平日15:35に設定している。実際のプロセス起動はOSスケジューラ等が行う。
 
@@ -204,10 +221,7 @@ flowchart TD
 |---|---|
 | スクリーニング | 平日15:35（翌営業日向け） |
 
-## 7. 残る確認事項
+## 10. 未決・既知の課題
 
 1. リポジトリ内の`task_schedule.py`は予定を返すだけで、OSスケジューラへの登録状態はコードから確認できない。運用環境の起動設定は別途確認する。
 2. 価格帯別結果を通常の取引候補へ採用するかは、診断データ蓄積後に判断する。
-
-## 8. 設定項目
-設定項目は[config-reference.md](../reference/config-reference.md)を参照。

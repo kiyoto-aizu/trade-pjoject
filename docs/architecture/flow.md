@@ -1,33 +1,66 @@
+# 全体のデータの流れ
+
+各機能が受け渡す永続データと、その保存場所を示します。保存先はコードと `data/用途_*.md` で確認できたものに限っています。
+
 ```mermaid
-flowchart TD
-    subgraph Daily[平日]
-        Screening[15:35 run_screening.py<br/>翌営業日候補を保存]
-        Filtering[09:30 run_filtering.py<br/>通常 + 価格帯別候補を保存]
-        Trading[09:35-15:30 run_trading.py<br/>当日結果を読み取引・EOD清算]
-        Filtering --> Trading
-        Screening -.->|翌営業日| Filtering
-    end
-    subgraph Saturday[土曜]
-        Backfill[07:30 run_minute_backfill.py]
-        Backtest[08:00 run_backtest.py]
-        Universe[09:00 上場銘柄マスタ更新]
-        Weekly[10:00 run_weekly_analysis.py]
-        Backfill --> Backtest --> Universe --> Weekly
-    end
-    MonthEnd[月末最終取引日 17:00 run_monthly_analysis.py]
-    Plan[run_daily_task_plan.py / run_daily_task_check.py<br/>日程・実行確認をSlackへ通知]
-    Checks[手動検証: backtest_v2_single_day_check.py<br/>backtest_v2_multi_day_check.py]
-    Checks -. scratch結果 .-> Backtest
+flowchart LR
+    JPX[JPX上場銘柄一覧] --> Master[上場銘柄マスタ]
+    Master --> Screening[スクリーニング]
+    Screening --> ScreeningResult[日別スクリーニング結果]
+    ScreeningResult --> Filtering[フィルタリング]
+    Filtering --> FilteringResult[日別フィルタリング結果]
+    FilteringResult --> Trading[取引]
+    Trading --> TradeState[注文履歴・口座状態]
+    Trading --> DecisionDB[判定イベントDB]
+    Trading --> DailyReport[日次運用レポート]
+    FilteringResult --> Backfill[分足バックフィル]
+    Backfill --> MinuteParquet[分足Parquet]
+    MinuteParquet --> Backtest[バックテスト]
+    FilteringResult --> Backtest
+    Backtest --> BacktestResults[バックテスト結果]
+    DailyReport --> DailyAnalysis[日次分析・答え合わせ]
+    FilteringResult --> DailyAnalysis
+    DailyCache[日足キャッシュ] --> DailyAnalysis
+    DailyAnalysis --> TrendDB[トレンド答え合わせDB]
+    DailyReport --> PeriodAnalysis[週次・月次分析]
+    BacktestResults --> PeriodAnalysis
+    DecisionDB --> PeriodAnalysis
+    TrendDB --> PeriodAnalysis
+    PeriodAnalysis --> PeriodReports[週次・月次レポート]
+    DailyReport --> Diary[日記]
+    BacktestResults --> Diary
+    Notes[手動運用メモ] --> Diary
+    Diary --> DiaryOutput[日記出力]
+    PeriodReports --> StrategyReview[戦略レビュー]
+    DailyCache --> StrategyReview
+    MinuteParquet --> StrategyReview
+    DecisionDB --> StrategyReview
+    StrategyReview --> Hypotheses[仮説・検証結果]
+    LLM[任意のLLM連携]
+    DailyAnalysis -.分析文.-> LLM
+    PeriodAnalysis -.分析文.-> LLM
+    Backtest -.分析文.-> LLM
+    Diary -.日記生成.-> LLM
+    StrategyReview -.仮説生成・検証.-> LLM
 ```
 
-`src/config/task_schedule.py`は日付ごとの予定を返すモジュールで、OSタスクスケジューラやcronの代わりにプロセスを起動するものではない。v2検証スクリプトは通常の`run_backtest.py`と別のヒストリカル再生CLIで、結果は`data/backtest_v2_scratch/`を使う。
+表は永続化される主な受け渡しデータです。`日足キャッシュ`の内部ファイル形式はこの資料では特定せず、確認対象として残します。
 
-## Slack通知
+## データの置き場所
 
-| チャンネル | 主な送信内容 |
-|---|---|
-| `critical` | 取引キルスイッチ、緊急停止・EOD未決済、401復旧失敗、タスク実行要確認、例外終了（`process_notification`でライフサイクル通知を有効にした場合） |
-| `daily` | スクリーニング・フィルタ結果、取引開始・日次レポート、日次タスク予定と実行結果 |
-| `analysis` | 分足バックフィル、通常バックテスト、週次・月次分析 |
+| データ | 作る機能 | 読む機能 | 保存場所 | 形式 |
+|---|---|---|---|---|
+| 上場銘柄マスタ | 上場銘柄マスタ更新 | スクリーニング、過去検証 | `data/universe/listed_securities.csv` | CSV |
+| スクリーニング結果 | スクリーニング | フィルタリング、分足バックフィル、バックテスト | `data/screening/{日付}.json` | JSON |
+| フィルタリング結果 | フィルタリング | 取引、分足バックフィル、バックテスト、分析 | `data/filtering/{日付}.json` | JSON |
+| 注文履歴・口座状態 | 取引 | 取引の再起動後復元、分析 | `data/trading/` | JSON、非常停止フラグ |
+| 判定イベント | 取引、バックテスト | 取引・週次/月次分析・戦略レビュー | `data/state/filter_decision_events.sqlite3`、`data/backtest/filter_events/` | SQLite |
+| 日足キャッシュ | 日次分析内の日足更新 | 日次分析・答え合わせ、戦略レビュー | `data/cache/yahoo_daily/` | 要確認 |
+| 分足データ | 分足バックフィル | 分足バックテスト、戦略レビュー | `data/minute_bars_parquet/symbol=.../date=.../data.parquet` | Parquet |
+| 運用レポート | 取引、日次・週次・月次分析 | 日次・週次・月次分析、日記、戦略レビュー | `data/reports/daily/`、`weekly/`、`monthly/` | JSON |
+| トレンド答え合わせ結果 | 日次分析・答え合わせ | 日次・週次・月次分析 | `data/analysis/trend_check.sqlite3`、`data/reports/trend_check/` | SQLite、JSON |
+| バックテスト結果 | バックテスト | 週次・月次分析、日記 | `data/backtest/latest/`、`runs/` | JSON |
+| 日記 | 日記 | 手動参照 | `data/notes/diary/` | JSON、Markdown |
+| 戦略レビューの仮説・検証結果 | 戦略レビュー | 手動参照 | `data/strategy_hypotheses/`、`data/strategy_verification/` | 要確認 |
 
-`process_notification()`は開始・終了をログに記録し、例外時に例外ログと設定されていればLLM原因分析を行って例外を再送出する。`notify_lifecycle=True`のときだけ開始/終了Slack通知を行い、異常終了はcriticalへ送る。現行entrypointの多くは`notify_lifecycle=False`で、処理結果を機能ごとにdaily/analysis/criticalへ個別通知する。通知失敗は本処理を停止させずログへ記録する。
+図に示した各機能のレイヤー構成は[コーディング規約](coding-guidelines.md)を参照してください。実装上の保存先と読書き関係を確認できないデータの流れは、推測で補わず「要確認」としています。

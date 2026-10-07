@@ -437,6 +437,7 @@ python -m src.entrypoints.run_weekly_analysis --week-start 2026-09-07 --force
 
 ## 設計書
 
+- [ドキュメント案内・機能と設計書の対応表](docs/README.md)
 - [コーディング規約](docs/architecture/coding-guidelines.md)
 - [全体フロー](docs/architecture/flow.md)
 - [実行スケジュール](docs/architecture/schedule.md)
@@ -444,6 +445,10 @@ python -m src.entrypoints.run_weekly_analysis --week-start 2026-09-07 --force
 - [スクリーニング詳細設計](docs/detail_design/01-screening-design.md)
 - [フィルタリング詳細設計](docs/detail_design/02-filtering-design.md)
 - [取引ループ詳細設計](docs/detail_design/03-trading-loop-design.md)
+- [価格帯別トレンド答え合わせ詳細設計](docs/detail_design/03b-price-band-trend-check.md)
+- [分足バックフィル詳細設計](docs/detail_design/04-minute-bar-backfill-design.md)
+- [バックテスト詳細設計](docs/detail_design/05-backtest-design.md)
+- [ヒストリカル再生詳細設計](docs/detail_design/06-trading-usecase-historical-replay.md)
 - [kabuステーションAPI仕様書](references/kabu_STATION_API.yaml)
 
 ## テスト

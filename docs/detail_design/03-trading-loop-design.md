@@ -165,7 +165,7 @@
 - [01-screening-design.md](01-screening-design.md)（①スクリーニング）
 - [02-filtering-design.md](02-filtering-design.md)（②フィルタ）
 - [06-trading-usecase-historical-replay.md](06-trading-usecase-historical-replay.md)（ADR-0007ヒストリカル再生）
-- 設定項目は[docs/config-reference.md](../config-reference.md)を参照。
+- 設定項目は[config-reference.md](../reference/config-reference.md)を参照。
 
 ## 11. 価格帯別のトレンド答え合わせ
 

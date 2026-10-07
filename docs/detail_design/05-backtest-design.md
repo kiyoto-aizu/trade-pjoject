@@ -2,9 +2,8 @@
 
 対象: 過去データを用いてトレードロジックを疑似的に時間進行させ、損益・勝率・ドローダウン等を評価する機能。
 担当ユースケース: `application/backtest_usecase.py`
-エントリポイント: `entrypoints/run_backtest.py`（coding-guidelines.md記載の構成に対応、ただし5節参照）
-
-設定項目は[docs/config-reference.md](../config-reference.md)を参照。
+エントリポイント: `entrypoints/run_backtest.py`（[coding-guidelines.md](../architecture/coding-guidelines.md)記載の構成に対応、ただし5節参照）
+設定項目は[config-reference.md](../reference/config-reference.md)を参照。
 
 バックテスト実行に必要な責務は次のモジュールに分離する。
 
@@ -136,7 +135,7 @@
 
 ## 9. 既知の課題（coding-guidelines.md逸脱・技術的負債）
 
-- **entrypoint例外の期限**: `backtest_v2_single_day_check.py` / `backtest_v2_multi_day_check.py`は現状、履歴準備・疑似実行・集計まで行う検証CLIとして期限つき例外にする。ADR-0007 Phase 5で正式バックテストエンジンへ昇格する際にapplicationへ移す。`run_backtest.py`は旧エンジンCLIとしてPhase 6の旧エンジン廃止まで現状維持し、移設対象にしない。行数と方針は[coding-guidelines.md §5](../coding-guidelines.md)を参照。
+- **entrypoint例外の期限**: `backtest_v2_single_day_check.py` / `backtest_v2_multi_day_check.py`は現状、履歴準備・疑似実行・集計まで行う検証CLIとして期限つき例外にする。ADR-0007 Phase 5で正式バックテストエンジンへ昇格する際にapplicationへ移す。`run_backtest.py`は旧エンジンCLIとしてPhase 6の旧エンジン廃止まで現状維持し、移設対象にしない。行数と方針は[coding-guidelines.md §5](../architecture/coding-guidelines.md)を参照。
 - **entrypointの実行調整**: `run_backtest.py`は引数解析、依存オブジェクトの組み立て、バックテスト呼び出し、結果通知に限定する。Yahoo Finance取得、入力ファイル読み込み、結果比較・保存は上表のinfrastructure/applicationモジュールが担当する。
 - **`simulate_backtest`と`simulate_timeseries_backtest`のロジック重複**: 約定価格計算・ATR評価・シグナル判定など多くの処理が両関数にほぼ同じ形で存在する。1節の通り本線は`simulate_timeseries_backtest`なので、`simulate_backtest`を薄いラッパー（内部で`daily_symbols`を全期間固定で組み立てて`simulate_timeseries_backtest`を呼ぶ形）に置き換えられないか、次回リファクタリング時に検討する。
 - **CLI比較実行の重複**: `--compare-atr`等のCLI比較と`backtest_usecase.py`の`compare_*_backtest()`は別経路でA/Bテストを組み立てている。将来どちらかに統一したい。

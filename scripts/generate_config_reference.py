@@ -9,7 +9,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = ROOT / "src" / "config" / "config.py"
-OUTPUT_PATH = ROOT / "docs" / "config-reference.md"
+OUTPUT_PATH = ROOT / "docs" / "reference" / "config-reference.md"
 GROUPS = (
     ("ATR", "ATR"),
     ("レジーム", "REGIME"),

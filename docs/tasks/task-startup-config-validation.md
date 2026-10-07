@@ -1,7 +1,7 @@
 # 改修タスク: 起動時の売買設定値検証
 
 - 起票日: 2026-10-04
-- 対象: `src/config/config.py`、関連する設定・起動テスト、`docs/config-reference.md`
+- 対象: `src/config/config.py`、関連する設定・起動テスト、`docs/reference/config-reference.md`
 - ステータス: **`run_trading.py`への適用を実装済み・コミット済み（`c56be4a`、2026-10-04）**。他entrypointへの適用は「未決の確認事項」のとおり未決
 - 実装: `src/config/startup_validation.py`（`validate_startup_config` / `find_config_violations` / `ConfigValidationError`）、`run_trading._validate_config_or_exit()`、`tests/test_startup_validation.py`
 - 運用者確認: `.\.venv\Scripts\python.exe scripts/check_startup_config.py`（現在の`.env`で検証し、違反があれば全件表示して終了コード1。秘密値は表示しない）
@@ -100,5 +100,5 @@
 
 ## 関連資料
 
-- [coding-guidelines.md §3](../coding-guidelines.md)（秘密情報・起動時fail-fast）
-- [設定項目リファレンス](../config-reference.md)（生成済み環境変数一覧）
+- [coding-guidelines.md §3](../architecture/coding-guidelines.md)（秘密情報・起動時fail-fast）
+- [設定項目リファレンス](../reference/config-reference.md)（生成済み環境変数一覧）

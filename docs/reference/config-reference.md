@@ -51,7 +51,7 @@
 |---|---|---|---|
 | `FILTERING_ANOMALY_MIN_SYMBOLS` | "3" | 任意 |  |
 | `FILTERING_DIAGNOSTICS_DIRECTORY` | str(_repo_root / 'data' / 'filtering_diagnostics') | 任意 |  |
-| `FILTERING_PRICE_BAND_DEADLINE_TIME` | "09:34" | 任意 | 評価の打ち切り時刻。取引開始(09:35)の約1分前を既定とする |
+| `FILTERING_PRICE_BAND_DEADLINE_TIME` | "09:34" | 任意 |  |
 | `FILTERING_PRICE_BAND_RESULT_ROOT` | str(_repo_root / 'data' / 'filtering_price_bands') | 任意 |  |
 | `FILTERING_RESULT_DIRECTORY` | str(_repo_root / 'data' / 'filtering') | 任意 |  |
 | `FILTER_BOARD_429_MAX_RETRIES` | "2" | 任意 | 429応答時に再試行する最大回数 |
@@ -118,6 +118,7 @@
 | `BACKTEST_MARKET_SLIPPAGE_BPS` | "5" | 任意 |  |
 | `BACKTEST_ORDER_TYPE` | "market" | 任意 |  |
 | `BOARD_FETCH_CONSECUTIVE_FAILURE_THRESHOLD` | "3" | 任意 | 対象銘柄全件の板取得が何回連続で失敗したら通知するか（取引ループの1周を1回と数える） |
+| `DAILY_ANALYSIS_START_TIME` | "16:30" | 任意 | 日次分析(確定日足更新・答え合わせ・分析通知)の開始時刻 |
 | `DAILY_LOSS_LIMIT_RATIO` | "0.02" | 任意 | 1日の損失限度額（運用資本の比率、例：0.02 = 2%） |
 | `EMERGENCY_STOP_FILE` | str(_repo_root / 'data' / 'trading' / 'emergency_stop') | 任意 |  |
 | `ENABLE_LIVE_ORDERING` | "false" | 任意 |  |

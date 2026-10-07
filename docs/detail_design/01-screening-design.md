@@ -1,7 +1,7 @@
 # trade-pjoject 詳細設計書 ①スクリーニング機能
 
 対象: 前日に、翌営業日のトレード対象候補を **30〜50銘柄** に絞り込む機能。
-担当ユースケース: `application/screening_usecase.py`（coding-guidelines.md記載の構成に対応）
+担当ユースケース: `application/screening_usecase.py`（[coding-guidelines.md](../architecture/coding-guidelines.md)記載の構成に対応）
 
 ---
 
@@ -180,4 +180,4 @@
 2. 価格帯別結果を通常の取引候補へ採用するかは、診断データ蓄積後に判断する。
 
 ## 8. 設定項目
-設定項目は[docs/config-reference.md](../config-reference.md)を参照。
+設定項目は[config-reference.md](../reference/config-reference.md)を参照。

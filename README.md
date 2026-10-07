@@ -156,7 +156,7 @@ pip install -r requirements.txt
 ### 環境変数
 
 `.env` またはシステム環境変数に設定してください。パスワードなどの秘密情報はコミットしないでください。
-全設定項目は[docs/config-reference.md](docs/config-reference.md)を参照してください。
+全設定項目は[docs/reference/config-reference.md](docs/reference/config-reference.md)を参照してください。
 
 #### 運用モード
 
@@ -437,7 +437,7 @@ python -m src.entrypoints.run_weekly_analysis --week-start 2026-09-07 --force
 
 ## 設計書
 
-- [コーディング規約](docs/coding-guidelines.md)
+- [コーディング規約](docs/architecture/coding-guidelines.md)
 - [全体フロー](docs/architecture/flow.md)
 - [スクリーニング詳細設計](docs/detail_design/01-screening-design.md)
 - [フィルタリング詳細設計](docs/detail_design/02-filtering-design.md)

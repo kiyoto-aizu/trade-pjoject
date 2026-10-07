@@ -4,7 +4,7 @@
 
 このドキュメントは、trade-pjoject でコードを書く／レビューする際に従うべきルールをまとめたものです。
 AIにコードを書かせる・レビューさせる際は、このファイルをコンテキストとして読み込ませてください。
-（旧実装のレビュー記録は [review-legacy-code.md](./reviews/review-legacy-code.md) を参照してください）
+（旧実装のレビュー記録は [review-legacy-code.md](../reviews/review-legacy-code.md) を参照してください）
 
 ---
 

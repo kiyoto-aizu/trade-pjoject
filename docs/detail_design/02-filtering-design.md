@@ -135,4 +135,4 @@ kabuステーション`/board/{symbol}`から当日の`TradingValue`を取得す
 
 - `01-screening-design.md`（①前日スクリーニング、本機能の入力元）
 - `03-trading-loop-design.md`（③トレードループ、本機能の出力先）
-- 設定項目は[docs/config-reference.md](../config-reference.md)を参照。
+- 設定項目は[config-reference.md](../reference/config-reference.md)を参照。

@@ -201,7 +201,7 @@ def _count_open_positions(self, positions) -> int:
 
 ## 共通の注意事項
 
-- `docs/coding-guidelines.md`のレイヤー依存ルールに従うこと
+- `docs/architecture/coding-guidelines.md`のレイヤー依存ルールに従うこと
   （domain層は純粋ロジックのみ、application層がdomain層を呼び出す、infrastructure層への
   依存をdomain層に持ち込まない）
 - 既存の日本語コメント・ログメッセージのスタイル（変数名は英語、ログ文言は日本語）を踏襲すること

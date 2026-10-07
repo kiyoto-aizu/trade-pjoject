@@ -66,7 +66,7 @@ flowchart LR
 | トレンド答え合わせ結果 | 日次分析・答え合わせ | 日次・週次・月次分析 | `data/analysis/trend_check.sqlite3`、`data/reports/trend_check/` | SQLite、JSON |
 | バックテスト結果 | バックテスト | 週次・月次分析、日記 | `data/backtest/latest/`、`runs/` | JSON |
 | 日記 | 日記 | 手動参照 | `data/notes/diary/` | JSON、Markdown |
-| 戦略レビューの仮説・検証結果 | 戦略レビュー | 手動参照 | `data/strategy_hypotheses/`、`data/strategy_verification/` | 要確認 |
+| 戦略レビューの仮説・検証結果 | 戦略レビュー | 手動参照 | `data/strategy_hypotheses/`、`data/strategy_verification/` | Markdown、JSON |
 
 日足キャッシュ更新では`latest_confirmed_trading_day()`を必要範囲の上限として使い、当日分は引け後のみを対象にします。ただし、Yahooから取得した履歴をキャッシュへ保存する前に上限日で切り詰めているかは要確認です。`run_backtest.py --live`はこの共有キャッシュ取得関数を呼んでいないため、日足は別経路で取得します。戦略レビューは日足キャッシュを読まず、週次・月次レポート、分析DB、ADRを仮説生成の文脈に、分足Parquetと判定DBを検証に使います。
 

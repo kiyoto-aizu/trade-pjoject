@@ -86,10 +86,10 @@ flowchart TD
 
 | 事象 | 検知方法 | 動き | 通知 | 理由コード |
 |---|---|---|---|---|
-| 対象銘柄がない | 収集した銘柄数 | ログを出して終了 | なし | 要確認 |
-| Yahoo分足が空 | 取得結果が空 | 当該銘柄を0本で記録し、次の銘柄へ進む | 警告ログ | 要確認 |
-| Parquet保存に`pyarrow`がない | 遅延import | `RuntimeError`を送出する | `process_notification()`が例外を記録し再送出 | 要確認 |
-| Parquet置換が再試行上限後も失敗 | `PermissionError`が継続 | 例外を送出し、以降の処理を中断 | `process_notification()`が例外を記録し再送出 | 要確認 |
+| 対象銘柄がない | 収集した銘柄数 | ログを出して終了 | なし | なし |
+| Yahoo分足が空 | 取得結果が空 | 当該銘柄を0本で記録し、次の銘柄へ進む | 警告ログ | なし |
+| Parquet保存に`pyarrow`がない | 遅延import | `RuntimeError`を送出する | `process_notification()`が例外を記録し再送出 | `RuntimeError` |
+| Parquet置換が再試行上限後も失敗 | `PermissionError`が継続 | 例外を送出し、以降の処理を中断 | `process_notification()`が例外を記録し再送出 | `PermissionError` |
 
 ## 8. 設定項目
 

@@ -233,7 +233,7 @@ def test_main_saves_270_filter_before_isolated_price_band_failures(monkeypatch, 
     assert "採用=2件 | 所要=" in band_900_message
     assert f"保存先={config.FILTERING_PRICE_BAND_RESULT_ROOT / '900'}" in band_900_message
     summary = next(record for record in caplog.records if record.msg.startswith("全価格帯板取得サマリー:"))
-    assert summary.args[0:2] == (4, 8)
+    assert summary.args[0:2] == (4, 5)
     assert summary.args[4] == 2
 
 

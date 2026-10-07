@@ -31,7 +31,7 @@ def _build_use_case(monkeypatch, caplog, outcomes, unregister_results=(True, Tru
             "rate_limit": {"responses": 0, "retries": 0, "succeeded": 0, "failed": 0},
         }
 
-    def fetch_current_boards(symbols, max_workers):
+    def fetch_current_boards(symbols, max_workers, should_start=None):
         unique = list(dict.fromkeys(symbols))
         events.append(("prefetch", unique, max_workers))
         board_cache.fetch_count += len(unique)
@@ -121,13 +121,21 @@ def test_runs_all_price_bands_and_preserves_summary_counters(monkeypatch, caplog
     assert [item.get("price_cap") for item in executions] == [None, 450.0, 900.0]
     assert all(item.get("deadline_monotonic") == 280.0 for item in executions[1:])
     assert all(item.get("board_retry") is retry_policy for item in executions)
-    assert events[0] == ("prefetch", ["common", "450-a", "450-b", "900-a"], config.FILTER_BOARD_MAX_CONCURRENCY)
-    assert events[1:] == [("execute", None), "clear", ("execute", 450.0), ("execute", 900.0), "clear"]
+    assert events == [
+        ("prefetch", ["common"], config.FILTER_BOARD_MAX_CONCURRENCY),
+        ("execute", None),
+        "clear",
+        ("prefetch", ["450-a", "450-b"], config.FILTER_BOARD_MAX_CONCURRENCY),
+        ("execute", 450.0),
+        ("prefetch", ["900-a"], config.FILTER_BOARD_MAX_CONCURRENCY),
+        ("execute", 900.0),
+        "clear",
+    ]
     messages = [record.getMessage() for record in caplog.records]
     assert any(message.startswith("価格帯別フィルタ完了: 上限=450円") for message in messages)
     assert any(message.startswith("価格帯別フィルタ完了: 上限=900円") for message in messages)
     summary = next(record for record in caplog.records if record.msg.startswith("全価格帯板取得サマリー:"))
-    assert summary.args == (7, 4, 2.5, 7000.0, 7)
+    assert summary.args == (7, 4, 2.5, 11000.0, 7)
     assert board_cache.unregister_count == 8
 
 
@@ -142,8 +150,7 @@ def test_unregister_failure_skips_all_price_bands_and_logs_error(monkeypatch, ca
     use_case.run(primary_usecase)
 
     assert [item.get("price_cap") for item in executions] == [None]
-    assert events[0][0] == "prefetch"
-    assert events[1:] == [("execute", None), "clear", "clear"]
+    assert events == [("prefetch", ["common"], config.FILTER_BOARD_MAX_CONCURRENCY), ("execute", None), "clear", "clear"]
     assert [record.getMessage() for record in caplog.records].count(
         "通常フィルタ後の登録解除に失敗したため、追加価格帯フィルタを中止します。"
     ) == 1

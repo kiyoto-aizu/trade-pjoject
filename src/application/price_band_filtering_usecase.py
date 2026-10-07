@@ -66,51 +66,66 @@ class PriceBandFilteringUseCase:
                 config.FILTERING_PRICE_BAND_RESULT_ROOT / cap_name,
             ))
 
-        all_symbols = list(dict.fromkeys(
-            str(symbol)
-            for screening in [primary_screening, *(spec[3] for spec in band_specs)]
-            if screening
-            for symbol in screening.symbols
-        ))
         metrics_before_getter = getattr(board_cache, "get_metrics_snapshot", None)
         metrics_before = metrics_before_getter() if callable(metrics_before_getter) else None
-        prefetch_started = self.perf_counter_clock()
-        fetched = board_cache.fetch_current_boards(
-            all_symbols, max_workers=config.FILTER_BOARD_MAX_CONCURRENCY
-        )
-        prefetch_elapsed_ms = (self.perf_counter_clock() - prefetch_started) * 1000
-        metrics_after_prefetch = metrics_before_getter() if callable(metrics_before_getter) else {}
-        prefetch_summary = {
-            "target_symbol_count": sum(
-                len(screening.symbols) for screening in [primary_screening, *(spec[3] for spec in band_specs)]
-                if screening
-            ),
-            "unique_symbol_count": len(all_symbols),
-            "completed_count": len(fetched),
-            "elapsed_ms": round(prefetch_elapsed_ms, 3),
-            "max_concurrency_configured": config.FILTER_BOARD_MAX_CONCURRENCY,
-            "max_concurrency_observed": metrics_after_prefetch.get("max_concurrency_observed"),
-        }
-        self.logger.info(
-            "全価格帯の板一括取得完了: 対象=%d件 ユニーク=%d件 実取得完了=%d件 並列数=%d 所要=%.3fms",
-            prefetch_summary["target_symbol_count"], len(all_symbols), len(fetched),
-            config.FILTER_BOARD_MAX_CONCURRENCY, prefetch_elapsed_ms,
-        )
+        prefetched: set[str] = set()
 
+        def prefetch_band(band_label, screening, should_start=None):
+            """その帯の板だけを取得する。前の帯で取得済みの銘柄はキャッシュを使い再取得しない。"""
+            symbols = list(dict.fromkeys(str(symbol) for symbol in screening.symbols)) if screening else []
+            pending = [symbol for symbol in symbols if symbol not in prefetched]
+            board_cache.current_band = band_label
+            started = self.perf_counter_clock()
+            kwargs = {"should_start": should_start} if should_start is not None else {}
+            fetched = board_cache.fetch_current_boards(
+                pending, max_workers=config.FILTER_BOARD_MAX_CONCURRENCY, **kwargs
+            ) if pending else {}
+            elapsed_ms = (self.perf_counter_clock() - started) * 1000
+            prefetched.update(fetched)
+            metrics_after = metrics_before_getter() if callable(metrics_before_getter) else {}
+            summary = {
+                "band": band_label,
+                "target_symbol_count": len(screening.symbols) if screening else 0,
+                "unique_symbol_count": len(symbols),
+                "reused_from_earlier_band_count": len(symbols) - len(pending),
+                "completed_count": len(fetched),
+                "not_started_count": len(pending) - len(fetched),
+                "elapsed_ms": round(elapsed_ms, 3),
+                "max_concurrency_configured": config.FILTER_BOARD_MAX_CONCURRENCY,
+                "max_concurrency_observed": metrics_after.get("max_concurrency_observed"),
+            }
+            self.logger.info(
+                "板取得完了: 帯=%s円 対象=%d件 前の帯から再利用=%d件 実取得完了=%d件 未着手=%d件 並列数=%d 所要=%.3fms",
+                band_label, summary["unique_symbol_count"], summary["reused_from_earlier_band_count"],
+                len(fetched), summary["not_started_count"], config.FILTER_BOARD_MAX_CONCURRENCY, elapsed_ms,
+            )
+            return summary
+
+        try:
+            primary_label = f"{config.get_screening_price_cap():g}"
+        except Exception:
+            primary_label = "primary"
+        # 270円帯などの主帯を先に取得・評価・リトライまで終え、結果を確定させてから次の帯へ進む
+        primary_summary = prefetch_band(primary_label, primary_screening)
         primary_usecase.execute(
             target_date=target_date,
             board_retry=board_retry,
             board_metrics_before=metrics_before,
             board_run_metrics_before=metrics_before,
-            board_prefetch_summary=prefetch_summary,
+            board_prefetch_summary=primary_summary,
         )
         if not board_cache.clear_registrations():
             self.logger.error("通常フィルタ後の登録解除に失敗したため、追加価格帯フィルタを中止します。")
         else:
-            for price_cap, cap_name, screening_repository, _, filtering_directory in band_specs:
+            for price_cap, cap_name, screening_repository, band_screening, filtering_directory in band_specs:
                 band_started = self.perf_counter_clock()
                 band_metrics_before = metrics_before_getter() if callable(metrics_before_getter) else None
                 try:
+                    # 締め切り後の帯は板取得を始めず、executeに未処理銘柄を診断へ残させる
+                    band_summary = prefetch_band(
+                        cap_name, band_screening,
+                        should_start=lambda: self.monotonic_clock() < deadline_monotonic,
+                    )
                     alternate_usecase = self.filtering_use_case_factory(
                         screening_repository,
                         board_cache,
@@ -128,7 +143,7 @@ class PriceBandFilteringUseCase:
                         board_retry=board_retry,
                         board_metrics_before=band_metrics_before,
                         board_run_metrics_before=metrics_before,
-                        board_prefetch_summary=prefetch_summary,
+                        board_prefetch_summary=band_summary,
                     )
                     self.logger.info(
                         "価格帯別フィルタ完了: 上限=%s円 | 採用=%d件 | 所要=%.3fms | 保存先=%s",

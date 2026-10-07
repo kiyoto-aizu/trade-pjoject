@@ -56,6 +56,59 @@
 - 手動緊急停止もpaperでは`_fresh_liquidation_quote()`を使い、失敗銘柄は未決済のまま残してERROR記録と銘柄まとめ通知を1回行う。status 8は引け後の価格として許容する。liveの手動緊急停止は従来どおりfreshnessを要求せず、成行注文を試みる。モード判定は`TradingUseCase._is_paper_mode()`に集約する。liveのEOD鮮度失敗時の扱いは[本番EOD・約定照会タスク](../tasks/task-live-eod-liquidation-and-fill-reconciliation.md)で別途扱う。
 - `run()`終了後に日次JSONレポートを保存し、Slackのdailyチャンネルへ通知する。評価損益、注文・スキップ統計、キルスイッチ、EOD決済結果、任意のLLM参考分析を含む。通知失敗は取引処理を止めない。
 
+```mermaid
+flowchart TD
+    Start(["予定: 平日09:35-15:30<br/>run_trading.py"]) --> Mode{"paper または<br/>live: TRADING_MODE=live<br/>IS_DEMO=false<br/>ENABLE_LIVE_ORDERING=true"}
+    Mode -->|No| StopMode(["起動拒否"])
+    Mode -->|Yes| Lock["market_workflow_lock取得"]
+    Lock -->|取得失敗| StopLock(["他の市場処理が実行中<br/>終了"])
+    Lock -->|取得| Notify["process_notification開始<br/>ライフサイクル通知は無効"]
+    Notify --> Session{"取引日・取引時間内?"}
+    Session -->|No| End(["終了"])
+    Session -->|Yes| Filter["当日FilteringResult.load_for_date()"]
+    Filter --> FilterCheck{"当日結果・銘柄あり?"}
+    FilterCheck -->|No| End
+    FilterCheck -->|Yes| Token["kabu token取得<br/>401時は1回自動復旧・再試行"]
+    Token --> Regime["MarketRegime取得<br/>NORMAL / CAUTION / DANGER"]
+    Regime --> Cutoff{"15:20以降?"}
+    Cutoff -->|Yes| Run["TradingUseCase.run()<br/>遅延時は15:30以降にEOD_LATE_LIQUIDATION"]
+    Cutoff -->|No| Preflight["全候補の日足・板を事前取得"]
+    Preflight --> PreflightCheck{"全候補の必要データあり?"}
+    PreflightCheck -->|No| End
+    PreflightCheck -->|Yes| Run
+
+    Run --> Loop{"緊急停止または取引終了?"}
+    Loop -->|緊急停止| Emergency["キルスイッチ<br/>全保有の清算を試行"]
+    Loop -->|15:20以上| EOD["全保有の持ち越し防止決済"]
+    Loop -->|監視継続| Data["確定日足 + GET /board/{symbol}"]
+    Data --> Decision["calculate_price_limit / calculate_rsi<br/>TradeSignal.evaluate"]
+    Decision --> RegimeCheck{"レジーム・ATR・RSI条件成立?"}
+    RegimeCheck -->|No / 見送り| Journal["理由コード・decision_journal<br/>filter decision eventを記録"]
+    RegimeCheck -->|Yes| Safety["口座状態・予算・重複・<br/>建玉枠・キルスイッチ確認"]
+    Safety -->|NG| Journal
+    Safety -->|OK| Order["成行注文送信"]
+    Order -->|Result=0| History["OrderHistoryEntryを作成<br/>注文履歴JSONへ直接保存"]
+    Order -->|拒否・応答なし| Journal
+    History --> Journal
+    Journal --> More{"全候補を評価済み?"}
+    More -->|No| Data
+    More -->|Yes| Recover["401復旧失敗 / 板全件連続失敗を確認"]
+    Recover --> Sleep["LOOP_INTERVAL = 60秒"]
+    Sleep --> Loop
+    EOD --> Fresh{"CurrentPriceTime/Status<br/>正の有限価格が有効?"}
+    Fresh -->|Yes| Liquidate["成行決済を試行"]
+    Fresh -->|No| Unresolved["未決済記録・通知<br/>paper/live共通で発注しない"]
+    Emergency --> Liquidate
+    Liquidate --> SameDay["same_day_*を当日確定"]
+    Unresolved --> SameDay
+    SameDay --> Report["日次JSONレポート<br/>Slack daily通知"]
+    Report --> End
+
+    style StopMode fill:#f8d7da,stroke:#c0392b
+    style StopLock fill:#fff3cd,stroke:#d4a017
+    style Unresolved fill:#f8d7da,stroke:#c0392b
+```
+
 ## 3. 状態・判断記録
 
 | 状態 | 保持場所・更新 |

@@ -38,6 +38,37 @@ run_filtering.py起動
 ⑦ 通常結果をSlack dailyへ通知。価格帯別結果は別保存先で、締切を超えた場合は結果を保存せず中断
 ```
 
+```mermaid
+flowchart TD
+    Start(["予定: 平日09:30<br/>run_filtering.py"]) --> Day{"日本市場の取引日?"}
+    Day -->|No| End(["終了"])
+    Day -->|Yes| Lock["market_workflow_lock取得"]
+    Lock -->|取得失敗| End
+    Lock -->|取得| Token["token取得・登録解除"]
+    Token --> Input["ScreeningResultRepositoryから候補読込"]
+    Input --> Gather["270/450/900円帯の対象を収集<br/>重複銘柄を除外"]
+    Gather --> Board["最大3並列で板を一括取得<br/>HTTP間隔を維持・50件ごとに安全解除"]
+    Board --> Primary["270円帯を評価<br/>売買代金欠損を締切前に再取得"]
+    Primary --> Clear["進行中取得がないことを確認して登録解除"]
+    Clear --> Bands["450/900円帯を順に評価<br/>同じキャッシュを利用し欠損を再取得"]
+    Bands --> Value["TradingValueまたは現在値×累積出来高"]
+    Value --> Average["Yahoo平均売買代金を取得<br/>対象日混入有無も記録"]
+    Average --> Score["calculate_volume_surge_ratio()<br/>相対順位から上位10銘柄"]
+    Score --> Result["FilteringResultを保存"]
+    Result --> Diagnostic["filtering_diagnostics保存<br/>候補別結果・理由・経過時間"]
+    Diagnostic --> Journal["decision_journalへ段件数・理由を記録"]
+    Journal --> Notify["通常結果をSlack dailyへ通知"]
+    Notify --> Release["全帯終了後に登録銘柄を解除"]
+    Release --> End
+    Bands --> Deadline{"FILTERING_PRICE_BAND_DEADLINE_TIME内?"}
+    Deadline -->|No| Partial["未処理銘柄を診断<br/>当該価格帯結果は保存しない"]
+    Deadline -->|Yes| BandSave["価格帯別FilteringResult・診断を保存"]
+    Partial --> Release
+    BandSave --> Release
+
+    style Partial fill:#fff3cd,stroke:#d4a017
+```
+
 ---
 
 ## 3. 売買代金比の算出について（重要な制約）

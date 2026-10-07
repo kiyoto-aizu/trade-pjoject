@@ -222,6 +222,7 @@ def evaluate_day(
     atr_period: Optional[int] = None,
     rsi_period: Optional[int] = None,
     rsi_minimum_closes: Optional[int] = None,
+    selected_only: bool = False,
 ) -> Optional[tuple[list[dict], dict]]:
     """1日分を判定して(行, 日次サマリ)を返す。その日のフィルタ結果が無ければNone。"""
     from src.config import config
@@ -234,7 +235,10 @@ def evaluate_day(
     selected = load_selected_symbols(paths, trade_date)
     if selected is None:
         return None
-    candidates, universe_source, diagnostics = load_candidates(paths, trade_date, store)
+    if selected_only:
+        candidates, universe_source, diagnostics = [], "selected_price_band", {}
+    else:
+        candidates, universe_source, diagnostics = load_candidates(paths, trade_date, store)
     regime = load_regime(paths, trade_date)
     trades = load_trades(paths, trade_date)
     version = definition["version"]

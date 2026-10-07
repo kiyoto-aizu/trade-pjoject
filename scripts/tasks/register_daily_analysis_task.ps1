@@ -1,12 +1,12 @@
 [CmdletBinding(SupportsShouldProcess)]
 param(
-    [string]$TaskName = 'trade-pjoject-daily-task-check',
-    [datetime]$At = [datetime]'21:00',
+    [string]$TaskName = 'trade-pjoject-daily-analysis',
+    [datetime]$At = [datetime]'16:10',
     [switch]$Remove
 )
 
 $ErrorActionPreference = 'Stop'
-$runner = Join-Path $PSScriptRoot 'run_daily_task_check.ps1'
+$runner = Join-Path $PSScriptRoot 'run_daily_analysis.ps1'
 
 if ($Remove) {
     if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
@@ -18,19 +18,19 @@ if ($Remove) {
 }
 
 if (-not (Test-Path $runner)) {
-    throw "Daily task check runner was not found: $runner"
+    throw "Daily analysis runner was not found: $runner"
 }
 
 $trigger = New-ScheduledTaskTrigger -Daily -At $At
 $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$runner`""
 $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -WakeToRun
 
-if ($PSCmdlet.ShouldProcess($TaskName, "Register daily task check notification at $($At.ToString('HH:mm'))")) {
+if ($PSCmdlet.ShouldProcess($TaskName, "Register daily analysis task at $($At.ToString('HH:mm'))")) {
     Register-ScheduledTask `
         -TaskName $TaskName `
         -Action $action `
         -Trigger $trigger `
         -Settings $settings `
-        -Description 'Checks and reports the daily scheduled-task results to Slack.' `
+        -Description 'Refreshes daily bars, checks trends, and sends the daily analysis.' `
         -Force | Out-Null
 }

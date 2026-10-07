@@ -13,6 +13,10 @@ from src.infrastructure.analysis.summary_loader import (
     summarize_daily_reports,
 )
 from src.infrastructure.persistence.filter_decision_repository import FilterDecisionRepository
+from src.application.analysis_notification import load_trend_check, period_notification_lines
+from src.application.price_band_trend_check import load_price_band_trends
+from src.application.trend_check_usecase import DEFAULT_DATABASE_FILE
+from src.infrastructure.persistence.trend_check_repository import TrendCheckRepository
 from src.config import config
 from src.infrastructure.notification.slack_notify import format_result_notification, notify_analysis, process_notification
 from src.infrastructure.persistence.storage import write_json
@@ -29,6 +33,7 @@ def build_weekly_summary(
     week_start: date, week_end: date, report_directory: Path, backtest_directory: Path,
     filter_decision_repository: FilterDecisionRepository | None = None,
     as_of: date | None = None,
+    trend_repository: TrendCheckRepository | None = None,
 ) -> dict:
     as_of = as_of or date.today()
     daily = load_daily_summaries(report_directory, week_start, week_end)
@@ -57,6 +62,11 @@ def build_weekly_summary(
             filter_decision_repository.summarize_finalized_events(week_start, week_end)
             if filter_decision_repository else {"count": 0, "by_event_type": {}}
         ),
+        "trend_check": (
+            load_trend_check(trend_repository, week_start, week_end, with_progression=True)
+            if trend_repository else None
+        ),
+        "price_band_trend_check": load_price_band_trends(week_start, week_end),
     }
 
 
@@ -86,6 +96,7 @@ def main() -> None:
         summary = build_weekly_summary(
             week_start, week_end, args.reports, args.backtests,
             FilterDecisionRepository(config.FILTER_DECISION_DATABASE_FILE), today,
+            TrendCheckRepository(DEFAULT_DATABASE_FILE) if DEFAULT_DATABASE_FILE.exists() else None,
         )
         analyzer = create_daily_analyzer()
         analysis = analyzer.analyze_weekly(summary) if analyzer else None
@@ -93,21 +104,12 @@ def main() -> None:
         args.output.mkdir(parents=True, exist_ok=True)
         output_path = args.output / f"{week_start:%Y-%m-%d}_{week_end:%Y-%m-%d}.json"
         write_json(output_path, result)
-        backtest = summary["backtest"]
-        backtest_detail = (
-            f"{backtest['run_count']}回 / 損益 {backtest['total_pnl']}"
-            if backtest["exact_period_run_available"]
-            else f"{backtest['run_count']}回 / 対象期間一致 {backtest['matching_period_run_count']}回"
-        )
         lines = [
             f"対象週: {week_start}～{week_end}",
             f"集計状態: {'確定' if summary['period']['is_complete'] else '途中'}",
-            f"ペーパートレード: {summary['daily']['report_count']}日 / {summary['daily']['order_count']}件",
-            f"バックテスト: {backtest_detail}",
+            *period_notification_lines(summary, summary["trend_check"], "週次", analysis),
             f"詳細: {output_path}",
         ]
-        if analysis:
-            lines.extend(["LLM週次評価(参考):", analysis])
         message = format_result_notification(
             "分析運用", "週次分析", "週次分析が完了しました。", lines
         )

@@ -584,7 +584,7 @@ def test_order_history_and_end_of_day_report_use_injected_clock(tmp_path):
     assert report['generated_at'] == simulated_now.isoformat(timespec='seconds')
     assert report['order_count'] == 1
     assert report['orders'][0]['symbol'] == '7203'
-    assert '約定件数: 1件（買い: 1件 / 売り: 0件）' in messages[-1]
+    assert '約定件数: 1件' in messages[-1]
     assert '約定価格:' not in messages[-1]
     assert '判断理由:' not in messages[-1]
 
@@ -1086,10 +1086,13 @@ def test_end_of_day_report_identifies_paper_trading(monkeypatch, tmp_path):
 
     use_case._send_end_of_day_report()
 
-    assert messages[0].startswith('【業務】取引運用\n【機能】取引終了')
+    assert messages[0].startswith('【業務】取引\n【機能】トレード終了')
     report = json.loads((tmp_path / 'reports' / f'{datetime.now().date().isoformat()}.json').read_text(encoding='utf-8'))
     assert report['order_count'] == 0
-    assert report['report_text'] == messages[0]
+    assert 'LLM日次評価' not in report['report_text']
+    assert '実現損益:' in messages[0]
+    assert '評価損益:' in messages[0]
+    assert '強制売却確認:' in messages[0]
 
 
 def test_end_of_day_report_keeps_market_conditions_in_data_but_not_notification(tmp_path):
@@ -1138,7 +1141,7 @@ def test_end_of_day_report_keeps_market_conditions_in_data_but_not_notification(
     assert report['orders'][0]['atr_level'] == 'CAUTION'
     assert 'MarketRegime: CAUTION' not in messages[-1]
     assert 'ATR: 3.200円' not in messages[-1]
-    assert '約定件数: 1件（買い: 1件 / 売り: 0件）' in messages[-1]
+    assert '約定件数: 1件' in messages[-1]
     assert '銘柄: 7203' not in messages[-1]
 
 
@@ -1229,7 +1232,7 @@ def test_end_of_day_report_includes_atr_danger_skip_outcome(tmp_path):
     skip = report['atr_danger_skips'][0]
     assert skip['hypothetical_pnl_before_cost'] == 600.0
     assert skip['outcome'] == '利益取り逃しの可能性'
-    assert '3624: 利益取り逃しの可能性 (+600円概算)' in messages[0]
+    assert '3624: 利益取り逃しの可能性 (+600円概算)' in report['report_text']
 
 
 def test_end_of_day_report_includes_atr_stop_exit_outcome(tmp_path):
@@ -1252,10 +1255,10 @@ def test_end_of_day_report_includes_atr_stop_exit_outcome(tmp_path):
     exit_summary = report['atr_stop_exits'][0]
     assert exit_summary['avoided_pnl_before_cost'] == 600.0
     assert exit_summary['outcome'] == '下落回避の可能性'
-    assert '3624: 下落回避の可能性 (+600円概算)' in messages[0]
+    assert '3624: 下落回避の可能性 (+600円概算)' in report['report_text']
 
 
-def test_end_of_day_report_appends_daily_llm_analysis(tmp_path):
+def test_end_of_day_report_does_not_run_or_notify_daily_llm_analysis(tmp_path):
     messages = []
     summaries = []
 
@@ -1273,12 +1276,12 @@ def test_end_of_day_report_appends_daily_llm_analysis(tmp_path):
     )
     use_case._send_end_of_day_report()
 
-    assert summaries[0]['order_count'] == 0
-    assert summaries[0]['positions'] == []
-    assert 'LLM日次評価（参考）' in messages[0]
-    assert '参考評価です。' in messages[0]
+    assert summaries == []
+    assert messages[0].startswith('【業務】取引\n【機能】トレード終了')
+    assert 'LLM日次評価' not in messages[0]
+    assert '参考評価です。' not in messages[0]
     report = json.loads((tmp_path / 'reports' / f'{datetime.now().date().isoformat()}.json').read_text(encoding='utf-8'))
-    assert report['llm_analysis'] == '今日の評価\n- 参考評価です。'
+    assert report['llm_analysis'] is None
 
 
 @pytest.mark.parametrize(
@@ -1698,7 +1701,7 @@ def test_trading_use_case_records_kill_switch_in_daily_report(monkeypatch, tmp_p
     assert report['date'] == '2026-09-04'
     assert report['kill_switch_triggered'] is True
     assert '【緊急停止】キルスイッチを発動しました' in messages[0]
-    assert any('キルスイッチ: 発動' in message for message in messages)
+    assert all('キルスイッチ: 発動' not in message for message in messages)
 
 
 def test_kill_switch_notifies_only_once(monkeypatch, tmp_path):

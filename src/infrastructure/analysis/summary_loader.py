@@ -156,6 +156,11 @@ def load_daily_summaries(report_directory: Path, start: date, end: date) -> list
         if not isinstance(log_errors, dict):
             log_errors = {}
         positions = data.get("positions")
+        skip_fields = {
+            "ATR危険度": "atr_danger_skips",
+            "市場危険度": "market_regime_danger_skips",
+            "注意レジームRSI": "market_regime_caution_rsi_filters",
+        }
         error_summaries = log_errors.get("summaries")
         if not isinstance(error_summaries, list):
             error_summaries = []
@@ -167,10 +172,16 @@ def load_daily_summaries(report_directory: Path, start: date, end: date) -> list
             "kill_switch_triggered": data.get("kill_switch_triggered", False),
             "emergency_stop_triggered": data.get("emergency_stop_triggered", False),
             "market_assessment_status": market_conditions.get("assessment_status") or "not_recorded",
+            "market_regime": market_conditions.get("regime"),
             "market_failure_reason": market_conditions.get("failure_reason"),
             "log_error_count": int(log_errors.get("count") or 0),
             "log_error_summaries": [str(item) for item in error_summaries[:3]],
             "position_count": len(positions) if isinstance(positions, list) else None,
+            "skip_counts": {
+                label: len(data.get(field) or [])
+                for label, field in skip_fields.items()
+                if data.get(field)
+            },
         })
     return summaries
 

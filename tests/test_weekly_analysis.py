@@ -171,15 +171,14 @@ def test_daily_analyzer_prompt_uses_event_agnostic_review_contract(monkeypatch):
 
     monkeypatch.setattr("src.infrastructure.analysis.daily_analyzer.requests.post", post)
     OpenAIDailyAnalyzer("key", "model", "https://example.test").analyze(
-        {"order_count": 0, "future_control_skips": []}
+        {"order_count": 0, "skip_counts": {}, "trend_check": {"available": False}}
     )
 
     prompt = captured["payload"]["messages"][1]["content"]
     assert "本日の事実" in prompt
     assert "運用・データ状態" in prompt
-    assert "空配列や発生しなかったイベントは本文で説明しない" in prompt
+    assert "skip_countsが空でない場合" in prompt
     assert "assessment_statusがnot_evaluated" in prompt
-    assert "future_control_skips" in prompt
-    assert "market_regime_danger_skips" not in prompt
-    assert "market_regime_caution_rsi_filters" not in prompt
-    assert "adx_trend_reliefs" not in prompt
+    assert "複数営業日基準の結果は扱わない" in prompt
+    assert "trend_check.availableがfalse" in prompt
+    assert "future_control_skips" not in prompt

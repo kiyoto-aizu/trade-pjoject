@@ -1,0 +1,192 @@
+"""日足更新、トレンド答え合わせ、日次分析通知を順番に実行する。"""
+from __future__ import annotations
+
+import argparse
+import json
+import logging
+import time
+from datetime import date, datetime
+from pathlib import Path
+from typing import Callable
+
+from src.application.analysis_notification import daily_notification_lines, load_trend_check
+from src.application.price_band_trend_check import (
+    price_band_symbols_for_update,
+    run_price_band_checks,
+)
+from src.infrastructure.analysis.daily_analyzer import create_daily_analyzer
+from src.infrastructure.notification.slack_notify import (
+    format_result_notification,
+    notify_analysis,
+    process_notification,
+)
+from src.infrastructure.persistence.trend_check_repository import TrendCheckRepository
+from src.application.trend_check_usecase import (
+    DEFAULT_DATABASE_FILE,
+    TrendCheckPaths,
+    symbols_for_date,
+)
+from src.infrastructure.logging_config import configure_logging
+from src.entrypoints.run_trend_check import run_daily_safely
+from src.entrypoints.update_daily_bar_cache import latest_confirmed_trading_day, update_cache
+
+logger = logging.getLogger(__name__)
+DEFAULT_RETRY_COUNT = 3
+DEFAULT_RETRY_WAIT_SECONDS = 60
+
+
+def refresh_cache_with_retries(
+    trade_date: date,
+    paths: TrendCheckPaths,
+    *,
+    retries: int = DEFAULT_RETRY_COUNT,
+    wait_seconds: float = DEFAULT_RETRY_WAIT_SECONDS,
+    now: datetime | None = None,
+    update: Callable = update_cache,
+    sleeper: Callable[[float], None] = time.sleep,
+) -> tuple[bool, list[str]]:
+    """対象日まで全対象銘柄の日足が揃うまで、最大3回更新する。"""
+    symbols = sorted(
+        set(symbols_for_date(paths, trade_date.isoformat()))
+        | set(price_band_symbols_for_update(paths, trade_date))
+    )
+    if not symbols:
+        logger.info("日足更新対象なし: %s", trade_date)
+        return True, []
+
+    current = now or datetime.now()
+    expected = min(trade_date, latest_confirmed_trading_day(current)).isoformat()
+    latest_by_symbol: dict[str, str] = {}
+    remaining = symbols
+    if retries < 1:
+        raise ValueError("日足更新リトライ回数は1回以上を指定してください")
+    for attempt in range(1, retries + 1):
+        try:
+            latest_by_symbol.update(update(paths.daily_cache_dir, remaining, 120, current))
+        except Exception:
+            logger.exception("日足キャッシュ更新に失敗しました: 試行=%d/%d", attempt, retries)
+            latest_by_symbol = {}
+        remaining = [
+            symbol for symbol in symbols
+            if latest_by_symbol.get(symbol, "") < expected
+        ]
+        if not remaining:
+            logger.info("日足キャッシュ更新完了: 対象=%d銘柄 / 最新日=%s", len(symbols), expected)
+            return True, []
+        logger.warning(
+            "日足が未更新の銘柄: 試行=%d/%d / 対象=%d銘柄",
+            attempt, retries, len(remaining),
+        )
+        if attempt < retries:
+            sleeper(wait_seconds)
+    return False, remaining
+
+
+def _load_daily_report(paths: TrendCheckPaths, trade_date: date) -> dict | None:
+    path = paths.daily_report_dir / f"{trade_date.isoformat()}.json"
+    if not path.exists():
+        logger.warning("日次取引レポートがありません: %s", path)
+        return None
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError(f"日次取引レポートの形式が不正です: {path}")
+    return data
+
+
+def run_daily_analysis(
+    trade_date: date,
+    *,
+    paths: TrendCheckPaths | None = None,
+    database_file: Path | None = None,
+    retry_count: int = DEFAULT_RETRY_COUNT,
+    retry_wait_seconds: float = DEFAULT_RETRY_WAIT_SECONDS,
+    now: datetime | None = None,
+    sleeper: Callable[[float], None] = time.sleep,
+) -> bool:
+    paths = paths or TrendCheckPaths.default()
+    database_file = database_file or DEFAULT_DATABASE_FILE
+    with process_notification("日次分析", notify_lifecycle=False, trigger="取引日引け後"):
+        cache_update_ok, missing_symbols = refresh_cache_with_retries(
+            trade_date,
+            paths,
+            retries=retry_count,
+            wait_seconds=retry_wait_seconds,
+            now=now,
+            sleeper=sleeper,
+        )
+        if not cache_update_ok:
+            logger.error("日足更新が完了しませんでした。答え合わせは判定不能として通知します: %s", missing_symbols)
+
+        check_ok = False
+        if cache_update_ok:
+            check_ok = run_daily_safely(
+                trade_date,
+                refresh_cache=False,
+                database_file=database_file,
+                paths=paths,
+            )
+        report = _load_daily_report(paths, trade_date)
+        repository = TrendCheckRepository(database_file)
+        trend = (
+            load_trend_check(repository, trade_date, trade_date)
+            if cache_update_ok
+            else None
+        )
+        price_band_trend = run_price_band_checks(
+            trade_date,
+            paths,
+            cache_update_ok=cache_update_ok,
+        )
+        analyzer = create_daily_analyzer()
+        analysis_input = {
+            "date": (report or {}).get("date", trade_date.isoformat()),
+            "trading_mode": (report or {}).get("trading_mode"),
+            "order_count": (report or {}).get("order_count", 0),
+            "realized_profit_loss": (report or {}).get("realized_profit_loss", 0),
+            "unrealized_profit_loss": (report or {}).get("unrealized_profit_loss", 0),
+            "positions": (report or {}).get("positions", []),
+            "market_conditions": (report or {}).get("market_conditions", {}),
+            "log_errors": (report or {}).get("log_errors", {}),
+            "skip_counts": {
+                "ATR危険度見送り": len((report or {}).get("atr_danger_skips") or []),
+                "市場危険度見送り": len((report or {}).get("market_regime_danger_skips") or []),
+                "注意レジームRSI見送り": len((report or {}).get("market_regime_caution_rsi_filters") or []),
+            },
+            "trend_check": (
+            {"available": False, "reason": "日足更新失敗"} if not cache_update_ok else
+            trend["aggregate"] if trend else {"available": False, "reason": "日次判定結果なし"}
+            ),
+        }
+        analysis = analyzer.analyze(analysis_input) if analyzer else None
+        lines = daily_notification_lines(
+            report,
+            trend,
+            cache_update_ok=cache_update_ok,
+            analysis=analysis,
+            price_band_trend=price_band_trend,
+        )
+        if cache_update_ok and not check_ok:
+            lines.append("答え合わせ処理: エラー（ログを確認してください）")
+        message = format_result_notification(
+            "分析運用",
+            "日次分析",
+            "引け後の日足更新・答え合わせ・日次レビューが完了しました。",
+            lines,
+        )
+        notify_analysis(message)
+        success = cache_update_ok and check_ok
+        if not success:
+            logger.error("【日次分析】異常終了: 日足更新=%s 答え合わせ=%s", cache_update_ok, check_ok)
+        return success
+
+
+def main(argv: list[str] | None = None) -> int:
+    configure_logging()
+    parser = argparse.ArgumentParser(description="日足更新・答え合わせ・日次分析を実行します")
+    parser.add_argument("--date", type=date.fromisoformat, default=date.today())
+    args = parser.parse_args(argv)
+    return 0 if run_daily_analysis(args.date) else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

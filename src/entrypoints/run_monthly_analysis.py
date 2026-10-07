@@ -17,6 +17,10 @@ from src.infrastructure.notification.slack_notify import format_result_notificat
 from src.infrastructure.persistence.storage import write_json
 from src.infrastructure.persistence.filter_decision_repository import FilterDecisionRepository
 from src.infrastructure.logging_config import configure_logging
+from src.application.analysis_notification import load_trend_check, period_notification_lines
+from src.application.price_band_trend_check import load_price_band_trends
+from src.application.trend_check_usecase import DEFAULT_DATABASE_FILE
+from src.infrastructure.persistence.trend_check_repository import TrendCheckRepository
 from src.config.task_schedule import is_last_trading_day_of_month
 from src.config import config
 
@@ -45,6 +49,7 @@ def build_monthly_summary(
     month_text: str, report_directory: Path, backtest_directory: Path,
     filter_decision_repository: FilterDecisionRepository | None = None,
     as_of: date | None = None,
+    trend_repository: TrendCheckRepository | None = None,
 ) -> dict:
     start, end = _month_bounds(month_text)
     as_of = as_of or date.today()
@@ -73,6 +78,11 @@ def build_monthly_summary(
             filter_decision_repository.summarize_finalized_events(start, end)
             if filter_decision_repository else {"count": 0, "by_event_type": {}}
         ),
+        "trend_check": (
+            load_trend_check(trend_repository, start, end)
+            if trend_repository else None
+        ),
+        "price_band_trend_check": load_price_band_trends(start, end),
     }
 
 
@@ -95,6 +105,7 @@ def main() -> None:
         summary = build_monthly_summary(
             month_text, args.reports, args.backtests,
             FilterDecisionRepository(config.FILTER_DECISION_DATABASE_FILE), today,
+            TrendCheckRepository(DEFAULT_DATABASE_FILE) if DEFAULT_DATABASE_FILE.exists() else None,
         )
         analyzer = create_daily_analyzer()
         analysis = analyzer.analyze_monthly(summary) if analyzer else None
@@ -102,21 +113,12 @@ def main() -> None:
         args.output.mkdir(parents=True, exist_ok=True)
         output_path = args.output / f"{month_text}.json"
         write_json(output_path, result)
-        backtest = summary["backtest"]
-        backtest_detail = (
-            f"{backtest['run_count']}回 / 損益 {backtest['total_pnl']}"
-            if backtest["exact_period_run_available"]
-            else f"{backtest['run_count']}回 / 対象期間一致 {backtest['matching_period_run_count']}回"
-        )
         lines = [
             f"対象月: {month_text}",
             f"集計状態: {'確定' if summary['period']['is_complete'] else '途中'}",
-            f"ペーパートレード: {summary['daily']['report_count']}日 / {summary['daily']['order_count']}件",
-            f"バックテスト: {backtest_detail}",
+            *period_notification_lines(summary, summary["trend_check"], "月次", analysis),
             f"詳細: {output_path}",
         ]
-        if analysis:
-            lines.extend(["LLM月次評価(参考):", analysis])
         message = format_result_notification(
             "分析運用", "月次総合分析", "月次分析が完了しました。", lines
         )

@@ -157,6 +157,11 @@ LIQUIDATION_POSITIONS_FETCH_RETRY_BACKOFF_SECONDS = float(
 # 取引に利用可能な運用資本
 OPERATING_CAPITAL = float(os.getenv("OPERATING_CAPITAL", "100000"))
 
+# 日次分析(確定日足更新・答え合わせ・分析通知)の開始時刻
+DAILY_ANALYSIS_START_TIME = time.fromisoformat(
+    os.getenv("DAILY_ANALYSIS_START_TIME", "16:10")
+)
+
 # スクリーニング時の株価上限に掛ける安全マージン
 SCREENING_PRICE_MARGIN = float(os.getenv("SCREENING_PRICE_MARGIN", "0.9"))
 

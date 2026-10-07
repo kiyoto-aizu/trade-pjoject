@@ -391,10 +391,12 @@ def test_monthly_analysis_helpers_skip_corrupt_files_and_parse_legacy_values(tmp
         'kill_switch_triggered': False,
         'emergency_stop_triggered': False,
         'market_assessment_status': 'not_recorded',
+        'market_regime': None,
         'market_failure_reason': None,
         'log_error_count': 0,
         'log_error_summaries': [],
         'position_count': None,
+        'skip_counts': {},
     }]
 
     backtests = tmp_path / 'backtests'

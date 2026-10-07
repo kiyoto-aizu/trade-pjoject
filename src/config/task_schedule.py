@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Literal
 
+from src.config import config
 from src.infrastructure.calendar.japanese_calendar import is_trading_day
 
 
@@ -18,6 +19,7 @@ TASKS: list[ScheduledTask] = [
     ScheduledTask("フィルタリング", "09:30", "weekday"),
     ScheduledTask("取引", "09:35-15:30", "weekday"),
     ScheduledTask("スクリーニング", "15:35", "weekday"),
+    ScheduledTask("日次分析", config.DAILY_ANALYSIS_START_TIME.strftime("%H:%M"), "weekday"),
     ScheduledTask("分足バックフィル", "07:30", "saturday"),
     ScheduledTask("バックテスト", "08:00", "saturday"),
     ScheduledTask("上場銘柄マスタ更新", "09:00", "saturday"),

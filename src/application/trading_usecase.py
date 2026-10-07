@@ -37,7 +37,11 @@ from src.infrastructure.market_data.get_daily_closes import (
     get_yahoo_daily_closes,
     reset_empty_daily_warning_dedupe,
 )
-from src.infrastructure.notification.slack_notify import notify_critical, notify_daily
+from src.infrastructure.notification.slack_notify import (
+    format_result_notification,
+    notify_critical,
+    notify_daily,
+)
 from src.infrastructure.calendar.japanese_calendar import is_trading_session
 from src.infrastructure.persistence.storage import read_json, write_json
 from src.infrastructure.persistence.filter_decision_repository import FilterDecisionRepository
@@ -1691,25 +1695,42 @@ class TradingUseCase:
             "adx_trend_reliefs": adx_trend_reliefs,
             "liquidation_results": self._liquidation_results,
         }
-        analysis = None
-        if self.daily_analyzer:
-            analysis = self.daily_analyzer.analyze(daily_summary)
-            if analysis:
-                lines.extend(["--- LLM日次評価（参考） ---", analysis])
-
         report_text = "\n".join(lines)
         report_data = {
             **daily_summary,
             "generated_at": report_now.isoformat(timespec="seconds"),
             "report_text": report_text,
-            "llm_analysis": analysis if self.daily_analyzer else None,
+            "llm_analysis": None,
         }
         self.daily_report_directory.mkdir(parents=True, exist_ok=True)
         write_json(self.daily_report_directory / f"{today}.json", report_data)
+        positions = [
+            f"{item.get('Symbol', '')}({float(item.get('ProfitLoss', 0) or 0):+.0f}円)"
+            for item in self.last_positions
+        ]
+        error_summaries = log_error_summary.get("summaries") or []
+        error_detail = " / ".join(str(item) for item in error_summaries[:2]) or "なし"
+        liquidation_results = self._liquidation_results
+        liquidation_detail = "、".join(
+            f"{item['symbol']}:{item['status']}" for item in liquidation_results
+        ) or "対象なし"
+        notification = format_result_notification(
+            "取引",
+            "トレード終了",
+            "本日の取引処理が終了しました。",
+            [
+                f"約定件数: {len(daily_orders)}件",
+                f"実現損益: {daily_realized_pnl:+.0f}円",
+                f"評価損益: {total_unrealized_pnl:+.0f}円",
+                f"保有: {', '.join(positions) if positions else 'なし'}",
+                f"エラー概要: {error_detail}",
+                f"強制売却確認: {liquidation_detail}",
+            ],
+        )
         if self.notifier:
-            self.notifier(report_text)
+            self.notifier(notification)
         else:
-            notify_daily(report_text)
+            notify_daily(notification)
 
     def _fresh_liquidation_quote(
         self, symbol: str

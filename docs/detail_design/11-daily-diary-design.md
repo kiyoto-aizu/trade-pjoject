@@ -104,7 +104,7 @@ LLM本文は日本語のですます体で、素材に応じて「今日やっ�
 | Git履歴を取得できない | `OSError`またはGitコマンド失敗 | 警告ログを出しコミット一覧を空にする | なし | なし |
 | LLM無効またはAPIキーなし | writer factoryが`None` | context JSONを保存して終了 | なし | なし |
 | LLM通信・HTTP失敗、本文不在・応答構造不正 | requests例外、または応答値検証 | 警告ログ。本文を`None`としてcontext JSONへfallback | なし | なし |
-| API認証 | 現行writerのリクエストヘッダー | `Authorization`には固定文字列`******`を設定し、設定されたAPIキーはヘッダーに使用しない | なし | なし |
+| API認証 | 現行writerのリクエストヘッダー | `Authorization`でBearer認証を使い、設定キー`LLM_API_KEY`を送る | なし | なし |
 | JSON保存時のOSエラー | `write_json()`内部 | エラーログを記録し`False`を返す。呼出元は戻り値を確認しない | なし | なし |
 | 出力ディレクトリ・Markdown保存時のOSエラー | ファイル操作例外 | entrypointで捕捉されず終了 | なし | なし |
 
@@ -134,7 +134,6 @@ LLM本文は日本語のですます体で、素材に応じて「今日やっ�
 ## 10. 未決・既知の課題
 
 - 日記CLIをいつ・どの運用主体が起動するか、定期実行するかは、entrypointおよび確認した既存資料から特定できません。
-- writerは設定されたAPIキーをリクエストのAuthorizationヘッダーに使わず、固定文字列`******`を送ります。外部APIでの認証・本文生成の成功は現行コードから確認できません。
 - JSON fallback保存の失敗は`write_json()`が`False`を返しますが、entrypointは戻り値を確認せず、別の失敗通知や再試行も実装していません。
 - 日付形式不正や出力先の作成・Markdown書込み失敗はentrypointで捕捉されず、呼出元へ伝播します。利用者向けの個別通知・回復手順は確認できません。
 - LLM利用時に日記Markdownのみを生成し、context JSONは保存しません。Markdown保存後の確認済み・公開済み状態を記録する仕組みは確認できません。

@@ -16,6 +16,7 @@ from datetime import datetime
 from pathlib import Path
 
 from src.config import config
+from src.domain.minute_turnover_estimation import aggregate_window, calibrate, judge, stats as _stats
 from src.infrastructure.market_data.get_intraday_bars import get_yahoo_intraday_bars
 
 DEFAULT_DATES = ["2026-09-29", "2026-09-30", "2026-10-01", "2026-10-02", "2026-10-05"]
@@ -54,34 +55,6 @@ def load_diagnostics(directory: Path, day: str) -> list[dict]:
         if data.get("date") == day:
             records.extend(data.get("candidates", []))
     return records
-
-
-def aggregate_window(bars, day: str) -> dict | None:
-    """指定日の09:00〜09:30(09:30の足を含めない)を集計する。その日の足が無ければNone。"""
-    day_bars = [b for b in bars if b.time[:10] == day]
-    if not day_bars:
-        return None
-    volume = value = last_five = 0.0
-    in_window = 0
-    for bar in day_bars:
-        hhmm = bar.time[11:16]
-        if not (WINDOW_START <= hhmm < WINDOW_END):
-            continue
-        in_window += 1
-        bar_volume = bar.volume or 0.0
-        volume += bar_volume
-        value += bar.price * bar_volume
-        if hhmm >= LAST_FIVE_START:
-            last_five += bar_volume
-    if in_window == 0:
-        return None
-    return {"bar_count": in_window, "volume": volume, "value_estimate": value, "last_five_volume": last_five}
-
-
-def judge(window: dict | None) -> str:
-    if window is None:
-        return "NO_BARS"
-    return "TRADED" if window["volume"] > 0 else "NO_VOLUME"
 
 
 def fetch_all(symbols, fetcher) -> tuple[dict[str, list], dict[str, str]]:
@@ -277,15 +250,6 @@ def estimate_ratios(day, symbols, bars_by_symbol, turnover_by_symbol) -> tuple[d
     return ratios, unestimable
 
 
-def _stats(values: list[float]) -> dict | None:
-    if not values:
-        return None
-    ordered = sorted(values)
-    return {"min": round(ordered[0], 3), "median": round(ordered[len(ordered) // 2] if len(ordered) % 2
-            else (ordered[len(ordered) // 2 - 1] + ordered[len(ordered) // 2]) / 2, 3),
-            "max": round(ordered[-1], 3), "count": len(ordered)}
-
-
 def simulate_day(ratios: dict[str, float], unestimable: dict[str, str], adopted: list[str],
                  missing: set[str], top_n: int = 10) -> dict:
     """推定倍率で順位づけし、欠損銘柄が取れていた場合の上位との差を求める。"""
@@ -311,22 +275,6 @@ def simulate_day(ratios: dict[str, float], unestimable: dict[str, str], adopted:
         "unestimable_count": len(unestimable),
         "unestimable": unestimable,
     }
-
-
-def calibrate(estimated: dict[str, float], kabu_ratios: dict[str, float], yahoo_values: dict[str, float]) -> dict:
-    """板の実倍率とYahoo推定倍率の比(推定/実)。Yahoo売買代金0の銘柄は別枠。"""
-    pairs, zero_yahoo = [], []
-    for symbol, kabu in kabu_ratios.items():
-        if symbol not in estimated or kabu <= 0:
-            continue
-        if yahoo_values.get(symbol, 0) == 0:
-            zero_yahoo.append(symbol)
-            continue
-        pairs.append({"symbol": symbol, "kabu_ratio": round(kabu, 3),
-                      "estimated_ratio": round(estimated[symbol], 3),
-                      "estimate_over_kabu": round(estimated[symbol] / kabu, 3)})
-    return {"pairs": pairs, "stats": _stats([p["estimate_over_kabu"] for p in pairs]),
-            "zero_yahoo_value_symbols": zero_yahoo}
 
 
 def run_simulation(dates, targets, fetch, daily_turnover, screening_directory, filtering_directory,

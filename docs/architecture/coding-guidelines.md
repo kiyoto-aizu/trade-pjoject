@@ -15,9 +15,10 @@ trade-pjoject/
 ├── src/
 │   ├── api/                        # request_handler.py: infrastructure専用HTTP共通処理
 │   ├── application/                # usecase・分析/配分機能
-│   │   └── price_band_filtering_usecase.py # 価格帯別フィルタ実行制御
+│   │   ├── price_band_filtering_usecase.py # 価格帯別フィルタ実行制御
+│   │   └── midday_filtering_usecase.py # 昼のYahoo分足推定フィルタ(450/900円帯)
 │   ├── config/                     # config.py, task_schedule.py
-│   ├── domain/                     # enums, models, rules, ATR/市場分析
+│   ├── domain/                     # enums, models, rules, ATR/市場分析, minute_turnover_estimation(分足の売買代金推定)
 │   ├── entrypoints/                # 現行CLI群（下記参照）
 │   ├── executor/
 │   ├── filter_dynamic/
@@ -44,6 +45,7 @@ run_adx_analysis.py               run_atr_ratio_analysis.py
 run_backtest.py                   run_daily_diary.py
 run_daily_task_check.py           run_daily_task_plan.py
 run_filtering.py                  run_filtering_override.py
+run_midday_filtering.py           
 run_market_regime.py              run_market_volatility_analysis.py
 run_minute_backfill.py            run_monthly_analysis.py
 run_screening.py                  run_strategy_review.py
@@ -241,3 +243,4 @@ class EvaluateSymbolUseCase:
 - 第3版（2026-10-04）: `src/api`の位置づけ、entrypoint例外表、既知の責務・永続化乖離を追加。
 - 第3版（2026-10-04）: テスト配置・coverageの現状値と将来方針を追記。
 - 第3版（2026-10-04追記）: entrypoint例外の移設方針・期限を確定し、ADR-0007 Phase 5/6と整合。
+- 第3版（2026-10-09追記）: 昼フィルタ(`run_midday_filtering.py` → `application/midday_filtering_usecase.py` → `domain/minute_turnover_estimation.py`)を追加。診断スクリプトと共有する推定ロジックはdomainへ移設し、Yahoo取得失敗の区別は`infrastructure/market_data/get_intraday_bars.py`の`fetch_yahoo_intraday_bars`が担う。

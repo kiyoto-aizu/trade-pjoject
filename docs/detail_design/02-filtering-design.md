@@ -198,6 +198,18 @@ kabuステーション`/board/{symbol}`から当日の`TradingValue`を取得す
 - 対象銘柄数: 10件固定（有効な候補が10件未満の場合は取得できた分だけ）
 - 最小急増率の足切り: `filter_by_min_surge_ratio()`を設ける初期案は現行コードに実装せず、絶対倍率でなく相対順位を使用する形へ置き換え済み（2026-10-04）
 
+### 2026-10-09 昼フィルタ(450/900円帯のYahoo分足推定)
+
+- 朝09:30のフィルタは270円帯のみ。450/900円帯の朝の板取得は`FILTERING_MORNING_ALTERNATE_BANDS_ENABLED`(既定false)で停止し、trueで復活できる。停止中は朝の450/900円帯の診断JSON・結果ファイルは出ない。
+- 昼(既定12:00開始・12:25締切、`run_midday_filtering.py`)に、450/900円帯と比較用の270円帯(重複除去で最大約150銘柄)の09:00以上09:30未満のYahoo 1分足から「終値×出来高」を合計し、当日を除く20日平均売買代金で割った推定倍率を求める。採用は朝と同じ上位10件(閾値なし)。板の実測より低めに出る傾向(推定/実測の中央値0.82)は補正しない。
+- 保存先は`MIDDAY_FILTERING_RESULT_ROOT`(既定`data/filtering_midday`)の`<帯>/`(結果)と`<帯>/diagnostics/`(診断JSON、`numerator_source=yahoo_minute_estimate`)、270円比較は`comparison/`。朝の板の結果は上書きしない。
+- 評価対象外の理由: `MIDDAY_FETCH_FAILED`(取得失敗)/`MIDDAY_NO_BARS`(当日の足なし)/`MIDDAY_ZERO_VOLUME`(出来高0)/`FILTER_TIME_LIMIT`(締切超過)/`FILTER_AVERAGE_*`。窓内の本数・最初/最後の足の時刻を記録するが、本数だけで除外しない。
+- 270円帯は売買判断に使わず、朝の板の診断JSONとの比較(推定/実測の中央値・分布・上位10件の一致数)だけを日ごとに記録する。
+- 09:00〜09:30の分足は評価・通知の後にParquetへ保存する(範囲外の既存の足は残す)。保存失敗は結果に影響しない。休場日は実行せず、午前のみの日は`MIDDAY_FILTERING_SKIP_DATES`で指定してスキップする。
+- ロックは専用の`midday_filtering_lock()`(`.midday_filtering.lock`)だけを取る。取引ループが丸一日保持する`market_workflow_lock`は取らないため、12:00に取引中でも実行できる。取れない場合(二重起動)・休場日・スキップ日・開始前/締切後は、理由をログに出しdailyへ簡潔に通知して終了する。
+- 検証用実行: `run_midday_filtering --verify --date YYYY-MM-DD`(`--date`必須)。開始時刻・締切のチェックを無視し、予算は`--budget-seconds`(既定3時間)。結果・診断・270円比較は`MIDDAY_FILTERING_VERIFY_RESULT_ROOT/<日付>/`(既定`data/filtering_midday_verify`)に出し、Slack通知はせず要約(所要時間・取得失敗率・理由別件数・窓内本数分布・270円の推定/実測比較・本番25分に収まるか)を表示する。`--verify-save-bars`指定時だけ09:00〜09:30の足を`MINUTE_BAR_PARQUET_VERIFY_DIR`(既定`data/minute_bars_parquet_verify`)へ保存する。専用ロックは`.midday_filtering_verify.lock`で本番の昼フィルタと干渉しない。候補一覧と朝の板の診断JSONは読み取りのみ。
+- 午前のみの日・`task_schedule.TASKS`への昼タスク追加は未対応(登録は`scripts/tasks/register_midday_filtering_task.ps1`)。
+
 ## 10. 未決・既知の課題
 
 - 平均売買代金に対象日が含まれる場合も現状は除外しない。対象日の混入有無は診断に記録する。

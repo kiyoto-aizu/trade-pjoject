@@ -59,6 +59,16 @@
 | `FILTER_BOARD_MAX_CONCURRENCY` | "3" | 任意 | 全価格帯をまとめて板取得する際の最大同時リクエスト数 |
 | `FILTER_BOARD_RETRY_ENABLED` | "true" | 任意 | 全価格帯で板の売買代金・売買高が取れなかった銘柄を、結果保存前に再取得する |
 | `FILTER_BOARD_RETRY_MARGIN_SECONDS` | "30" | 任意 | リトライの打ち切り時刻 = FILTERING_PRICE_BAND_DEADLINE_TIME - この秒数 |
+| `FILTERING_MORNING_ALTERNATE_BANDS_ENABLED` | "false" | 任意 | trueで朝(09:30)の450/900円帯の板取得を復活。既定は停止し昼のYahoo分足推定へ回す |
+| `MIDDAY_FILTERING_START_TIME` | "12:00" | 任意 | 昼フィルタの実行時刻(タスク登録時の既定。HH:MM) |
+| `MIDDAY_FILTERING_DEADLINE_TIME` | "12:25" | 任意 | 昼フィルタ全体の締切。超過分は`FILTER_TIME_LIMIT`で評価対象外 |
+| `MIDDAY_FILTERING_FETCH_TIMEOUT_SECONDS` | "30" | 任意 | Yahoo分足1銘柄あたりのタイムアウト秒 |
+| `MIDDAY_FILTERING_FETCH_RETRIES` | "1" | 任意 | 分足取得失敗時の追加リトライ回数 |
+| `MIDDAY_FILTERING_RETRY_WAIT_SECONDS` | "2" | 任意 | リトライ前の待機秒 |
+| `MIDDAY_FILTERING_SKIP_DATES` | "" | 任意 | 昼フィルタを実行しない日(午前のみ取引日等、YYYY-MM-DDのカンマ区切り) |
+| `MIDDAY_FILTERING_RESULT_ROOT` | data/filtering_midday | 任意 | 昼の結果・診断・270円比較の保存先 |
+| `MIDDAY_FILTERING_VERIFY_RESULT_ROOT` | data/filtering_midday_verify | 任意 | 昼フィルタ検証用実行(`--verify`)の結果の保存先(日付ごと) |
+| `MINUTE_BAR_PARQUET_VERIFY_DIR` | data/minute_bars_parquet_verify | 任意 | 検証用実行で`--verify-save-bars`を付けたときの分足の保存先 |
 | `FILTER_BOARD_RETRY_MAX_ROUNDS` | "2" | 任意 |  |
 | `FILTER_BOARD_RETRY_WAIT_SECONDS` | "10" | 任意 |  |
 | `FILTER_DECISION_OBSERVATION_DAYS` | "5" | 任意 |  |

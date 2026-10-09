@@ -213,6 +213,7 @@ def test_main_saves_270_filter_before_isolated_price_band_failures(monkeypatch, 
     monkeypatch.setattr(run_filtering, "DecisionJournalRepository", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(run_filtering, "YahooFinanceClient", lambda: object())
     monkeypatch.setattr(config, "SCREENING_ALTERNATE_PRICE_CAPS", (450.0, 900.0))
+    monkeypatch.setattr(config, "FILTERING_MORNING_ALTERNATE_BANDS_ENABLED", True)
     monkeypatch.setattr(config, "SCREENING_BATCH_SIZE", 2)
 
     run_filtering.main()
@@ -282,6 +283,7 @@ def test_main_stops_price_bands_when_unregister_after_primary_fails(monkeypatch,
     monkeypatch.setattr(run_filtering, "DecisionJournalRepository", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(run_filtering, "YahooFinanceClient", lambda: object())
     monkeypatch.setattr(config, "SCREENING_ALTERNATE_PRICE_CAPS", (450.0, 900.0))
+    monkeypatch.setattr(config, "FILTERING_MORNING_ALTERNATE_BANDS_ENABLED", True)
 
     run_filtering.main()
 
@@ -322,6 +324,7 @@ def test_main_skips_price_bands_for_historical_date_without_board_cache(monkeypa
     monkeypatch.setattr(run_filtering, "FilteringDiagnosticsRepository", lambda *_args: object())
     monkeypatch.setattr(run_filtering, "YahooFinanceClient", lambda: object())
     monkeypatch.setattr(config, "SCREENING_ALTERNATE_PRICE_CAPS", (450.0,))
+    monkeypatch.setattr(config, "FILTERING_MORNING_ALTERNATE_BANDS_ENABLED", True)
 
     run_filtering.main()
 
@@ -423,6 +426,7 @@ def test_price_band_deadline_preserves_primary_and_releases_lock_after_unregiste
     monkeypatch.setattr(run_filtering, "DecisionJournalRepository", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(run_filtering, "YahooFinanceClient", lambda: object())
     monkeypatch.setattr(config, "SCREENING_ALTERNATE_PRICE_CAPS", (450.0, 900.0))
+    monkeypatch.setattr(config, "FILTERING_MORNING_ALTERNATE_BANDS_ENABLED", True)
     monkeypatch.setattr(config, "FILTERING_PRICE_BAND_DEADLINE_TIME", datetime.strptime("09:33", "%H:%M").time())
 
     run_filtering.main()

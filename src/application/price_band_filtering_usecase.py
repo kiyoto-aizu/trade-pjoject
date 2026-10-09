@@ -54,7 +54,12 @@ class PriceBandFilteringUseCase:
 
         primary_screening = primary_usecase.screening_repository.load_for_date(previous_business_day)
         band_specs = []
-        for price_cap in sorted(config.SCREENING_ALTERNATE_PRICE_CAPS):
+        # 朝の追加帯は既定で停止(昼のYahoo分足推定へ移行)。停止中は追加帯の板取得・診断・結果保存を行わない
+        alternate_caps = (
+            sorted(config.SCREENING_ALTERNATE_PRICE_CAPS)
+            if config.FILTERING_MORNING_ALTERNATE_BANDS_ENABLED else []
+        )
+        for price_cap in alternate_caps:
             cap_name = f"{price_cap:g}"
             screening_directory = config.SCREENING_PRICE_BAND_RESULT_ROOT / cap_name
             screening_repository = self.screening_repository_factory(screening_directory)
@@ -114,7 +119,8 @@ class PriceBandFilteringUseCase:
             board_run_metrics_before=metrics_before,
             board_prefetch_summary=primary_summary,
         )
-        if not board_cache.clear_registrations():
+        primary_cleared = board_cache.clear_registrations()
+        if not primary_cleared:
             self.logger.error("通常フィルタ後の登録解除に失敗したため、追加価格帯フィルタを中止します。")
         else:
             for price_cap, cap_name, screening_repository, band_screening, filtering_directory in band_specs:
@@ -170,5 +176,6 @@ class PriceBandFilteringUseCase:
             (self.perf_counter_clock() - started_at) * 1000,
             board_cache.unregister_count,
         )
-        if not board_cache.clear_registrations():
+        # 追加帯を実行しておらず主帯直後の解除が成功していれば、登録は既に空
+        if (band_specs or not primary_cleared) and not board_cache.clear_registrations():
             self.logger.error("フィルタ終了時の銘柄登録解除に失敗しました。")

@@ -10,7 +10,8 @@ from src.application.price_band_filtering_usecase import PriceBandFilteringUseCa
 from src.config import config
 
 
-def _build_use_case(monkeypatch, caplog, outcomes, unregister_results=(True, True), counter_changes=None):
+def _build_use_case(monkeypatch, caplog, outcomes, unregister_results=(True, True), counter_changes=None,
+                    morning_alternate_enabled=True):
     events = []
     executions = []
     clear_results = iter(unregister_results)
@@ -84,6 +85,7 @@ def _build_use_case(monkeypatch, caplog, outcomes, unregister_results=(True, Tru
         return FakeFilteringUseCase()
 
     monkeypatch.setattr(config, "SCREENING_ALTERNATE_PRICE_CAPS", (450.0, 900.0))
+    monkeypatch.setattr(config, "FILTERING_MORNING_ALTERNATE_BANDS_ENABLED", morning_alternate_enabled)
     monkeypatch.setattr(config, "FILTERING_PRICE_BAND_DEADLINE_TIME", time(9, 33))
     caplog.set_level(logging.INFO)
     clock_value = [0.0]
@@ -137,6 +139,21 @@ def test_runs_all_price_bands_and_preserves_summary_counters(monkeypatch, caplog
     summary = next(record for record in caplog.records if record.msg.startswith("全価格帯板取得サマリー:"))
     assert summary.args == (7, 4, 2.5, 11000.0, 7)
     assert board_cache.unregister_count == 8
+
+
+def test_morning_alternate_bands_are_skipped_when_disabled(monkeypatch, caplog):
+    use_case, board_cache, executions, events, primary_usecase = _build_use_case(
+        monkeypatch, caplog, {450.0: ["a"], 900.0: ["a", "b"]}, morning_alternate_enabled=False
+    )
+
+    use_case.run(primary_usecase)
+
+    assert [item.get("price_cap") for item in executions] == [None]
+    assert events == [
+        ("prefetch", ["common"], config.FILTER_BOARD_MAX_CONCURRENCY),
+        ("execute", None),
+        "clear",
+    ]
 
 
 def test_unregister_failure_skips_all_price_bands_and_logs_error(monkeypatch, caplog):

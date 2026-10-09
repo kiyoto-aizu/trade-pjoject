@@ -1,4 +1,4 @@
-﻿from datetime import datetime, time
+from datetime import datetime, time
 from pathlib import Path
 from types import SimpleNamespace
 import logging
@@ -79,6 +79,7 @@ def test_late_band_prefetch_not_started_after_deadline_and_earlier_band_runs_fir
         execute=lambda **kw: events.append(("execute", None, kw["board_prefetch_summary"])),
     )
     monkeypatch.setattr(config, "SCREENING_ALTERNATE_PRICE_CAPS", (450.0, 900.0))
+    monkeypatch.setattr(config, "FILTERING_MORNING_ALTERNATE_BANDS_ENABLED", True)
     monkeypatch.setattr(config, "FILTERING_PRICE_BAND_DEADLINE_TIME", time(9, 34))
     use_case = PriceBandFilteringUseCase(
         cache, object(),

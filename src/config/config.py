@@ -345,6 +345,36 @@ FILTER_BOARD_429_MAX_RETRIES = _non_negative_env("FILTER_BOARD_429_MAX_RETRIES",
 # リトライの打ち切り時刻 = FILTERING_PRICE_BAND_DEADLINE_TIME - この秒数
 FILTER_BOARD_RETRY_MARGIN_SECONDS = _non_negative_env("FILTER_BOARD_RETRY_MARGIN_SECONDS", "30", float)
 
+# 朝(09:30)の追加価格帯(450円・900円)の板取得。既定は停止し、昼のYahoo分足推定へ回す。trueで朝の実施に戻せる
+FILTERING_MORNING_ALTERNATE_BANDS_ENABLED = os.getenv(
+    "FILTERING_MORNING_ALTERNATE_BANDS_ENABLED", "false"
+).strip().lower() in ("1", "true", "yes")
+
+# 昼フィルタ(追加価格帯をYahoo 1分足の09:00〜09:30売買代金から推定する処理)
+MIDDAY_FILTERING_START_TIME = time.fromisoformat(os.getenv("MIDDAY_FILTERING_START_TIME", "12:00"))
+MIDDAY_FILTERING_DEADLINE_TIME = time.fromisoformat(os.getenv("MIDDAY_FILTERING_DEADLINE_TIME", "12:25"))
+if MIDDAY_FILTERING_DEADLINE_TIME <= MIDDAY_FILTERING_START_TIME:
+    raise ValueError("MIDDAY_FILTERING_DEADLINE_TIMEはMIDDAY_FILTERING_START_TIMEより後を指定してください。")
+# Yahoo分足1銘柄あたりのタイムアウト秒と、失敗時の追加リトライ回数(0で再試行なし)・リトライ前の待機秒
+MIDDAY_FILTERING_FETCH_TIMEOUT_SECONDS = _non_negative_env("MIDDAY_FILTERING_FETCH_TIMEOUT_SECONDS", "30", float)
+MIDDAY_FILTERING_FETCH_RETRIES = _non_negative_env("MIDDAY_FILTERING_FETCH_RETRIES", "1", int)
+MIDDAY_FILTERING_RETRY_WAIT_SECONDS = _non_negative_env("MIDDAY_FILTERING_RETRY_WAIT_SECONDS", "2", float)
+# 午前のみの取引日など、昼の処理を実行しない日付(YYYY-MM-DD, カンマ区切り)
+MIDDAY_FILTERING_SKIP_DATES = tuple(
+    value.strip() for value in os.getenv("MIDDAY_FILTERING_SKIP_DATES", "").split(",") if value.strip()
+)
+# 昼の結果・診断・270円比較の保存先。朝の板の結果(FILTERING_*)とは別に保存する
+MIDDAY_FILTERING_RESULT_ROOT = Path(
+    os.getenv("MIDDAY_FILTERING_RESULT_ROOT", str(_repo_root / "data" / "filtering_midday"))
+)
+# 昼フィルタの検証用実行(--verify)の保存先。本番の保存先とは分ける
+MIDDAY_FILTERING_VERIFY_RESULT_ROOT = Path(
+    os.getenv("MIDDAY_FILTERING_VERIFY_RESULT_ROOT", str(_repo_root / "data" / "filtering_midday_verify"))
+)
+MINUTE_BAR_PARQUET_VERIFY_DIR = Path(
+    os.getenv("MINUTE_BAR_PARQUET_VERIFY_DIR", str(_repo_root / "data" / "minute_bars_parquet_verify"))
+)
+
 # ================================================================================
 # 注文履歴・市場設定
 # ================================================================================
